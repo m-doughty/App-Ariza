@@ -359,9 +359,13 @@ installs into the runner's tool cache, which is not in the container's
 filesystem) and SQLCipher is built from source at the pinned version.
 
 =item1 B<C<bundle-windows-x86_64>> — C<windows-latest>, C<setup-raku>,
-and SQLCipher from C<vcpkg install sqlcipher:x64-windows> with
-C<SQLCIPHER_LIB_DIR> pointed at the result, which is the sourcing
-contract L<App::Ariza::Native> documents for Windows.
+and SQLCipher from MSYS2's C<mingw-w64-ucrt-x86_64-sqlcipher>, installed
+with the C<pacman> every windows runner already has, with
+C<SQLCIPHER_LIB_DIR> pointed at the result — which is the sourcing
+contract L<App::Ariza::Native> documents for Windows. The UCRT package
+rather than vcpkg's port, because an MSVC-built SQLCipher imports
+C<vcruntime140.dll>, which is not part of Windows and which the PE audit
+therefore refuses to ship.
 
 Each of them then runs the same three steps — C<ariza bundle>,
 C<ariza smoke>, upload the archive and its C<.sha256> — because the
@@ -525,7 +529,7 @@ checkout.
 L<App::Ariza::Bundle> and L<App::Ariza::Smoke>, which are what every
 build lane runs; L<App::Ariza::Installer>, whose C<install.sh> the
 installer smoke job drives; L<App::Ariza::Native>, whose Windows
-sourcing contract the vcpkg step satisfies; L<App::Ariza::Rakudo>, whose
+sourcing contract the C<pacman> step satisfies; L<App::Ariza::Rakudo>, whose
 release-index lookup the manylinux lane repeats in shell.
 
 =head1 AUTHOR

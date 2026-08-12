@@ -6,7 +6,7 @@ use App::Ariza::Platform;
 use App::Ariza::Tools;
 use App::Ariza::Versions;
 
-plan 28;
+plan 32;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-native-{$*PID}-{(^1_000_000).pick}");
@@ -532,8 +532,8 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
       ~ ' EPEL one it was found as';
 };
 
-subtest 'Windows looks in the vcpkg tree, and names both remedies otherwise', {
-    plan 3;
+subtest 'Windows looks in MSYS2 and vcpkg, and names every remedy otherwise', {
+    plan 8;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
@@ -545,11 +545,217 @@ subtest 'Windows looks in the vcpkg tree, and names both remedies otherwise', {
         'VCPKG_ROOT/installed/<triplet>/bin';
     ok %got<origin>.contains('vcpkg'), 'recorded as a vcpkg tree';
 
+    # MSYS2's UCRT environment, which is the one ariza's own CI installs:
+    # a different prefix, and a different name for the same library.
+    my $ucrt = fake-library($dir.add('msys64/ucrt64/bin/libsqlcipher-0.dll'));
+    my %msys = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<windows-x86_64>,
+        :env(%( MSYSTEM_PREFIX => $dir.add('msys64/ucrt64').absolute )));
+    is %msys<path>.absolute, $ucrt.resolve.absolute,
+        'MSYSTEM_PREFIX/bin, which is where a mingw-w64-ucrt package lands';
+    ok %msys<origin>.contains('msys2'), 'recorded as an MSYS2 environment';
+
+    # MSYSTEM_PREFIX comes first: a machine with both should build the
+    # UCRT library, because the MSVC one imports a runtime Windows does
+    # not ship. (The audit refuses to ship that one either way.)
+    my %both = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<windows-x86_64>,
+        :env(%( VCPKG_ROOT     => $dir.add('vcpkg').absolute,
+                MSYSTEM_PREFIX => $dir.add('msys64/ucrt64').absolute )));
+    is %both<path>.absolute, $ucrt.resolve.absolute,
+        'and with both installed, the UCRT build wins';
+
+    # :search sandboxes the probe, exactly as it does on Linux: no real
+    # machine's C:\msys64 or vcpkg tree can answer for a test.
+    is App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<windows-x86_64>, :env(%()),
+        :search([$dir.add('msys64/ucrt64/bin').absolute]))<path>.absolute,
+        $ucrt.resolve.absolute,
+        'and :search replaces the directories probed outright';
+
     throws-like {
         App::Ariza::Native.sqlcipher-source(:slug<windows-arm64>,
             :host-slug<windows-arm64>, :env(%()))
     }, Exception, message => /'SQLCIPHER_LIB_DIR' .* '--sqlcipher-archive'/,
-        'and with no tree at all, both ways of supplying one are named';
+        'and with neither installed, every way of supplying one is named';
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<windows-arm64>,
+            :host-slug<windows-arm64>, :env(%()))
+    }, Exception, message => /'pacman -S mingw-w64-ucrt-x86_64-sqlcipher'/,
+        'the prebuilt UCRT package first, since it is the one that does not'
+      ~ ' drag in the Visual C++ redistributable';
+};
+
+subtest 'Windows accepts either package manager\'s name for the library', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # MSYS2 ships `libsqlcipher-0.dll`; nothing there is called
+    # `sqlcipher.dll` at all.
+    my $bin = $dir.add('ucrt64/bin');
+    my $mingw = fake-library($bin.add('libsqlcipher-0.dll'));
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $bin.absolute )));
+    is %got<path>.absolute, $mingw.resolve.absolute,
+        'a libsqlcipher*.dll answers where the canonical name is absent';
+    ok %got<origin>.contains('staged as sqlcipher.dll'),
+        'the manifest says which name it will be staged under';
+    ok %got<origin>.contains('found as libsqlcipher-0.dll'),
+        'and which file on the machine it actually came from';
+
+    # The vcpkg name wins outright when both are there, even though the
+    # other one sorts higher.
+    my $canonical = fake-library($bin.add('sqlcipher.dll'));
+    my %exact = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $bin.absolute )));
+    is %exact<path>.absolute, $canonical.resolve.absolute,
+        'the canonical name is preferred over any variant beside it';
+    nok %exact<origin>.contains('staged as'),
+        'and nothing is said about a rename, because there was not one';
+
+    # Two variants and no canonical name: newest wins, numerically — a
+    # string sort would put -3.9. ahead of -3.34.
+    my $vdir = $dir.add('versioned');
+    fake-library($vdir.add('libsqlcipher-3.9.0.dll'));
+    my $newest = fake-library($vdir.add('libsqlcipher-3.34.1.dll'));
+    my %newest = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $vdir.absolute )));
+    is %newest<path>.absolute, $newest.resolve.absolute,
+        'among several variants the newest wins, numerically';
+
+    # The Windows loader does not care about case and neither does this.
+    my $shouty = $dir.add('shouty');
+    my $upper = fake-library($shouty.add('LIBSQLCIPHER-0.DLL'));
+    is App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $shouty.absolute )))<path>.absolute,
+        $upper.resolve.absolute,
+        'whatever case the filesystem spelled it in';
+
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+            :host-slug<windows-x86_64>,
+            :env(%( SQLCIPHER_LIB_DIR => ensure-dir($dir.add('empty')).absolute )))
+    }, Exception, message => /'holds no sqlcipher.dll' .* 'libsqlcipher*.dll'/,
+        'and a directory with neither name says so, naming both';
+};
+
+subtest 'a mingw-named library is staged under the canonical one', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # MSYS2's ucrt64/bin: the package's whole runtime closure in one
+    # directory, exactly as vcpkg's `installed/<triplet>/bin` is.
+    my $bin = $dir.add('ucrt64/bin');
+    fake-pe($bin.add('libsqlcipher-0.dll'),
+        <libcrypto-3-x64.dll libwinpthread-1.dll ucrtbase.dll KERNEL32.dll>);
+    fake-pe($bin.add('libcrypto-3-x64.dll'), ['ucrtbase.dll']);
+    fake-pe($bin.add('libwinpthread-1.dll'), ['KERNEL32.dll']);
+
+    my $bundle = ensure-dir($dir.add('bundle'));
+    my %staged;
+    notes-from({
+        %staged = App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+            :slug<windows-x86_64>, :versions(versions()),
+            :host-slug<macos-arm64>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR => $bin.absolute )));
+    });
+
+    my $dest = $bundle.add('native/sqlcipher');
+    ok $dest.add('sqlcipher.dll').f,
+        'the copy is written under the name the launcher and DBDish ask'
+      ~ ' for, which LoadLibrary resolves by leaf name — the module\'s own'
+      ~ ' internal name is no more consulted than DT_SONAME is by dlopen';
+    nok $dest.add('libsqlcipher-0.dll').e,
+        'and not under the one MSYS2 gave it';
+
+    is-deeply %staged<staged>.map(*.basename).sort.List,
+        <libcrypto-3-x64.dll libwinpthread-1.dll sqlcipher.dll>,
+        'the mingw runtime travels with it, ucrtbase.dll does not';
+
+    is App::Ariza::Native.audit(:bundle-dir($bundle), :slug<windows-x86_64>,
+        :extra(%staged<staged>))<checked>, 3,
+        'and the audit finds every one of them self-contained';
+};
+
+subtest 'the Visual C++ runtime is not Windows, and the audit knows it', {
+    plan 11;
+
+    ok pe-redist-dll('VCRUNTIME140.dll'), 'vcruntime is the redistributable';
+    ok pe-redist-dll('vcruntime140_1.dll'), 'in either of its halves';
+    ok pe-redist-dll('msvcp140.dll'), 'as is the C++ library';
+    ok pe-redist-dll('concrt140.dll'), 'the concurrency runtime';
+    ok pe-redist-dll('vcomp140.dll'), 'and OpenMP';
+    nok pe-redist-dll('ucrtbase.dll'),
+        'while the UCRT is part of Windows 10 and later, which is exactly'
+      ~ ' why a UCRT-built library is the fix rather than the problem';
+    nok pe-redist-dll('libcrypto-3-x64.dll'),
+        'and a library that is nobody\'s runtime is judged the ordinary way';
+
+    # Still on the skiplist: nothing copies it in, because it is
+    # Microsoft's to redistribute and not ariza's.
+    ok pe-system-dll('VCRUNTIME140.dll'),
+        'the family stays on PE-SYSTEM-DLLS, so no pass copies one in';
+
+    my @found = pe-strays('vcruntime140.dll => not found', :inside(['/b']));
+    is +@found, 1, 'an import of it that the bundle does not answer for is a finding';
+    ok @found.head.contains('Redistributable')
+        && @found.head.contains('mingw-w64-ucrt-x86_64'),
+        'and the finding carries the clean-machine consequence and the fix,'
+      ~ ' because the reader has just watched the bundle work on a machine'
+      ~ ' that has the redistributable installed';
+
+    is-deeply pe-strays("vcruntime140.dll => C:\\b\\native\\sqlcipher\\vcruntime140.dll",
+                        :inside(['C:/b'])).List, (),
+        'one the bundle does carry is no finding at all — the check is'
+      ~ ' "not in the bundle", not "never imported"';
+};
+
+subtest 'an MSVC-built library fails the audit rather than the user\'s machine', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # vcpkg's own layout, with what an MSVC build actually imports.
+    my $bin = $dir.add('vcpkg/installed/x64-windows/bin');
+    fake-pe($bin.add('sqlcipher.dll'),
+        <libcrypto-3-x64.dll VCRUNTIME140.dll KERNEL32.dll>);
+    fake-pe($bin.add('libcrypto-3-x64.dll'), ['KERNEL32.dll']);
+
+    my $bundle = ensure-dir($dir.add('bundle'));
+    my %staged;
+    notes-from({
+        %staged = App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+            :slug<windows-x86_64>, :versions(versions()),
+            :host-slug<macos-arm64>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR => $bin.absolute )));
+    });
+    nok $bundle.add('native/sqlcipher/VCRUNTIME140.dll').e,
+        'staging leaves the redistributable alone, as it always has';
+
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($bundle), :slug<windows-x86_64>,
+                                 :extra(%staged<staged>))
+    }, Exception, message => /'VCRUNTIME140.dll' .* 'Redistributable'/,
+        'and the audit then refuses the bundle, naming the DLL';
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($bundle), :slug<windows-x86_64>,
+                                 :extra(%staged<staged>))
+    }, Exception, message => /'mingw-w64-ucrt-x86_64'/,
+        'and the UCRT-built library that makes the question go away';
+
+    # Carrying it satisfies the audit: the check is containment, not
+    # abstinence. Nobody has to like it for it to be true.
+    fake-pe($bundle.add('native/sqlcipher/VCRUNTIME140.dll'), ['KERNEL32.dll']);
+    lives-ok {
+        App::Ariza::Native.audit(:bundle-dir($bundle), :slug<windows-x86_64>,
+                                 :extra(%staged<staged>))
+    }, 'a bundle that does carry it passes';
 };
 
 subtest 'a system library is only offered for the machine it is on', {

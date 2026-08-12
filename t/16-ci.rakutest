@@ -312,7 +312,7 @@ subtest 'installer smoke is scoped to the platforms actually declared', {
 };
 
 subtest 'each lane installs what ariza needs on that platform', {
-    plan 11;
+    plan 15;
 
     ok $RELEASE.contains("    runs-on: macos-latest\n"), 'macOS lane';
     ok $RELEASE.contains('brew install sqlcipher'),
@@ -331,11 +331,30 @@ subtest 'each lane installs what ariza needs on that platform', {
         'and builds the pinned SQLCipher rather than a distro package';
 
     ok $RELEASE.contains("    runs-on: windows-latest\n"), 'the Windows lane';
-    ok $RELEASE.contains('vcpkg install sqlcipher:x64-windows'),
-        'sources SQLCipher from vcpkg';
+    ok $RELEASE.contains('pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-sqlcipher'),
+        'sources SQLCipher from the MSYS2 installation every windows runner'
+      ~ ' already has';
+    ok $RELEASE.contains("\$lib = 'C:\\msys64\\ucrt64\\bin'")
+        && $RELEASE.contains("Test-Path (Join-Path \$lib 'libsqlcipher*.dll')"),
+        'asserting the DLL is there under whichever of its names, since'
+      ~ ' MSYS2 calls it libsqlcipher-0.dll and vcpkg called it sqlcipher.dll';
     ok $RELEASE.contains('"SQLCIPHER_LIB_DIR=$lib"'),
         'and names the directory, which is the contract App::Ariza::Native'
       ~ ' documents for Windows';
+
+    # The UCRT build is the whole point of the change: an MSVC-built
+    # SQLCipher imports vcruntime140.dll, which is not part of Windows,
+    # and a runner cannot see that because every runner has the
+    # redistributable installed.
+    ok $RELEASE.contains('vcruntime140.dll'),
+        'the lane says in its own comments why it is not vcpkg any more';
+
+    # The vcpkg port was a source build; the MSYS2 package is prebuilt,
+    # so the cache that existed only to avoid that build is gone with it.
+    nok $RELEASE.contains('vcpkg install'),
+        'nothing builds SQLCipher from source on Windows any more';
+    nok $RELEASE.contains('actions/cache'),
+        'and no lane caches anything, on any platform';
 
     is +$RELEASE.comb(/ 'ariza smoke --archive=' /), 3,
         'and every lane smokes what it built before uploading it';

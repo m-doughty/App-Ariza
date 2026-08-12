@@ -22,7 +22,10 @@ stored, import tables with sixty entries.
 It is also the one place the skiplist is measured rather than asserted.
 `PE-SYSTEM-DLLS` is only correct if every non-system import in a real
 payload resolves inside that payload's own directory; if a Windows DLL is
-missing from the list, this fails here rather than in a release lane.
+missing from the list, this fails here rather than in a release lane. The
+same goes for `PE-REDIST-DLLS`: this pack is MinGW-built and imports
+`msvcrt.dll`, so nothing in it needs the Visual C++ Redistributable, and
+a future pack that changes toolchain is caught here first.
 
     prove6 -Ilib xt/
 
@@ -89,7 +92,7 @@ subtest 'every real DLL in it parses, and names plausible imports', {
 };
 
 subtest 'the skiplist is measured against the pack, not guessed at', {
-    plan 2;
+    plan 3;
 
     my @dlls = pack-dlls();
     my %have = $dir.dir.grep(*.f).map({ .basename.lc => True });
@@ -107,6 +110,23 @@ subtest 'the skiplist is measured against the pack, not guessed at', {
         'every non-system import in the pack resolves inside the pack'
       ~ (%missing ?? ": {%missing.sort.map({ .key ~ ' <- ' ~ .value.join(', ') }).join('; ')}"
                   !! '');
+
+    # The redistributable gate, measured the same way. This pack is
+    # MinGW-built, so it imports msvcrt.dll and never vcruntime140.dll --
+    # and if a future pack ever switches toolchains, every Windows bundle
+    # stops shipping until the runtime travels with it. Said here in
+    # those words rather than left to surface as a containment failure in
+    # the audit below.
+    my %redist;
+    for @dlls -> $f {
+        for pe-imports($f).grep({ pe-redist-dll($_) }) -> $name {
+            %redist{$name.lc}.push($f.basename) unless %have{$name.lc};
+        }
+    }
+    is-deeply %redist.keys.sort.List, (),
+        'nothing in the pack imports a Visual C++ runtime it does not carry'
+      ~ (%redist ?? ": {%redist.sort.map({ .key ~ ' <- ' ~ .value.join(', ') }).join('; ')}"
+                 !! '');
 
     # The audit, on the layout a bundle actually has: the pack staged
     # under native/, judged by the same code path a release runs.

@@ -259,50 +259,53 @@ jobs:
         #   run: zef install --/test https://github.com/m-doughty/App-Ariza.git
 
       # Windows has no package manager ariza drives, so it is told where
-      # the library is: SQLCIPHER_LIB_DIR names the directory holding
-      # sqlcipher.dll and beats every other source. (Setting VCPKG_ROOT to
-      # the same tree works too -- ariza probes the standard triplets'
-      # `bin` directories under it -- but naming the directory outright is
-      # one less thing to be wrong about.)
-
-      # vcpkg installs into C:\vcpkg\installed, and building sqlcipher from
-      # there is the slowest step in this lane. Restored here and, on a
-      # miss, saved again right after the build below -- not left to
-      # actions/cache's combined action, which only saves in a post step
-      # gated on the job succeeding. A failed smoke later in this same run
-      # would then throw away a fifteen-minute build for nothing; saving
-      # immediately after the build keeps it regardless of what the rest
-      # of the job does.
-      - name: Restore cached SQLCipher
-        id: cache-sqlcipher
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-sqlcipher-x64-windows-v1
-
+      # the library is: SQLCIPHER_LIB_DIR names the directory holding the
+      # SQLCipher DLL and beats every other source. (ariza probes MSYS2's
+      # prefixes and a VCPKG_ROOT tree by itself, but naming the directory
+      # outright is one less thing to be wrong about.)
+      #
+      # MSYS2's UCRT package rather than vcpkg's, and the difference is
+      # not a preference:
+      #
+      #   * vcpkg builds with MSVC, so its sqlcipher.dll imports
+      #     vcruntime140.dll -- the Visual C++ Redistributable, which is
+      #     NOT part of Windows. Every CI runner has it installed, so a
+      #     bundle built that way passes every check here and fails to
+      #     load on a clean machine, which is the machine a bundle is for.
+      #     (ariza's PE audit now refuses that bundle outright.) MSYS2's
+      #     mingw-w64-ucrt-x86_64-* packages import ucrtbase.dll instead,
+      #     which Windows has shipped in System32 since Windows 10.
+      #   * The MSYS2 package is prebuilt. The vcpkg port was a fifteen-
+      #     minute source build, which is why this lane used to carry a
+      #     restore/save cache pair around it; both are gone.
+      #   * Its whole runtime closure -- OpenSSL, the mingw runtime --
+      #     lands in ucrt64\bin beside the DLL, which is the search space
+      #     contract App::Ariza::Native relies on to copy dependencies in.
+      #
+      # MSYS2 is preinstalled at C:\msys64 on windows runners, so this is
+      # a package install and nothing else. `-Sy` refreshes the package
+      # databases first: the image's copy is as old as the image, and
+      # MSYS2's mirrors keep only current versions, so a stale database
+      # sends pacman after a file that is no longer there.
       - name: Install SQLCipher
-        if: steps.cache-sqlcipher.outputs.cache-hit != 'true'
         shell: pwsh
-        run: vcpkg install sqlcipher:x64-windows
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-sqlcipher
+          if ($LASTEXITCODE -ne 0) { throw "pacman failed (exit $LASTEXITCODE)" }
 
-      - name: Save SQLCipher cache
-        if: steps.cache-sqlcipher.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-sqlcipher-x64-windows-v1
-
-      # PowerShell for this step alone: it writes a native Windows path,
-      # where Git Bash would produce `C:\vcpkg/installed/...` and leave
-      # every consumer to cope with the mixed separators. Runs whether the
-      # step above just built sqlcipher.dll or the cache restored it, so
-      # SQLCIPHER_LIB_DIR is set either way.
+      # The name is a wildcard because MSYS2's is libsqlcipher-0.dll,
+      # where vcpkg's was sqlcipher.dll: ariza accepts either and stages
+      # whichever it finds under the canonical name. Asserted rather than
+      # assumed -- a pacman that exits 0 having installed nothing would
+      # otherwise surface as a confusing failure inside `ariza bundle`.
       - name: Locate SQLCipher
         shell: pwsh
         run: |
-          $lib = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows\bin'
-          if (-not (Test-Path (Join-Path $lib 'sqlcipher.dll'))) {
-              throw "vcpkg installed no sqlcipher.dll in $lib"
+          $ErrorActionPreference = 'Stop'
+          $lib = 'C:\msys64\ucrt64\bin'
+          if (-not (Test-Path (Join-Path $lib 'libsqlcipher*.dll'))) {
+              throw "pacman installed no libsqlcipher*.dll in $lib"
           }
           "SQLCIPHER_LIB_DIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -523,11 +526,11 @@ jobs:
     name: smoke the published installer (windows-x86_64)
     needs: publish
     if: startsWith(github.ref, 'refs/tags/')
-    # A plain runner, deliberately: no vcpkg, no setup-raku, nothing this
-    # repository put there. Whatever the bundle needs, the bundle has to
-    # carry -- and this, together with its macOS and Linux siblings above,
-    # is the only coverage that tests that claim against the artefact a
-    # user will actually download.
+    # A plain runner, deliberately: no SQLCipher from any package manager,
+    # no setup-raku, nothing this repository put there. Whatever the
+    # bundle needs, the bundle has to carry -- and this, together with its
+    # macOS and Linux siblings above, is the only coverage that tests that
+    # claim against the artefact a user will actually download.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6

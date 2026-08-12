@@ -2,6 +2,96 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.7  2026-08-12T15:58:10+01:00
+
+    - Fixed, and it is the same class of bug as 0.0.6's missing OpenSSL
+      one level further down: the Windows bundle was built against
+      vcpkg's SQLCipher, which is an MSVC build, which imports
+      `vcruntime140.dll`. That DLL is not part of Windows. It arrives
+      with Visual Studio, with the Visual C++ Redistributable installer,
+      or dragged in by some other application that shipped it --
+      `kernel32.dll` and `ucrtbase.dll` are in System32 on every Windows
+      10 machine ever installed, and `vcruntime140.dll` is on none of
+      them by default. So the bundle loaded on the machine that built
+      it, loaded on every CI runner, loaded on most developer laptops,
+      and refused to load on a clean install, which is the only machine
+      a bundle exists for. Every machine likely to notice was a machine
+      where it was invisible; the release lane in particular could not
+      have caught it, because a GitHub runner has the redistributable.
+      The Windows lane now installs MSYS2's
+      `mingw-w64-ucrt-x86_64-sqlcipher` instead, which imports
+      `ucrtbase.dll` -- the UCRT, which Windows 10 and later ship.
+    - Added: the redistributable gate. `PE-REDIST-DLLS` and
+      `pe-redist-dll` name the family -- `vcruntime*.dll`, `msvcp*.dll`,
+      `concrt*.dll`, `vcomp*.dll` -- and the PE audit now reports any
+      staged file that imports one the bundle does not carry. They stay
+      on `PE-SYSTEM-DLLS`, so nothing copies one in: they are
+      Microsoft's to redistribute, on Microsoft's terms, and app-local
+      deployment of them is a decision that belongs to whoever signs the
+      release rather than to ariza. The finding carries the whole
+      argument -- the clean-machine consequence, the UCRT-built library
+      that makes the question go away, and the fact that carrying the
+      runtime yourself satisfies the check too -- because the person
+      reading it has just watched the bundle work. `ucrtbase.dll` is
+      deliberately not in the family, which is the entire reason a UCRT
+      build is the answer and not another instance of the question.
+    - Added: Windows sourcing accepts either package manager's name for
+      the library. vcpkg's port produces `sqlcipher.dll` and MSYS2's
+      produces `libsqlcipher-0.dll`, so the canonical name wins where it
+      is found -- per directory, in priority order, matched
+      case-insensitively as the loader matches it -- and where no
+      directory holds it the search widens to `libsqlcipher*.dll`,
+      newest first by the same numeric-aware comparison the Linux pass
+      uses for EPEL's renamed soname. Whatever is found is staged under
+      the canonical name, which is safe for exactly the reason the Linux
+      rename is: `LoadLibrary` resolves a DLL by the leaf name on disk
+      and never consults the module's internal name, just as `dlopen`
+      never consults `DT_SONAME`. `origin` records what was actually
+      found, so the manifest never quietly renames anything.
+    - Added: MSYS2 to the Windows search. `MSYSTEM_PREFIX/bin` first
+      (whichever environment the shell is in), then a `VCPKG_ROOT` tree,
+      then `C:\msys64\ucrt64\bin` and `C:\msys64\mingw64\bin`. vcpkg is
+      still probed rather than dropped -- a machine that has only that
+      should build rather than stop -- and the audit above is what
+      refuses to ship the result.
+    - Changed: the Windows CI lane lost three steps and a cache. The
+      vcpkg port was a fifteen-minute source build, which is why the
+      lane carried an actions/cache restore/save pair wrapped around it;
+      the MSYS2 package is prebuilt, so both are gone and the install is
+      one `pacman` call against the MSYS2 that every windows runner
+      already has at `C:\msys64`. `-Sy` refreshes the package databases
+      first, deliberately: the runner image's copy is as old as the
+      image and MSYS2's mirrors keep only current versions, so a stale
+      database sends pacman after a file that is no longer there.
+    - Docs: the README is now about using ariza, and the reasoning that
+      produced it moved to docs/design.md. One document was doing both
+      jobs -- a section per verb interleaved with the ELF and PE
+      walk-and-copy arguments, the vcruntime analysis and the no-mirror
+      ruling -- so someone looking up `--sqlcipher-archive` read three
+      pages about DT_SONAME on the way. docs/Readme.rakudoc is
+      usage-first now: synopsis, what a build machine needs, a quick
+      start, one section per verb with its options and a worked example,
+      then reference material -- the bundle layout with what each
+      directory is for, the complete annotated ariza.toml schema, the
+      pin file, platform slugs, where SQLCipher comes from, what the
+      generated installers and workflows do, and an environment index
+      covering the five variables ariza reads while building, the five
+      its launcher exports to the app, the two the installers honour and
+      the three the test suite takes. Inline rationale survives only
+      where it changes what a user does -- smoke runs with a replaced
+      environment, so a bundle cannot pass by borrowing your shell's.
+      Nothing was deleted: every relocated paragraph is in
+      docs/design.md, organised as a design record and date-stamped
+      against the release that produced each ruling, from 0.0.1's
+      one-distribution-mechanism decision through 0.0.6's PE dependency
+      walk to this release's redistributable gate.
+    - Fixed: App::Ariza::CI's Pod still described the Windows build lane
+      as `vcpkg install sqlcipher:x64-windows`, which this release's
+      lane template replaced with MSYS2's UCRT package for the reason
+      the same release's audit now enforces. Corrected in both the lane
+      description and SEE ALSO, since a Pod that names the wrong package
+      manager is how the next person reintroduces an MSVC build.
+
 0.0.6  2026-08-12T11:45:28+01:00
 
     - Fixed, and this is the one that was actually breaking Windows:

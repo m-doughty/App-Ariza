@@ -11,6 +11,12 @@ unit class App::Ariza::Native;
 #   lib     — the file the loader opens, and the name it is staged under
 #   alias   — the second name the loader may ask for, symlinked (or Str)
 #
+# `lib` is the name the staged copy gets, which is not always the name
+# the source file had: EPEL renames the Linux soname per version, and
+# MSYS2 calls the Windows DLL `libsqlcipher-0.dll` where vcpkg calls it
+# `sqlcipher.dll`. Both searches widen past the canonical name and both
+# stage under it — see the Pod on why that rename is safe.
+#
 # Every slug App::Ariza::Platform knows is here, because SQLCipher is now
 # taken from the machine ariza is building on rather than from a
 # published archive: there is no per-slug availability question left to
@@ -66,14 +72,39 @@ my constant @LINUX-LIB-DIRS =
 my constant @VCPKG-TRIPLETS =
     'x64-windows', 'arm64-windows', 'x64-windows-static-md';
 
+# Where MSYS2 puts the DLLs of a `mingw-w64-<env>-*` package, for a
+# default installation. `MSYSTEM_PREFIX` is consulted first and names
+# whichever environment the shell is actually in; these are the two
+# fallbacks worth having, UCRT first because that is the environment
+# ariza wants (see below).
+my constant @MSYS2-BIN-DIRS =
+    'C:\msys64\ucrt64\bin', 'C:\msys64\mingw64\bin';
+
+# What a SQLCipher DLL can be called on Windows once the canonical name
+# has failed. vcpkg's port produces `sqlcipher.dll`; MSYS2's
+# `mingw-w64-ucrt-x86_64-sqlcipher` produces `libsqlcipher-0.dll`, and
+# libtool's naming being what it is, the number will move.
+#
+# This is the Windows spelling of the same widening the Linux search
+# does for EPEL's renamed soname, and it is safe for the same reason:
+# whatever is found is staged under the canonical name, and a DLL is
+# opened by the leaf name on disk. The internal name in a PE's export
+# directory is no more consulted by `LoadLibrary` than `DT_SONAME` is by
+# `dlopen`.
+#
+# Matched case-insensitively, because the loader is and because a
+# Windows bundle is routinely assembled on a case-sensitive filesystem.
+my constant WINDOWS-LIB-GLOB = 'libsqlcipher*.dll';
+
 # A library big enough that reading it whole to look for a version
 # string is no longer a cheap probe. SQLCipher is ~1MB; this is three
 # orders of magnitude of headroom before the probe quietly gives up.
 my constant PROBE-MAX-BYTES = 64 * 1024 * 1024;
 
 #| The environment variable naming a directory that holds the SQLCipher
-#| library, checked on every platform and required on Windows, where
-#| there is no package manager ariza can drive.
+#| library, checked on every platform and the one Windows CI actually
+#| uses: ariza probes MSYS2 and vcpkg by itself, but a lane that has just
+#| installed the package knows exactly where it went.
 our constant SQLCIPHER-DIR-ENV = 'SQLCIPHER_LIB_DIR';
 
 #| The SQLCipher version a library reports about itself, or the undefined
@@ -250,6 +281,50 @@ my sub natural-cmp(Str:D $a, Str:D $b --> Order) {
     Order::Same
 }
 
+#| The parenthetical the manifest carries when the file found on the
+#| machine was not called what it is going to be staged as — and the
+#| empty string when it was, so nothing is said about a rename that did
+#| not happen.
+#|
+#| The comparison folds case: on Windows two spellings of a name are one
+#| file, and reporting C<SQLCipher.dll> as renamed to C<sqlcipher.dll>
+#| would be noise about nothing.
+my sub staged-as(Str:D $canonical, Str $found --> Str) {
+    !$found.defined || $found.lc eq $canonical.lc
+        ?? ''
+        !! " (staged as $canonical; found as $found)"
+}
+
+#| A SQLCipher DLL in one of C<@dirs>, as C<(IO::Path, matched)> — or
+#| the empty list when there is none.
+#|
+#| The canonical name wins outright, in the directory order given, and
+#| is matched the way Windows matches it (C<find-beside>: exactly if it
+#| can, case-insensitively otherwise). Only where no directory holds it
+#| does the search widen to C<WINDOWS-LIB-GLOB>, and then the newest
+#| match by a numeric-aware comparison of the filename is taken — the
+#| same rule, and the same ordering trap, as the Linux C<:$glob> pass.
+my sub windows-lib-in(Str:D $name, @dirs --> List) {
+    for @dirs -> $dir {
+        my $exact = find-beside($dir.IO, $name);
+        return ($exact, $exact.basename) with $exact;
+    }
+
+    my @found;
+    for @dirs -> $dir {
+        next unless $dir.IO.d;
+        for $dir.IO.dir -> $entry {
+            next unless $entry.f && !$entry.l
+                     && glob-match($entry.basename.lc, WINDOWS-LIB-GLOB);
+            @found.push($entry);
+        }
+    }
+    return () unless @found;
+
+    my $best = @found.sort({ natural-cmp($^b.basename, $^a.basename) }).head;
+    ($best, $best.basename)
+}
+
 #| Whether a soname names a library a bundle leaves dynamic. Takes a
 #| soname or a path; only the leaf name is considered.
 our sub elf-system-lib(Str:D $soname --> Bool) is export {
@@ -394,6 +469,32 @@ our sub binary-format(IO() $file --> Str) is export {
     Str
 }
 
+# The Visual C++ Redistributable family: the runtime an MSVC-built DLL
+# links against, and the one part of a Windows dependency closure that
+# looks like Windows and is not.
+#
+# `vcruntime140.dll` and friends ship with Visual Studio and with the
+# redistributable installer, not with the OS. A machine that has never
+# had either — a fresh Windows install, which is exactly the machine a
+# bundle exists for — cannot load a DLL that imports one, and the
+# failure is the same silent `LoadLibrary` refusal a missing OpenSSL
+# produces. CI runners all have the redistributable, so the gap is
+# invisible precisely where it would otherwise be caught.
+#
+# These are not copied in (they are Microsoft's to redistribute, on
+# Microsoft's terms, and app-local deployment of them is a decision
+# ariza does not get to make on an author's behalf) and they are not
+# waved through either: the audit reports one that is imported and not
+# in the bundle, and says what to do about it. See "The redistributable
+# gate" in the Pod.
+#
+# The UCRT is deliberately absent: `ucrtbase.dll` is part of Windows 10
+# and later, which is why a UCRT-built library is the fix rather than
+# another instance of the problem.
+our constant PE-REDIST-DLLS =
+    'vcruntime*.dll', 'msvcp*.dll', 'concrt*.dll', 'vcomp*.dll',
+;
+
 # The DLLs a Windows bundle must NOT carry a copy of: Windows' own, the
 # Visual C++ redistributable, and the API-set stubs the loader maps out
 # of the OS itself. Everything else is fair game, and gets copied in —
@@ -428,9 +529,10 @@ our constant PE-SYSTEM-DLLS =
     'secur32.dll',
     # Text, media and device stacks.
     'dwrite.dll', 'usp10.dll', 'winmm.dll', 'avrt.dll', 'avicap32.dll',
-    # The C runtimes: the OS's own, the UCRT, and the Visual C++
-    # redistributable — which is a prerequisite, not a payload.
-    'msvcrt.dll', 'ucrtbase.dll', 'vcruntime*.dll', 'msvcp*.dll',
+    # The C runtimes: the OS's own, the UCRT (Windows 10 and later ship
+    # it in System32), and the Visual C++ redistributable — which is a
+    # prerequisite rather than a payload, and is audited as one.
+    'msvcrt.dll', 'ucrtbase.dll', |PE-REDIST-DLLS,
     # The API sets, which are not files on disk at all: the loader
     # resolves them out of the OS.
     'api-ms-win-*.dll', 'ext-ms-*.dll',
@@ -453,13 +555,30 @@ my constant PE-LFANEW      = 0x3C;      # in the DOS header
 my constant PE32-MAGIC     = 0x010B;
 my constant PE32PLUS-MAGIC = 0x020B;
 
+#| The leaf of an imported DLL name, folded — how the loader compares
+#| two spellings of one file, and how both skiplist tests below do.
+my sub pe-leaf(Str:D $name --> Str) {
+    $name.split('/').tail.split('\\').tail.lc
+}
+
 #| Whether an imported DLL name is one Windows itself provides, and so
 #| one a bundle neither carries nor audits. Takes a name or a path; only
 #| the leaf is considered, and the comparison is case-insensitive because
 #| the loader's is (C<KERNEL32.dll> and C<kernel32.dll> are one file).
 our sub pe-system-dll(Str:D $name --> Bool) is export {
-    my $leaf = $name.split('/').tail.split('\\').tail.lc;
-    so PE-SYSTEM-DLLS.first({ glob-match($leaf, $_) })
+    so PE-SYSTEM-DLLS.first({ glob-match(pe-leaf($name), $_) })
+}
+
+#| Whether an imported DLL name belongs to the Visual C++
+#| Redistributable — the runtime an MSVC build links against, which is
+#| not part of Windows and which no clean machine has.
+#|
+#| Every one of these is also on C<PE-SYSTEM-DLLS>, so nothing copies
+#| one in; this is the second, narrower question the audit asks about
+#| the same names. Takes a name or a path, folds case, as its sibling
+#| does.
+our sub pe-redist-dll(Str:D $name --> Bool) is export {
+    so PE-REDIST-DLLS.first({ glob-match(pe-leaf($name), $_) })
 }
 
 my sub pe-die(IO::Path $file, Str:D $why) {
@@ -721,8 +840,8 @@ method sqlcipher-rel(Str:D :$slug! --> Str) {
 #|   1. C<:$archive> — C<--sqlcipher-archive>, which beats everything.
 #|   2. C<SQLCIPHER_LIB_DIR> — a directory the operator named.
 #|   3. the platform's package manager: a Homebrew keg (or bottle) on
-#|      macOS, the distribution's library on Linux, a vcpkg tree on
-#|      Windows.
+#|      macOS, the distribution's library on Linux, an MSYS2 prefix or a
+#|      vcpkg tree on Windows.
 #|
 #| Both explicit forms bypass the cross-build guard, because a human
 #| naming a file has said which platform it is for; the package-manager
@@ -751,15 +870,23 @@ method sqlcipher-source(
 
     my $named = (%env{SQLCIPHER-DIR-ENV} // '').trim;
     if $named.chars {
-        my $lib = $named.IO.add(%l<lib>);
+        # Windows is the one family whose library has more than one name
+        # in circulation, so it is the one family whose named directory
+        # is searched rather than indexed. Everywhere else the canonical
+        # name is the only name.
+        my ($lib, $found) = %l<family> eq 'windows'
+            ?? windows-lib-in(%l<lib>, [$named])
+            !! ($named.IO.add(%l<lib>), %l<lib>);
         # An operator who names a directory has ruled out every other
         # source; falling through to a different library when the named
         # one is absent would stage something they did not ask for.
         die "ariza: {SQLCIPHER-DIR-ENV}=$named holds no {%l<lib>}"
+          ~ (%l<family> eq 'windows' ?? " (nor any {WINDOWS-LIB-GLOB})" !! '')
           ~ " — it must name the directory containing the SQLCipher library"
-            unless $lib.f;
+            unless $lib.defined && $lib.f;
         return %( kind => 'library', path => real-file($lib), version => Str,
-                  origin => "{SQLCIPHER-DIR-ENV}: {$lib.absolute}" );
+                  origin => "{SQLCIPHER-DIR-ENV}: {$lib.absolute}"
+                          ~ staged-as(%l<lib>, $found) );
     }
 
     die "ariza: SQLCipher for '$slug' cannot be taken from this machine"
@@ -773,7 +900,7 @@ method sqlcipher-source(
     given %l<family> {
         when 'macos'   { self!sqlcipher-from-brew(%l<lib>, :&run) }
         when 'linux'   { self!sqlcipher-from-system(%l<lib>, :&run, :@search) }
-        when 'windows' { self!sqlcipher-from-vcpkg(%l<lib>, :%env, :@search) }
+        when 'windows' { self!sqlcipher-from-windows(%l<lib>, :%env, :@search) }
         default { die "ariza: no SQLCipher sourcing strategy for '$slug'" }
     }
 }
@@ -846,12 +973,10 @@ method !sqlcipher-from-system(Str:D $lib-name, :&run!, :@search --> Hash) {
     my ($path, $how, $found) = self!find-system-lib($lib-name, :&run, :@dirs,
                                                      :glob('libsqlcipher*.so*'));
     with $path {
-        my $renamed = $found.defined && $found ne $lib-name;
         return %( kind => 'library', path => real-file($_), version => Str,
                   origin => "system library: {.absolute}"
                           ~ ($how eq 'ldconfig' ?? ' (ldconfig)' !! '')
-                          ~ ($renamed ?? " (staged as $lib-name; found as $found)"
-                                      !! '') );
+                          ~ staged-as($lib-name, $found) );
     }
 
     die "ariza: no $lib-name on this machine.\n"
@@ -862,23 +987,64 @@ method !sqlcipher-from-system(Str:D $lib-name, :&run!, :@search --> Hash) {
       ~ "    Looked in: {@dirs.join(', ')}";
 }
 
-#| Windows: a vcpkg tree, named by C<VCPKG_ROOT> or by
-#| C<SQLCIPHER_LIB_DIR> (which C<sqlcipher-source> has already tried).
-method !sqlcipher-from-vcpkg(Str:D $lib-name, :%env!, :@search --> Hash) {
-    my @dirs = @search || self!vcpkg-dirs(%env);
+#| Windows: an MSYS2 environment's C<bin>, or a vcpkg tree named by
+#| C<VCPKG_ROOT> — C<SQLCIPHER_LIB_DIR>, which beats both, having already
+#| been tried by C<sqlcipher-source>.
+#|
+#| Directory order is priority order, and within a directory the
+#| canonical C<sqlcipher.dll> beats any C<libsqlcipher*.dll> variant. The
+#| label the manifest records comes from which list answered, so
+#| C<origin> still says where the bytes came from rather than only where
+#| they are.
+method !sqlcipher-from-windows(Str:D $lib-name, :%env!, :@search --> Hash) {
+    my @dirs = @search
+        ?? @search.map({ 'directory' => ~$_ })
+        !! self!windows-dirs(%env);
 
     for @dirs -> $dir {
-        my $lib = $dir.IO.add($lib-name);
-        return %( kind => 'library', path => real-file($lib), version => Str,
-                  origin => "vcpkg: {$lib.absolute}" )
-            if $lib.f;
+        my ($lib, $found) = windows-lib-in($lib-name, [$dir.value]);
+        with $lib {
+            return %( kind => 'library', path => real-file($_), version => Str,
+                      origin => "{$dir.key}: {.absolute}"
+                              ~ staged-as($lib-name, $found) );
+        }
     }
 
-    die "ariza: no $lib-name on this machine.\n"
-      ~ "    Windows has no package manager ariza drives for SQLCipher: build"
-      ~ " or install it (vcpkg) and point {SQLCIPHER-DIR-ENV} at the directory"
-      ~ " holding $lib-name, or pass --sqlcipher-archive=FILE.\n"
-      ~ "    Looked in: {@dirs ?? @dirs.join(', ') !! "nowhere — VCPKG_ROOT is unset"}";
+    die "ariza: no $lib-name (nor any {WINDOWS-LIB-GLOB}) on this machine.\n"
+      ~ "    Install MSYS2's UCRT build —"
+      ~ " `pacman -S mingw-w64-ucrt-x86_64-sqlcipher`, which is prebuilt and"
+      ~ " links against the ucrtbase.dll Windows itself ships — or build the"
+      ~ " vcpkg port, then point {SQLCIPHER-DIR-ENV} at the directory holding"
+      ~ " the DLL. Or pass --sqlcipher-archive=FILE.\n"
+      ~ "    Looked in: {@dirs.map(*.value).join(', ')}";
+}
+
+#| The directories a Windows build looks in, as C<< label => path >>
+#| pairs, in priority order: whichever MSYS2 environment this shell is
+#| in, a vcpkg tree under C<VCPKG_ROOT>, then MSYS2's default prefixes.
+#|
+#| MSYS2 comes first on purpose. Its C<mingw-w64-ucrt-x86_64-*> packages
+#| are built against the UCRT, whose C<ucrtbase.dll> is part of Windows
+#| 10 and later; vcpkg's are built with MSVC and import
+#| C<vcruntime140.dll>, which is B<not> — it arrives with the Visual C++
+#| Redistributable, which a clean machine has no reason to have. Both are
+#| still probed, because a machine that has only vcpkg's should build
+#| rather than stop; the PE audit is what refuses to ship the result.
+method !windows-dirs(%env --> List) {
+    my @dirs;
+
+    # Set by MSYS2's own shells, and by `msys2.cmd`/`setup-msys2`: the
+    # prefix of the environment in use, e.g. C:\msys64\ucrt64.
+    my $prefix = (%env<MSYSTEM_PREFIX> // '').trim;
+    @dirs.push('msys2' => $prefix.IO.add('bin').absolute) if $prefix.chars;
+
+    my $root = (%env<VCPKG_ROOT> // '').trim;
+    @dirs.append(@VCPKG-TRIPLETS.map({
+        'vcpkg' => $root.IO.add('installed').add($_).add('bin').absolute
+    })) if $root.chars;
+
+    @dirs.append(@MSYS2-BIN-DIRS.map({ 'msys2' => $_ }));
+    @dirs.List
 }
 
 #| Where a library with this leaf name lives on this machine, as
@@ -942,12 +1108,6 @@ method !find-system-lib(Str:D $name, :&run!, :@dirs, Str :$glob --> List) {
     return () unless @found;
     my $best = @found.sort({ natural-cmp($^b<name>, $^a<name>) }).head;
     ($best<path>, $best<how>, $best<name>)
-}
-
-method !vcpkg-dirs(%env --> List) {
-    my $root = (%env<VCPKG_ROOT> // '').trim;
-    return () unless $root.chars;
-    @VCPKG-TRIPLETS.map({ $root.IO.add('installed').add($_).add('bin').absolute }).List
 }
 
 #| Put SQLCipher into the bundle: source it, place it, make it
@@ -1378,15 +1538,41 @@ our sub pe-strays(Str:D $report, :@inside = () --> List) is export {
         next unless $name.chars;
         # The inspector has already dropped these; a hand-written report
         # (a test, a future inspector) should not be judged differently.
-        next if pe-system-dll($name);
+        # The redistributable family is the exception: it is on the
+        # skiplist so that nothing copies it in, and judged anyway.
+        my $redist = pe-redist-dll($name);
+        next if pe-system-dll($name) && !$redist;
         unless $path.chars && $path ne 'not found' {
-            @strays.push("$name => not found");
+            @strays.push($redist ?? redist-finding($name, 'not found')
+                                 !! "$name => not found");
             next;
         }
         next unless @inside;
-        @strays.push($line) unless path-inside($path, @inside);
+        unless path-inside($path, @inside) {
+            @strays.push($redist ?? redist-finding($name, $path) !! $line);
+        }
     }
     @strays.unique.List
+}
+
+#| What the audit says about an imported Visual C++ runtime the bundle
+#| does not carry: the consequence, and both ways out of it.
+#|
+#| Spelled out in full rather than left to the failure's closing
+#| sentence, because this finding contradicts what the person reading it
+#| just saw with their own eyes — the bundle worked on the machine that
+#| built it, and it worked on the CI runner, because both of those have
+#| the redistributable installed. Nothing but the whole explanation is
+#| going to be believed.
+my sub redist-finding(Str:D $name, Str:D $where --> Str) {
+    "$name => $where (Visual C++ Redistributable: not part of Windows and"
+  ~ " not in the bundle, so this file loads only on a machine that has"
+  ~ " installed it — which every CI runner has and a clean install does"
+  ~ " not. Use a UCRT-built library instead: MSYS2's"
+  ~ " mingw-w64-ucrt-x86_64-* packages import ucrtbase.dll, which Windows"
+  ~ " has shipped since Windows 10. Or put $name in the bundle yourself —"
+  ~ " it is Microsoft's to redistribute, so ariza will not copy it in for"
+  ~ " you.)"
 }
 
 #| The report the PE audit judges: every non-system import of a staged
@@ -1401,8 +1587,15 @@ our sub pe-strays(Str:D $report, :@inside = () --> List) is export {
 #|
 #| The path is resolved before it is reported, so a link pointing out of
 #| the bundle is judged by where it goes rather than by where it sits.
+#|
+#| The Visual C++ runtime is reported too, though it is on the skiplist:
+#| it is the one family of names that is neither shipped by Windows nor
+#| copied in by ariza, so "where did it resolve" is a question worth
+#| asking about it. See C<redist-finding>.
 my sub pe-report(IO::Path $file --> Str) {
-    pe-imports($file).grep({ !pe-system-dll($_) }).map(-> $name {
+    my @judged = pe-imports($file)
+        .grep({ !pe-system-dll($_) || pe-redist-dll($_) });
+    @judged.map(-> $name {
         my $found = find-beside($file.parent, $name);
         "$name => " ~ ($found.defined
             ?? ((try { $found.resolve.absolute }) // $found.absolute)
@@ -1613,6 +1806,11 @@ say pe-imports('sqlcipher.dll'.IO);
 say pe-imports('sqlcipher.dll'.IO).grep({ !pe-system-dll($_) });
 # (libcrypto-3-x64.dll)
 
+# ...with one family on that skiplist the audit judges anyway, because
+# Windows does not actually ship it:
+say pe-redist-dll('vcruntime140.dll');      # True
+say pe-redist-dll('ucrtbase.dll');          # False — that one is the OS
+
 =end code
 
 =head1 DESCRIPTION
@@ -1706,13 +1904,42 @@ the machine that built it. Absent is a die naming
 C<dnf install sqlcipher>, C<apt install libsqlcipher0> and
 C<apk add sqlcipher-libs>, and C<--sqlcipher-archive>.
 
-=item2 B<Windows> — a vcpkg tree under C<VCPKG_ROOT>, since there is no
-package manager here ariza can drive. Absent is a die naming
+=item2 B<Windows> — an MSYS2 environment's C<bin> (C<MSYSTEM_PREFIX>,
+then C<C:\msys64\ucrt64\bin> and C<C:\msys64\mingw64\bin>) and a vcpkg
+tree under C<VCPKG_ROOT>, in that order. Absent is a die naming
+C<pacman -S mingw-w64-ucrt-x86_64-sqlcipher>, vcpkg,
 C<SQLCIPHER_LIB_DIR> and C<--sqlcipher-archive>. Whichever directory
 answers, it is more than where the DLL is found: it is also the search
-space for everything that DLL imports (see below), because a vcpkg port
-installs its whole runtime closure into one
-C<installed/E<lt>tripletE<gt>/bin>.
+space for everything that DLL imports (see below), because both package
+managers install a port's whole runtime closure into one directory
+(C<installed/E<lt>tripletE<gt>/bin>, C<ucrt64/bin>).
+
+MSYS2 is preferred, and the reason is C<vcruntime140.dll>. vcpkg builds
+with MSVC, so its C<sqlcipher.dll> imports the Visual C++ runtime, which
+is B<not> part of Windows: it arrives with the Visual C++
+Redistributable, which every CI runner and every developer machine has
+and a clean install has not. MSYS2's C<mingw-w64-ucrt-x86_64-*> packages
+import C<ucrtbase.dll> instead, which Windows 10 and later ship in
+C<System32>. They are also prebuilt, which removes the fifteen-minute
+source build the vcpkg lane needed and the cache it needed to avoid it.
+"The redistributable gate" below is what happens if an MSVC-built
+library is staged anyway.
+
+The two package managers do not agree on what the library is called,
+either: vcpkg's port produces C<sqlcipher.dll> and MSYS2's produces
+C<libsqlcipher-0.dll>. So the canonical name wins where it is found —
+per directory, in priority order, matched case-insensitively as the
+loader matches it — and where no directory holds it the search widens to
+C<libsqlcipher*.dll>, newest first by the same numeric-aware comparison
+the Linux pass uses (C<-3.34.> above C<-3.9.>, which a string sort gets
+backwards). C<origin> names what was actually found.
+
+Whatever is found is staged under the canonical C<sqlcipher.dll>, and
+that rename is safe for exactly the reason the Linux one is:
+C<LoadLibrary> resolves a DLL by the leaf name on disk and never
+consults the module's internal name in its export directory, just as
+C<dlopen> never consults C<DT_SONAME>. A C<libsqlcipher-0.dll> staged as
+C<sqlcipher.dll> loads as if it had been built under that name.
 
 =head2 A system library only fits the system it came from
 
@@ -1879,13 +2106,17 @@ C<install_name_tool>, no C<patchelf>, nothing to re-sign.
 
 The search space for the copy is one directory: the one the staged
 library itself came from. That is a contract with the source rather than
-a shortcut. vcpkg installs a port's whole runtime closure into a single
-C<bin>, so C<sqlcipher.dll>'s OpenSSL is the C<libcrypto-3-x64.dll>
-sitting next to it — and searching wider (C<PATH>, C<System32>) would
-find a same-named DLL from a different build of a different version,
-which is the bug a bundle exists to avoid rather than a fallback worth
-having. An import that is not in that directory is fatal, and the death
-names the import, the directory, and the two things it could mean.
+a shortcut. Both Windows package managers install a port's whole runtime
+closure into a single C<bin> — vcpkg's
+C<installed/E<lt>tripletE<gt>/bin>, MSYS2's C<ucrt64/bin> — so
+C<sqlcipher.dll>'s OpenSSL is the C<libcrypto-3-x64.dll> sitting next to
+it, and an MSYS2 build's C<libgcc_s_seh-1.dll> and
+C<libwinpthread-1.dll> are there too. Searching wider (C<PATH>,
+C<System32>) would find a same-named DLL from a different build of a
+different version, which is the bug a bundle exists to avoid rather than
+a fallback worth having. An import that is not in that directory is
+fatal, and the death names the import, the directory, and the two things
+it could mean.
 
 Unlike the ELF pass, this one needs no host of its own. Reading a PE's
 imports needs no Windows, so a Windows bundle assembled from
@@ -1987,6 +2218,50 @@ Windows verdict is as strong from a Mac as it is on the machine the
 bundle is for — which is the opposite of the ELF story, and worth saying
 because the platforms are usually assumed to rank the other way round.
 
+=head3 The redistributable gate
+
+One family of names is on the skiplist and audited anyway:
+C<vcruntime*.dll>, C<msvcp*.dll>, C<concrt*.dll> and C<vcomp*.dll> —
+C<PE-REDIST-DLLS>, the Visual C++ Redistributable.
+
+They look like Windows and they are not. C<kernel32.dll> and
+C<ucrtbase.dll> are in C<System32> on every Windows 10 machine ever
+installed; C<vcruntime140.dll> arrives with Visual Studio, or with the
+redistributable installer, or dragged in by some other application that
+shipped it. A DLL importing one loads on the machine that built it, on
+every CI runner, and on most developer laptops — and fails on a clean
+install with the same wordless C<LoadLibrary> refusal a missing OpenSSL
+gives. It is the exact shape of gap this audit exists to close, made
+worse by the fact that every machine likely to run the audit is a
+machine where the gap is invisible.
+
+So an import from that family which does not resolve inside the bundle
+is a finding, and the finding carries the whole argument — consequence,
+and both ways out — rather than a bare path, because the reader has just
+watched the bundle work:
+
+=begin code :lang<console>
+
+vcruntime140.dll => not found (Visual C++ Redistributable: not part of
+Windows and not in the bundle, so this file loads only on a machine that
+has installed it — which every CI runner has and a clean install does
+not. Use a UCRT-built library instead: ...)
+
+=end code
+
+The fix ariza recommends is the source, not the copy: an MSYS2
+C<mingw-w64-ucrt-x86_64-*> library imports C<ucrtbase.dll> and the
+question does not arise. Putting the runtime in the bundle by hand also
+satisfies the audit — the check is "not in the bundle", not "never
+imported" — but ariza will not copy it in on an author's behalf. It is
+Microsoft's to redistribute, on Microsoft's terms, and app-local
+deployment of it is a decision that belongs to whoever signs the
+release.
+
+The UCRT itself is deliberately not in this family. C<ucrtbase.dll> is
+part of the OS, which is the entire reason a UCRT build is the answer
+rather than another instance of the question.
+
 =head2 The verdict functions are pure, and the tool call is a seam
 
 C<macho-strays>, C<elf-strays> and C<pe-strays> take B<report text> and
@@ -2019,9 +2294,10 @@ C<{ kind, path, origin, version }>. C<kind> is C<'library'> or
 C<'archive'>.
 
 C<:$host-slug> is the machine's own slug (the cross-build guard),
-C<:%env> the environment C<SQLCIPHER_LIB_DIR> and C<VCPKG_ROOT> are read
-from, C<:&run> the process runner every C<brew> and C<ldconfig> call
-goes through, and C<:@search> replaces the directories probed. Together
+C<:%env> the environment C<SQLCIPHER_LIB_DIR>, C<MSYSTEM_PREFIX> and
+C<VCPKG_ROOT> are read from, C<:&run> the process runner every C<brew>
+and C<ldconfig> call goes through, and C<:@search> replaces the
+directories probed (on Linux and on Windows both). Together
 they make every platform's resolution — and every death message —
 reachable from a test on any machine.
 
@@ -2071,12 +2347,18 @@ with it: an empty answer for an unreadable file would pass both callers
 pass exists to remove. Delay-load imports (data directory 13) are not
 read; the Pod above says why.
 
-=head2 elf-system-lib(Str --> Bool) / pe-system-dll(Str --> Bool)
+=head2 elf-system-lib(Str --> Bool) / pe-system-dll(Str --> Bool) / pe-redist-dll(Str --> Bool)
 
 The skiplist membership tests: whether a soname or an imported DLL name
 is one the platform provides and a bundle must therefore not carry.
-C<pe-system-dll> folds case, because the Windows loader does. Both take
-a name or a path and consider only the leaf. Exported.
+C<pe-system-dll> folds case, because the Windows loader does. All three
+take a name or a path and consider only the leaf. Exported.
+
+C<pe-redist-dll> is the narrower second question, asked of names that
+are already on the skiplist: whether this is the Visual C++
+Redistributable, which is neither shipped by Windows nor copied in by
+ariza, and which the audit therefore reports when it does not resolve
+inside the bundle. "The redistributable gate" above says why.
 
 =head2 elf-needed(Str --> List) / ldd-deps(Str --> List)
 
