@@ -673,7 +673,7 @@ subtest 'ldd output is read as soname => path', {
 };
 
 subtest 'the ELF audit asks the loader too, when it is standing on one', {
-    plan 7;
+    plan 9;
 
     my $static = q:to/OUT/.trim;
          0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
@@ -726,6 +726,26 @@ subtest 'the ELF audit asks the loader too, when it is standing on one', {
     is-deeply elf-strays($static).List, (),
         'and a report with neither section is the static half, which is'
       ~ ' all a Mac can honestly say about an ELF';
+
+    # The Windows failure this normalisation fixes: `ldd`-style output
+    # resolves to a native-separator path (`C:\...\native\sqlcipher\...`)
+    # while `:@inside` is forward-slashed, and a byte-for-byte prefix
+    # check calls a bundled dependency a stray.
+    my $win-inside = "\tlibcrypto.so.3 => C:\\b\\native\\sqlcipher\\libcrypto.so.3 (0x1)\n"
+                    ~ "\tlibc.so.6 => /lib64/libc.so.6 (0x2)";
+    is-deeply elf-strays(report('$ORIGIN', $win-inside), :inside(['C:/b'])).List, (),
+        'a dependency resolved with native (backslash) separators, against'
+      ~ ' a forward-slashed :@inside prefix, still counts as contained';
+
+    # The same normalisation must not blur a genuine escape: a backslash
+    # path pointing well outside the bundle is still a finding.
+    my @win-outside = elf-strays(
+        report('$ORIGIN', "\tlibcrypto.so.3 => C:\\Windows\\System32\\libcrypto.so.3 (0x1)"),
+        :inside(['C:/b']));
+    is-deeply @win-outside.List,
+        ('libcrypto.so.3 => C:\\Windows\\System32\\libcrypto.so.3',),
+        'and a backslash-separated dependency resolving outside :@inside'
+      ~ ' is still reported, separators aside';
 };
 
 subtest 'formats are read from the file, not from `file`', {

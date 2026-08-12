@@ -276,7 +276,9 @@ our sub ldd-deps(Str:D $ldd-output --> List) is export {
 #| environment: every non-system dependency must resolve to a path under
 #| one of C<:@inside> (the bundle), and C<not found> is a finding. With
 #| no C<:@inside> given, containment cannot be judged and only
-#| C<not found> is reported.
+#| C<not found> is reported. The comparison is separator-normalised, so
+#| a resolved target and an C<:@inside> prefix spelled with opposite
+#| path separators still agree.
 our sub elf-strays(Str:D $report, :@inside = () --> List) is export {
     my (@static, @rpath, @ldd);
     my %have;
@@ -325,8 +327,20 @@ our sub elf-strays(Str:D $report, :@inside = () --> List) is export {
                 next;
             }
             next unless @inside;
+            # `ldd`-style resolution hands back a target spelled in the
+            # host's native path separators (backslashes, on Windows),
+            # while `:@inside`'s prefixes may not share that spelling —
+            # they can arrive already forward-slashed (as, for instance,
+            # App::Ariza::Resources always returns them). Containment is
+            # a path-identity question, not a byte question, so both
+            # sides are normalised to forward slashes before the prefix
+            # check. (A Windows drive letter can also differ in case,
+            # `c:` vs `C:`; that has not been the cause of a failure
+            # here, so it is left alone rather than folding case for a
+            # normalisation this narrow.)
+            my $target = $dep.value.subst('\\', '/', :g);
             @strays.push("{$dep.key} => {$dep.value}")
-                unless @inside.first({ $dep.value.starts-with($_ ~ '/') });
+                unless @inside.first({ $target.starts-with($_.subst('\\', '/', :g) ~ '/') });
         }
     }
 

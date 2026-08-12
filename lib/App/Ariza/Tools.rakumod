@@ -174,6 +174,19 @@ our sub http-download(Str:D $url, IO() $dest) is export {
 our sub sha256-file(IO() $path, :&run = &try-run --> Str) is export {
     die "ariza: cannot digest missing file $path" unless $path.f;
 
+    # An empty file defeats both Windows tools, in different ways.
+    # certutil cannot map a zero-byte file at all and fails outright —
+    # `ERROR_FILE_INVALID`, a documented quirk of the tool rather than a
+    # transient — and sha256sum, given any Windows path (backslash
+    # separators), switches to GNU coreutils' "escaped output" format,
+    # which fuses a leading backslash onto the front of the digest line.
+    # There is exactly one possible answer for empty input, so it is
+    # returned directly rather than run through either.
+    if $path.s == 0 {
+        my $hex = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+        return $hex if $hex ~~ / ^ <[0..9a..f]> ** 64 $ /;
+    }
+
     my @tried;
     for sha256-tools($path) -> %tool {
         my $name = %tool<cmd>.head;
@@ -214,8 +227,17 @@ my sub sha256-tools(IO::Path $path --> List) {
     )
 }
 
-#| C<< <hex>  <path> >>, which is what both sha256sum and shasum print.
-my sub first-word-digest(Str() $out --> Str) { $out.words.head // '' }
+#| C<< <hex>  <path> >>, which is what both sha256sum and shasum print —
+#| except when the path holds a backslash (every path on Windows), where
+#| GNU coreutils switches to its "escaped output" format and fuses a
+#| leading backslash onto the C<hex> that a plain first-word read would
+#| then include and fail to validate. Rather than special-case that
+#| shape, the first 64-character run of lowercase hex anywhere on the
+#| first line wins, with any leading backslash simply not part of it.
+my sub first-word-digest(Str() $out --> Str) {
+    my $line = $out.lines.first(*.chars) // '';
+    $line ~~ / <[0..9a..f]> ** 64 / ?? ~$/ !! '';
+}
 
 #| certutil prints a banner naming the file, the digest, then a
 #| completion line. Older builds space the hex out (C<58 91 b5 …>), so
@@ -401,6 +423,13 @@ failed attempt.
 There is no "skip verification" fallback. Every digest here is either
 gating a cache reuse or being written into a manifest a user may check,
 and both are worse than useless if they can silently be absent.
+
+An empty file never reaches any of the three tools: its digest is a
+constant, and both C<certutil> (which cannot map a zero-byte file —
+C<ERROR_FILE_INVALID>, not a transient) and C<sha256sum> (which, given a
+backslash-separated Windows path, switches to GNU's "escaped output"
+format and fuses a leading backslash onto the digest) mishandle it in
+ways worth not asking them about.
 
 =head2 extract-archive(IO() $archive, IO() $into --> IO::Path)
 

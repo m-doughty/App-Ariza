@@ -140,7 +140,7 @@ subtest 'sha256-file', {
 };
 
 subtest 'sha256-file takes whichever digest tool the machine has', {
-    plan 7;
+    plan 8;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
@@ -181,6 +181,19 @@ subtest 'sha256-file takes whichever digest tool the machine has', {
             %( "shasum -a 256 $abs" => (0, "$hello  $abs\n", '') ),
             :present(%( shasum => True ))))),
         $hello, 'and shasum answers in the same shape';
+
+    # GNU coreutils' "escaped output" format: any path holding a
+    # backslash — every path on Windows — gets a leading backslash fused
+    # onto the digest, and every backslash inside the path doubled. A
+    # parser that anchors the hex at the start of the line misses it
+    # entirely; this is the Windows failure that turned up as
+    # `sha256sum: exit 0, but no digest in its output`.
+    my $escaped = "\\$hello  C:\\\\Users\\\\runner\\\\file\n";
+    is sha256-file($file, :run(fake-run(
+            %( "sha256sum $abs" => (0, $escaped, '') ),
+            :present(%( sha256sum => True ))))),
+        $hello, 'the GNU escaped-output format — a leading backslash fused'
+      ~ ' onto the digest — still parses';
 
     # The Windows failure this fallback exists for: `where` finds a
     # shasum that is a Perl script with no interpreter association, and
