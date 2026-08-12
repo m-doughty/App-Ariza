@@ -48,9 +48,21 @@ method tag(--> Str) {
 #| C<< <64 hex>  <filename> >>. A line that is not dies naming the file
 #| and the line, rather than being skipped — a skipped pin is an
 #| unverified download, and this file exists to make that impossible.
+#|
+#| C<slurp> and then split, never C<< $path.lines >>. That reads the
+#| whole file and closes the handle before a single line is examined,
+#| which matters because this method's contract is to B<die> part way
+#| through a malformed file: C<< IO::Path.lines >> hands back a lazy
+#| sequence whose handle is closed when the sequence is exhausted, and
+#| a C<die> on line two of ten exhausts nothing. On POSIX the leaked
+#| handle is invisible; on Windows the file cannot then be deleted at
+#| all — C<Failed to delete file: resource busy or locked> — so a caller
+#| that cleans up after itself fails instead of the parse it was
+#| testing. A pin file is a few hundred bytes; there is nothing to
+#| stream.
 method pins(IO() $path = resource(PINS-RESOURCE) --> Hash) {
     my %pins;
-    for $path.lines.kv -> $i, $line {
+    for $path.slurp.lines.kv -> $i, $line {
         my $text = $line.trim;
         next unless $text.chars;
         next if $text.starts-with('#');

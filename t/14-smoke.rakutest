@@ -286,7 +286,7 @@ subtest 'the manifest has to be the right shape, not merely parseable', {
 };
 
 subtest 'the compiled Windows launcher is checked when it is there', {
-    plan 6;
+    plan 7;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
@@ -325,12 +325,21 @@ subtest 'the compiled Windows launcher is checked when it is there', {
         'saying what it launches from instead';
 
     # And a POSIX bundle is never asked about a thing it cannot have.
+    # This one is also the only case in the suite where the HOST and the
+    # bundle's platform disagree, which is an ordinary thing to be doing
+    # — the platform comes from the manifest so that an archive can be
+    # checked anywhere — and is what catches host-specific questions
+    # being asked of it. The executable bit is one: a Windows host has
+    # no such bit to read, and `.x` there throws rather than answering.
     my %posix = App::Ariza::Smoke.smoke(
         :archive(pack(fake-bundle($dir.add('posix'), :smoke([]),
                                   :platform<linux-x86_64-glibc>))),
         :work-dir($dir), :!verbose);
     nok checks-by-name(%posix)<runner>:exists,
         'while a POSIX bundle has no such check at all';
+    ok checks-by-name(%posix)<launcher><ok>,
+        'and its launcher check answers on any host, asking about the'
+      ~ ' executable bit only where there is one to read';
 };
 
 subtest 'a {exec} command is run through the executable as well as the script', {

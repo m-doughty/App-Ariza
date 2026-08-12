@@ -166,13 +166,37 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
     my $win  = (%manifest<platform> // '').starts-with('windows');
 
     my $launcher = $root.add('bin').add($exec ~ ($win ?? '.cmd' !! ''));
+
+    # Whether the executable bit is a question worth asking. It takes
+    # both a POSIX bundle to have one and a POSIX host to answer, and
+    # the two are separate facts: `ariza smoke` reads the platform from
+    # the manifest rather than from the machine, precisely so an archive
+    # can be checked anywhere, which means a Windows box inspecting a
+    # Linux bundle is an ordinary thing to be doing.
+    #
+    # A POSIX bundle unpacked on Windows has no executable bit to find —
+    # NTFS has no such bit and tar cannot set one — so asserting on it
+    # there would fail every time for a bundle that is perfectly sound.
+    # And `.x` on Windows does not return False, it THROWS: MoarVM's
+    # `file-stat` syscall never populates the stat object's filename,
+    # and its Windows `stat-is-executable` reads that filename to find
+    # the extension to compare against PATHEXT, so the call comes back
+    # as `rindex search target requires a concrete string, but got
+    # null`. Either reason alone is enough not to ask.
+    # `.x` is asked only of a file that is already known to be there:
+    # on a missing path it throws ("Failed to find … while trying to do
+    # '.x'") rather than answering False.
+    my $present        = $launcher.f;
+    my $bit-answerable = !$win && !$*DISTRO.is-win;
+    my $executable     = !$bit-answerable || ($present && $launcher.x);
     @checks.push({
         name => 'launcher',
-        ok => ($launcher.f && ($win || $launcher.x)),
-        detail => $launcher.f
-            ?? ($win || $launcher.x ?? "bin/{$launcher.basename}"
-                                    !! "bin/{$launcher.basename} is not executable")
-            !! "missing bin/{$launcher.basename}",
+        ok => ($present && $executable),
+        detail => do {
+            if    !$present    { "missing bin/{$launcher.basename}" }
+            elsif !$executable { "bin/{$launcher.basename} is not executable" }
+            else               { "bin/{$launcher.basename}" }
+        },
     });
 
     # The compiled Windows launcher, when the bundle carries one. Its
@@ -455,7 +479,13 @@ object with a name. That last one is not paranoia. A Raku C<{ }> literal
 whose body starts with a C<.method> call is parsed as a I<Block>, and a
 Block of pairs serialises as an array of one-key objects — producing a
 manifest that parses, reads plausibly, and lists nothing at all.
-=item1 B<launcher> — C<< bin/<exec> >> exists and is executable.
+=item1 B<launcher> — C<< bin/<exec> >> exists, and is executable where
+that is a question anyone can answer: it takes both a POSIX bundle to
+have an executable bit and a POSIX host to read one. The platform comes
+from the manifest rather than from the machine — that is what lets an
+archive be checked anywhere — so a Windows box inspecting a Linux
+bundle is ordinary, and there the bit is absent from the filesystem
+rather than absent from the bundle.
 =item1 B<runner> — Windows only: C<< bin/<exec>.exe >> and its
 C<< bin/<exec>.ariza >> sidecar. Their B<absence> passes and says so —
 a bundle built before the first runner release was pinned launches from

@@ -84,7 +84,7 @@ subtest 'the tag and the URL come from the shipped resources', {
 };
 
 subtest 'the pin file is read strictly, because a skipped pin is an unverified download', {
-    plan 5;
+    plan 6;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
@@ -104,6 +104,17 @@ subtest 'the pin file is read strictly, because a skipped pin is an unverified d
     throws-like { App::Ariza::Runner.pins($path) }, Exception,
         message => /'line 2'/,
         'a line that is neither a comment nor an entry dies naming it';
+
+    # Dying part way through a file is exactly when a lazy read leaks
+    # its handle: `IO::Path.lines` closes when the sequence is
+    # exhausted, and a die on line two exhausts nothing. POSIX does not
+    # care -- an unlinked-but-open file just goes away -- so this
+    # assertion is here to fail on Windows, where the leak makes the
+    # file undeletable and would otherwise blow up in a LEAVE block
+    # several assertions later, naming nothing useful.
+    lives-ok { $path.unlink },
+        'and the file it refused can be deleted afterwards, so no handle'
+      ~ ' was left open on it';
 
     is +App::Ariza::Runner.pins(write-file($dir.add('empty.txt'), '')), 0,
         'while an empty file is simply no pins';
