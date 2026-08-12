@@ -2,6 +2,81 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.2  2026-08-12T03:02:19+01:00
+    - Every Windows CI failure across the suite's first two runs on a
+      real Windows machine was a genuine portability bug rather than a
+      test being fussy, and four of them were in lib/. All are fixed
+      below; the fixes are fixture-tested from every platform.
+    - `sha256-file` now falls through instead of stopping at the first
+      tool that disappoints it. sha256sum, `shasum -a 256` and
+      `certutil -hashfile` are each tried in turn, and absence, an
+      unspawnable binary, a non-zero exit and output that holds no digest
+      are all "try the next one"; only an exhausted list dies, naming
+      what every attempt did. The Windows failure this fixes: a GitHub
+      runner has a `shasum` on PATH that is a Perl script with no
+      interpreter association, so `where` finds it and CreateProcess
+      refuses it -- which took down every digest on the machine, and with
+      it t/08, t/09 and t/11 mid-file, while certutil sat untried behind
+      it. certutil stays last because Linux distributions ship an
+      unrelated NSS tool of that name; being last means its refusal is
+      simply one more failed attempt. There is still no "skip
+      verification" path. `sha256-file` takes the usual `:&run` seam now,
+      so the output parsers -- including certutil's banner, its
+      upper-case hex and the spaced-out byte pairs older builds print --
+      are covered by unit tests on machines that have never seen one.
+    - `resource-list` returns forward-slash paths on every platform. In a
+      checkout it walks the filesystem, and `.absolute` speaks the native
+      separator, so Windows was handing back `templates\ci\...` for what
+      is a META6 `resources` key -- the string that gets fed back through
+      `resource` and compared against the manifest, and forward-slash by
+      the packaging spec. Normalised at the one seam where the filesystem
+      is consulted, so a checkout and an installed run agree.
+    - New .gitattributes declaring `* -text`. The golden files in t/ are
+      compared byte for byte, read with `slurp(:bin)` precisely so a
+      line-ending difference cannot be shrugged off; Windows CI images
+      set `core.autocrlf=true`, which rewrote every LF golden on checkout
+      and failed t/12, t/15 and t/16 against output that was rendered
+      correctly. `-text` turns conversion off in both directions, which
+      also preserves the goldens that are deliberately CRLF -- the
+      Windows launcher twins and the PowerShell installers, which exist
+      because cmd.exe mis-parses an LF-only batch file. The templates
+      those goldens are rendered from are covered by the same rule: a
+      template rewritten on checkout would silently change what ariza
+      ships. The three golden comparisons now also diag when the only
+      difference is CRLF, so a stale working tree says so instead of
+      printing two identical-looking scripts.
+    - Test fixtures that spoke POSIX now speak whatever the platform
+      does. t/01 and t/09 and t/12 normalise the separator before
+      comparing a relative path against the bundle-internal spelling it
+      is asserting about; t/14 derives its expected environment values
+      from the same IO::Path it hands the code under test, since a bare
+      `/b` acquires a drive letter on Windows and the assertion is that
+      the environment names the bundle root rather than that it spells it
+      the way macOS would; t/08 writes its digest fixtures as bytes,
+      because a digest is a statement about exact bytes and a text write
+      is entitled to opinions about line endings.
+    - `sha256-file` no longer asks any tool to hash an empty file; the
+      SHA-256 of empty input is a constant, and both certutil and
+      sha256sum answer it badly. certutil cannot map a zero-byte file at
+      all and fails outright (`ERROR_FILE_INVALID`, a documented quirk of
+      the tool rather than a transient), and sha256sum, given a Windows
+      path (backslash separators), switches to GNU coreutils' "escaped
+      output" format, fusing a leading backslash onto the digest -- which
+      a parser anchoring the hex at the start of the line then misses
+      entirely, reading "exit 0, but no digest in its output". The digest
+      parser is fixed too, independent of the short-circuit: it now takes
+      the first 64-character run of lowercase hex anywhere on the line,
+      so a leading backslash simply isn't part of the match.
+    - The Linux ELF audit's containment check normalises both sides of
+      the comparison to forward slashes before deciding whether a
+      resolved dependency lands inside the bundle. `ldd`-style resolution
+      hands back a target spelled in the host's native separators, while
+      the `:@inside` bundle-root prefixes may not share that spelling --
+      and on Windows CI a bundled `libcrypto.so.3` resolving to a path
+      genuinely inside `native/sqlcipher` was flagged as a stray purely
+      because one side had backslashes and the other did not.
+      Containment is a path-identity question, not a byte question.
+
 0.0.1  2026-08-12T02:13:21+01:00
     - The Windows release lane caches SQLCipher instead of building it
       from vcpkg on every run. `actions/cache/restore@v4` restores
