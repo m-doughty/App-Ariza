@@ -49,13 +49,17 @@ subtest 'resource() finds every shipped file', {
     my @unresolvable = @declared.grep({ !(try resource($_).f) });
     is-deeply @unresolvable.List, (), 'every declared resource resolves';
 
+    # `.absolute` speaks the native separator — backslashes on Windows —
+    # while META6 `resources` keys are forward-slash by spec. Normalise
+    # here, at the one seam, so the prefix strip and every comparison
+    # against the declared list stay portable.
     my @on-disk = gather {
         my @queue = $root;
         while @queue {
             my $d = @queue.shift;
             for $d.dir -> $e { $e.d ?? @queue.push($e) !! take $e }
         }
-    }.map({ .absolute.substr($root.absolute.chars + 1) }).sort;
+    }.map({ .absolute.substr($root.absolute.chars + 1).subst('\\', '/', :g) }).sort;
     is-deeply @on-disk.grep({ !@declared.first($_) }).List, (),
         'and every file in resources/ is declared in META6';
 };

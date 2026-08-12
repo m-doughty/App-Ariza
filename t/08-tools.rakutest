@@ -3,12 +3,32 @@ use Test;
 
 use App::Ariza::Tools;
 
-plan 8;
+plan 9;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-tools-{$*PID}-{(^1_000_000).pick}");
     $dir.mkdir;
     $dir;
+}
+
+#| A `try-run` stand-in. `which`/`where` answers from %present — Windows
+#| asks with `where`, everything else with `which` — and every other
+#| command line from %answers, keyed by the whole argv joined with
+#| spaces. An unlisted command answers the way try-run reports one that
+#| cannot be spawned.
+sub fake-run(%answers, :%present) {
+    -> @cmd, |c {
+        # No `return` in here: `->` makes a Block, and returning from one
+        # outside its enclosing sub's dynamic scope is a crash.
+        if @cmd.head eq 'which' | 'where' {
+            %present{@cmd[1]}
+                ?? (0, "/usr/bin/{@cmd[1]}\n", '')
+                !! (1, '', '')
+        }
+        else {
+            %answers{@cmd.join(' ')} // (-1, '', "could not run '{@cmd.head}'")
+        }
+    }
 }
 
 subtest 'ensure-dir creates, and refuses to pretend a file is a directory', {
@@ -100,20 +120,92 @@ subtest 'sha256-file', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
+    # Written as bytes, not as text: a digest is a statement about exact
+    # bytes, and a text write is entitled to have opinions about line
+    # endings on the platform it runs on.
     my $file = $dir.add('known');
-    $file.spurt("hello\n");
+    $file.spurt("hello\n".encode('utf8'));
     is sha256-file($file),
         '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03',
         'matches the known digest of "hello\n"';
 
     my $empty = $dir.add('empty');
-    $empty.spurt('');
+    $empty.spurt(Buf.new);
     is sha256-file($empty),
         'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
         'and of the empty file';
 
     throws-like { sha256-file($dir.add('absent')) }, Exception,
         message => /'cannot digest missing file'/, 'a missing file is named';
+};
+
+subtest 'sha256-file takes whichever digest tool the machine has', {
+    plan 7;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $file = $dir.add('known');
+    $file.spurt("hello\n".encode('utf8'));
+    my $abs = $file.absolute;
+    my $hello =
+        '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03';
+
+    # Windows' own tool, which is the only one a machine without Git Bash
+    # or Strawberry Perl has. It prints a banner naming the file, the
+    # digest in upper case, then a completion line — and, being a Windows
+    # program, ends every one of those lines with CRLF.
+    my $certutil = "SHA256 hash of $abs:\r\n"
+                 ~ $hello.uc ~ "\r\n"
+                 ~ "CertUtil: -hashfile command completed successfully.\r\n";
+
+    is sha256-file($file, :run(fake-run(
+            %( "certutil -hashfile $abs SHA256" => (0, $certutil, '') ),
+            :present(%( certutil => True ))))),
+        $hello, 'certutil, lowercased from the upper-case hex it prints';
+
+    # Older builds space the hex out in byte pairs. Same digest.
+    my $spaced = "SHA256 hash of $abs:\r\n"
+               ~ $hello.uc.comb(2).join(' ') ~ "\r\n"
+               ~ "CertUtil: -hashfile command completed successfully.\r\n";
+    is sha256-file($file, :run(fake-run(
+            %( "certutil -hashfile $abs SHA256" => (0, $spaced, '') ),
+            :present(%( certutil => True ))))),
+        $hello, 'certutil with the hex spaced out in pairs';
+
+    is sha256-file($file, :run(fake-run(
+            %( "sha256sum $abs" => (0, "$hello  $abs\n", '') ),
+            :present(%( sha256sum => True, shasum => True, certutil => True ))))),
+        $hello, 'sha256sum wins when it is there';
+
+    is sha256-file($file, :run(fake-run(
+            %( "shasum -a 256 $abs" => (0, "$hello  $abs\n", '') ),
+            :present(%( shasum => True ))))),
+        $hello, 'and shasum answers in the same shape';
+
+    # The Windows failure this fallback exists for: `where` finds a
+    # shasum that is a Perl script with no interpreter association, and
+    # CreateProcess refuses it. Stopping at the first tool that is
+    # *present* took the digest down with certutil sitting behind it.
+    is sha256-file($file, :run(fake-run(
+            %( "shasum -a 256 $abs" => (-1, '', "could not run 'shasum'"),
+               "certutil -hashfile $abs SHA256" => (0, $certutil, '') ),
+            :present(%( shasum => True, certutil => True ))))),
+        $hello, 'a tool that is on PATH but cannot be spawned is not the end of it';
+
+    # Nor is one that exits zero having said something else entirely,
+    # which is what an unrelated tool wearing a familiar name does — the
+    # NSS `certutil` on Linux, asked for a `-hashfile` it never had.
+    is sha256-file($file, :run(fake-run(
+            %( "sha256sum $abs" => (0, "usage: sha256sum [OPTION]...\n", ''),
+               "shasum -a 256 $abs" => (0, "$hello  $abs\n", '') ),
+            :present(%( sha256sum => True, shasum => True ))))),
+        $hello, 'nor is one whose output holds no digest at all';
+
+    throws-like {
+        sha256-file($file, :run(fake-run(%(), :present(%()))))
+    }, Exception, message => /'could not compute a sha256 digest' .* 'certutil'/,
+        'and a machine with none of them dies naming every attempt,'
+      ~ ' because an unverified artefact is worse than a failed build';
 };
 
 subtest 'extract-archive handles tar.gz and refuses what it cannot read', {

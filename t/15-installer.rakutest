@@ -138,8 +138,16 @@ subtest 'the rendered installers match their golden files', {
         # Read as bytes: IO::Handle normalises CRLF to LF in text mode, so
         # a text slurp would silently agree with an LF-only PowerShell
         # script -- the one thing the golden file is there to catch.
-        is $text, $golden.slurp(:bin).decode('utf8'),
+        my $expected = $golden.slurp(:bin).decode('utf8');
+        my $matched = is $text, $expected,
             "{%s<output>} renders byte-for-byte as committed";
+        # A difference that is nothing but line endings is git, not
+        # ariza: this distribution ships .gitattributes with `* -text` so
+        # that no checkout rewrites these files, and a working tree
+        # created before that existed still has the converted bytes.
+        diag 'the only difference is CRLF — the golden file was converted'
+           ~ ' on checkout; see .gitattributes'
+            if !$matched && $expected.subst("\r\n", "\n", :g) eq $text;
     }
 
     ok golden-path('install.ps1').f,

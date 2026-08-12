@@ -386,7 +386,7 @@ resource('templates/launcher-posix.sh.j2').slurp;
 resource-list('templates/ci');      # (templates/ci/lane-macos-arm64.yml.j2, …)
 ```
 
-`resource-list` exists because `%?RESOURCES` cannot list a directory — an installed distribution's resources are flat. A checkout reads the working tree, so a file you just created is visible before you have listed it in META6; an installed run enumerates the distribution manifest, so it shows exactly what was packaged. A resource that is missing from both fails loudly, naming the path it tried, because the cause is always the same packaging bug: a file on disk that nobody added to META6 `resources`.
+`resource-list` exists because `%?RESOURCES` cannot list a directory — an installed distribution's resources are flat. A checkout reads the working tree, so a file you just created is visible before you have listed it in META6; an installed run enumerates the distribution manifest, so it shows exactly what was packaged. Either way the paths come back with forward slashes, on Windows as much as anywhere else: these are META6 `resources` keys rather than paths into the filesystem, and the separator is the packaging spec's to choose. A resource that is missing from both fails loudly, naming the path it tried, because the cause is always the same packaging bug: a file on disk that nobody added to META6 `resources`.
 
 COMMANDS
 ========

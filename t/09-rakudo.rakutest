@@ -195,8 +195,11 @@ subtest 'entry points are named per platform', {
     is App::Ariza::Rakudo.raku-bin($root, :slug<windows-x86_64>).basename, 'raku.exe',
         'raku.exe on Windows';
 
+    # `.relative` speaks the native separator, and this is a statement
+    # about the upstream archive's layout rather than about the machine
+    # reading it, so it is compared in the archive's own spelling.
     my $zef = App::Ariza::Rakudo.zef-bin($root, :slug<macos-arm64>);
-    is $zef.relative($root), 'share/perl6/site/bin/zef',
+    is $zef.relative($root).subst('\\', '/', :g), 'share/perl6/site/bin/zef',
        'zef comes from the runtime\'s own site repository';
     is App::Ariza::Rakudo.zef-bin($root, :slug<windows-x86_64>).basename, 'zef.bat',
        'and is the batch wrapper on Windows';

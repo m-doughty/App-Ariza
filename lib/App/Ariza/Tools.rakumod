@@ -150,39 +150,81 @@ our sub http-download(Str:D $url, IO() $dest) is export {
 
 #| The SHA-256 of a file, lowercase hex.
 #|
-#| Probes C<sha256sum>, then C<shasum -a 256>, then Windows'
-#| C<certutil -hashfile>, and dies if none of them is available. There is
-#| deliberately no "skip the check" path: every digest ariza computes is
-#| load-bearing (cache reuse, the bundle manifest), and a silently
-#| unverified artefact is worse than a failed build.
-our sub sha256-file(IO() $path --> Str) is export {
+#| Three tools can answer — C<sha256sum>, C<shasum -a 256> and Windows'
+#| C<certutil -hashfile> — and each is tried in turn until one of them
+#| produces 64 hex characters. A tool that is not installed, cannot be
+#| spawned, exits non-zero, or prints something that is not a digest is
+#| B<not> fatal: the next one is tried, and only an exhausted list dies,
+#| naming what every attempt did.
+#|
+#| Falling through rather than dying on the first stumble is what makes
+#| this work on Windows. A GitHub runner has a C<shasum> on C<PATH> that
+#| is a Perl script with no interpreter association: C<where> finds it,
+#| C<CreateProcess> refuses it, and under a die-on-first-failure chain
+#| that took down every digest on the machine even though C<certutil>
+#| was sitting right behind it.
+#|
+#| There is deliberately no "skip the check" path: every digest ariza
+#| computes is load-bearing (cache reuse, the bundle manifest), and a
+#| silently unverified artefact is worse than a failed build.
+#|
+#| C<:&run> is the same C<try-run> seam the rest of ariza takes, so the
+#| output parsers can be tested without owning every machine they exist
+#| for.
+our sub sha256-file(IO() $path, :&run = &try-run --> Str) is export {
     die "ariza: cannot digest missing file $path" unless $path.f;
 
-    if have-command('sha256sum') {
-        my $out = run-checked(['sha256sum', $path.absolute], :what('sha256sum'));
-        return normalise-digest($out.words.head, $path);
+    my @tried;
+    for sha256-tools($path) -> %tool {
+        my $name = %tool<cmd>.head;
+        unless have-command($name, :&run) {
+            @tried.push("$name: not on PATH");
+            next;
+        }
+        my ($code, $out, $err) = run(%tool<cmd>);
+        if $code != 0 {
+            my $why = ($err || $out).trim.lines.head // 'no output';
+            @tried.push("$name: exit $code ($why)");
+            next;
+        }
+        my $hex = %tool<parse>.($out).lc;
+        return $hex if $hex ~~ / ^ <[0..9a..f]> ** 64 $ /;
+        @tried.push("$name: exit 0, but no digest in its output");
     }
-    if have-command('shasum') {
-        my $out = run-checked(['shasum', '-a', '256', $path.absolute], :what('shasum'));
-        return normalise-digest($out.words.head, $path);
-    }
-    if have-command('certutil') {
-        my $out = run-checked(['certutil', '-hashfile', $path.absolute, 'SHA256'],
-                              :what('certutil'));
-        # certutil prints a banner, the hex (possibly space-separated on
-        # older builds), then a completion line.
-        my $hex = $out.lines.grep({ / ^ [ <[0..9a..fA..F]> \s* ] ** 32..* $ / })
-                      .head // '';
-        return normalise-digest($hex.subst(/\s+/, '', :g), $path);
-    }
-    die "ariza: no sha256 tool found (looked for sha256sum, shasum, certutil)";
+
+    die "ariza: could not compute a sha256 digest for $path\n"
+      ~ @tried.map({ "    $_" }).join("\n");
 }
 
-my sub normalise-digest($raw, IO::Path $path --> Str) {
-    my $hex = ($raw // '').lc;
-    die "ariza: could not read a sha256 digest for $path"
-        unless $hex ~~ / ^ <[0..9a..f]> ** 64 $ /;
-    $hex
+#| The digest tools, in the order they are tried, each paired with the
+#| parser for its output shape.
+my sub sha256-tools(IO::Path $path --> List) {
+    (
+        %( cmd => ['sha256sum', $path.absolute],
+           parse => &first-word-digest ),
+        %( cmd => ['shasum', '-a', '256', $path.absolute],
+           parse => &first-word-digest ),
+        # certutil is Windows' own, present since Vista and the only one
+        # of the three a bare Windows install has. Linux distributions
+        # ship an unrelated NSS tool under the same name; it is last in
+        # the list, so it is only reached when nothing else answered, and
+        # its refusal of these arguments is just another failed attempt.
+        %( cmd => ['certutil', '-hashfile', $path.absolute, 'SHA256'],
+           parse => &certutil-digest ),
+    )
+}
+
+#| C<< <hex>  <path> >>, which is what both sha256sum and shasum print.
+my sub first-word-digest(Str() $out --> Str) { $out.words.head // '' }
+
+#| certutil prints a banner naming the file, the digest, then a
+#| completion line. Older builds space the hex out (C<58 91 b5 …>), so
+#| the first line that is nothing but hex and whitespace wins and the
+#| whitespace is squeezed out. Its CRLF line endings need no handling:
+#| a CRLF is one grapheme to Raku and C<.lines> splits on it.
+my sub certutil-digest(Str() $out --> Str) {
+    ($out.lines.grep({ / ^ [ <[0..9a..fA..F]> \s* ] ** 32..* $ / }).head // '')
+        .subst(/\s+/, '', :g)
 }
 
 #| Extract a `.tar.gz`/`.tgz` or `.zip` archive into an existing-or-created
@@ -336,13 +378,29 @@ failure.
 
 =head1 FILES
 
-=head2 sha256-file(IO() --> Str)
+=head2 sha256-file(IO(), :&run --> Str)
 
-Lowercase hex digest. Probes C<sha256sum>, C<shasum -a 256> and
-C<certutil -hashfile> in that order, and dies if none exists. There is
-no "skip verification" fallback. Every digest here is
-either gating a cache reuse or being written into a manifest a user may
-check, and both are worse than useless if they can silently be absent.
+Lowercase hex digest. C<sha256sum>, C<shasum -a 256> and
+C<certutil -hashfile> are tried in that order until one of them returns
+64 hex characters.
+
+Every kind of failure falls through to the next tool: absent from
+C<PATH>, unspawnable, non-zero exit, or output that is not a digest.
+Only an exhausted list dies, and it names what each attempt did. That is
+not defensiveness for its own sake — it is what makes Windows work. A
+GitHub runner has a C<shasum> on C<PATH> that is a Perl script with no
+interpreter association, so C<where> finds it and C<CreateProcess>
+refuses it; stopping there took down every digest on the machine while
+C<certutil>, which Windows has always had, went untried.
+
+C<certutil> is last for the opposite reason: Linux distributions ship an
+unrelated NSS tool under that name, and being last means it is only
+reached when nothing else answered, where its refusal is simply one more
+failed attempt.
+
+There is no "skip verification" fallback. Every digest here is either
+gating a cache reuse or being written into a manifest a user may check,
+and both are worse than useless if they can silently be absent.
 
 =head2 extract-archive(IO() $archive, IO() $into --> IO::Path)
 

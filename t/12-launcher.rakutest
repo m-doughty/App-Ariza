@@ -102,7 +102,15 @@ subtest 'the rendered launchers match their golden files', {
             golden-path($slug, %s<suffix> || '.sh').slurp(:bin).decode('utf8')
         }).join("\n----\n");
 
-        is $joined, $expected, "$slug renders byte-for-byte as committed";
+        my $matched = is $joined, $expected,
+            "$slug renders byte-for-byte as committed";
+        # A difference that is nothing but line endings is git, not
+        # ariza: this distribution ships .gitattributes with `* -text` so
+        # that no checkout rewrites these files, and a working tree
+        # created before that existed still has the converted bytes.
+        diag 'the only difference is CRLF — the golden file was converted'
+           ~ ' on checkout; see .gitattributes'
+            if !$matched && $expected.subst("\r\n", "\n", :g) eq $joined;
     }
 
     ok golden-path('windows-x86_64', '.cmd').f,
@@ -180,7 +188,13 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
 
     is +@written, 1, 'one launcher for macOS';
-    is @written[0].relative($dir), 'bin/moneymoor', 'at bin/<exec>';
+    # `.relative` speaks the native separator, so Windows says
+    # `bin\moneymoor` for a launcher written to exactly the right place.
+    # The bundle names this member `bin/<exec>` — that is the archive
+    # path a manifest records and a POSIX sh consumes — so the comparison
+    # is made in the bundle's spelling, not the build machine's.
+    is @written[0].relative($dir).subst('\\', '/', :g), 'bin/moneymoor',
+        'at bin/<exec>';
     # POSIX permission bits, on a platform that has them: a downloaded
     # launcher that is not executable is a support ticket. Windows has no
     # such bit to set, so there is nothing to assert there beyond the

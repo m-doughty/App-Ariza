@@ -94,7 +94,7 @@ subtest 'the scratch directory has a space in its name', {
 };
 
 subtest 'the environment is replaced, not filtered', {
-    plan 5;
+    plan 6;
     temp %*ENV;
     %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
     %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
@@ -106,12 +106,23 @@ subtest 'the environment is replaced, not filtered', {
       ~ ' variable that makes a broken bundle look perfect here';
     ok %env<PATH>:exists, 'PATH is set, so a shebang can find /bin/sh';
 
+    # A stand-in bundle root, and every expectation below derived from
+    # that same IO::Path rather than written out as a POSIX literal:
+    # these variables hold real paths for a real child process, so on
+    # Windows a bare `/b` acquires the current drive letter and native
+    # separators. What is asserted is that the environment names the
+    # bundle root and the manifest's paths beneath it — not that it
+    # spells them the way this machine happens to.
     my $root = '/b'.IO;
+    my $sqlcipher-rel = 'native/sqlcipher/libsqlcipher.so.0';
     my %rt = App::Ariza::Smoke.runtime-env($root,
         { platform => 'linux-x86_64-glibc',
-          components => { sqlcipher => { path => 'native/sqlcipher/libsqlcipher.so.0' } } });
-    is %rt<RAKULIB>, 'inst#/b/site', 'the runtime environment names the bundle';
-    is %rt<DBIISH_SQLCIPHER_LIB>, '/b/native/sqlcipher/libsqlcipher.so.0',
+          components => { sqlcipher => { path => $sqlcipher-rel } } });
+    ok %rt<RAKULIB>.starts-with('inst#'),
+        'RAKULIB names an installation repository, not a -I path';
+    is %rt<RAKULIB>, 'inst#' ~ $root.add('site').absolute,
+        'and it is the bundle\'s own site directory';
+    is %rt<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel).absolute,
         'and on Linux, where the loader needs telling, points at SQLCipher';
 };
 

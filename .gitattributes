@@ -1,0 +1,37 @@
+# Every byte in this distribution is load-bearing, so git converts none
+# of them.
+#
+# `-text` (the text attribute unset, not merely unspecified) turns off
+# end-of-line conversion in both directions: files land in the working
+# tree exactly as they are stored, on every platform, whatever
+# `core.autocrlf` says. It does *not* mark anything as binary -- diffs and
+# merges work as usual.
+#
+# Why this distribution needs it:
+#
+#   * t/golden/ holds rendered launchers, installers and workflows that
+#     the test suite compares byte for byte, reading them with
+#     `slurp(:bin)` precisely so a line-ending difference cannot be
+#     shrugged off. Windows CI images set `core.autocrlf=true`; without
+#     this file every LF golden arrives as CRLF and every one of those
+#     comparisons fails against output that was rendered correctly.
+#
+#   * Some of those goldens -- install.ps1, uninstall.ps1 and the Windows
+#     launcher twins -- are deliberately CRLF, because cmd.exe mis-parses
+#     an LF-only batch file in ways that look nothing like a line-ending
+#     problem. `-text` preserves those exactly too: with conversion off
+#     there is no direction to convert in, so the CRLF files stay CRLF
+#     and the LF files stay LF on a Linux checkout as well.
+#
+#   * resources/templates/ is what those goldens are rendered from. It
+#     survives conversion today only by accident -- a template is read
+#     with a text slurp, which folds CRLF back to LF, and every renderer
+#     re-applies the endings its output needs. The rule covers the
+#     templates anyway, so that nothing has to keep depending on that
+#     accident, and so a resource read as bytes later is safe by
+#     construction.
+#
+# Nothing to do beyond committing this file: attributes are honoured by
+# fresh checkouts (which is what CI does), and files already in the index
+# keep the bytes they were committed with.
+* -text

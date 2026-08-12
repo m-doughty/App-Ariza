@@ -52,7 +52,17 @@ our sub resource-list(Str:D $prefix --> List) is export {
         my $dir = $root.add('resources').add($prefix);
         if $dir.d {
             my $base = $root.add('resources').absolute;
-            return $dir.dir.grep(*.f).map({ .absolute.substr($base.chars + 1) }).sort.List;
+            # These are META6 `resources` keys, not filesystem paths, and
+            # a key is forward-slash by spec on every platform — it is
+            # what gets fed back through `resource` and compared against
+            # the manifest. `.absolute` speaks the native separator, so
+            # Windows would otherwise hand back `templates\ci\...` here
+            # and nowhere else. Normalise at this one seam, where the
+            # filesystem is consulted, so a checkout and an installed run
+            # return identical strings.
+            return $dir.dir.grep(*.f).map({
+                .absolute.substr($base.chars + 1).subst('\\', '/', :g)
+            }).sort.List;
         }
     }
     declared-resources()
@@ -178,6 +188,13 @@ much later as something inexplicable ("malformed TOML in
 The sorted, distribution-relative paths of every resource file directly
 under C<$prefix> (one level; subdirectories are not descended into).
 Returns an empty list for a prefix with no resources.
+
+The paths come back with B<forward slashes on every platform>, including
+Windows. They are META6 C<resources> keys — the strings you hand back to
+C<resource>, and the strings the manifest is written with — rather than
+paths into the filesystem, so the separator is fixed by the packaging
+spec and not by the machine. The checkout branch walks a real directory
+and normalises before returning.
 
 In a checkout this is a directory read, so a file you have just created
 shows up before you have listed it in META6. Installed, it comes from

@@ -170,8 +170,16 @@ subtest 'the rendered workflows match their golden files', {
 
         # Read as bytes: IO::Handle normalises CRLF to LF in text mode,
         # and a workflow file is LF whatever machine wrote it.
-        is $text, $golden.slurp(:bin).decode('utf8'),
+        my $expected = $golden.slurp(:bin).decode('utf8');
+        my $matched = is $text, $expected,
             "{%w<output>} renders byte-for-byte as committed";
+        # A difference that is nothing but line endings is git, not
+        # ariza: this distribution ships .gitattributes with `* -text` so
+        # that no checkout rewrites these files, and a working tree
+        # created before that existed still has the converted bytes.
+        diag 'the only difference is CRLF — the golden file was converted'
+           ~ ' on checkout; see .gitattributes'
+            if !$matched && $expected.subst("\r\n", "\n", :g) eq $text;
     }
 
     # `${{ ... }}` is GitHub's own syntax and is meant to survive; a bare
