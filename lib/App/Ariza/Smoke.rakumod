@@ -46,8 +46,20 @@ method runtime-env(IO() $root, %manifest --> Hash) {
         NOTCURSES_NATIVE_DATA_DIR => $root.add('native').absolute,
     ;
     with %manifest<components><sqlcipher><path> -> $rel {
-        unless (%manifest<platform> // '').starts-with('macos') {
-            my $lib = $root.add($rel);
+        my $platform = %manifest<platform> // '';
+        my $lib = $root.add($rel);
+        if $platform.starts-with('windows') {
+            # Windows has no loader-time library path — a DLL is found
+            # by walking PATH, the same way the launcher templates do it.
+            # base-env's own Windows PATH *is* %*ENV<PATH> verbatim (see
+            # above), so prepending onto that here — rather than onto
+            # whatever base-env computed — lands on the same value while
+            # keeping this method self-contained.
+            %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
+            %env<PATH> = $lib.parent.absolute
+                ~ (%*ENV<PATH> ?? ';' ~ %*ENV<PATH> !! '');
+        }
+        elsif !$platform.starts-with('macos') {
             %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
             %env<LD_LIBRARY_PATH> = $lib.parent.absolute;
         }
@@ -364,9 +376,12 @@ ability to set up its own world.
 A command that starts with C<{raku}> drives the bundled interpreter
 directly. It is standing in for code running I<inside> the app, so it
 additionally gets exactly what the launcher would have exported —
-C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR>, and on Linux the SQLCipher
-variables. Without that it would be testing the absence of a launcher
-rather than the bundle.
+C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR>, and the SQLCipher variables:
+C<LD_LIBRARY_PATH> on Linux, and on Windows a C<PATH> prepended with the
+DLL's directory, since that is how Windows resolves a library by name.
+C<DBIISH_SQLCIPHER_LIB> is set on both, exactly as the launcher templates
+set it. Without any of that it would be testing the absence of a
+launcher rather than the bundle.
 
 =head2 Placeholders
 

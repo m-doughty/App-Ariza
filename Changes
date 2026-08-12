@@ -2,6 +2,22 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.5  2026-08-12T10:44:52+01:00
+
+    - Fixed: `App::Ariza::Smoke.runtime-env` never gave a Windows
+      `{raku}` smoke command SQLCipher's location, so it died with
+      "DBDish::SQLCipher needs 'sqlcipher.dll', not found" even though
+      the DLL was staged correctly and the launcher templates already
+      set the same two variables. Windows resolves a DLL off `PATH`
+      rather than a linker environment variable, so `runtime-env` now
+      prepends the bundle's `native/sqlcipher` onto `PATH` and sets
+      `DBIISH_SQLCIPHER_LIB` to the DLL's absolute path there, mirroring
+      what `launcher-windows.ps1.j2` / `launcher-windows.cmd.j2` already
+      export before exec'ing raku (those templates needed no change —
+      verified against their goldens). t/14-smoke.rakutest gained
+      Windows-slug assertions for `runtime-env` alongside the existing
+      Linux ones.
+
 0.0.4  2026-08-12T10:05:02+01:00
     - Fixed: bundling for Windows died before it got near zef --
       `App::Ariza::Rakudo.zef-bin` assumed a `zef.bat` in the runtime's

@@ -94,7 +94,7 @@ subtest 'the scratch directory has a space in its name', {
 };
 
 subtest 'the environment is replaced, not filtered', {
-    plan 6;
+    plan 9;
     temp %*ENV;
     %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
     %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
@@ -124,6 +124,21 @@ subtest 'the environment is replaced, not filtered', {
         'and it is the bundle\'s own site directory';
     is %rt<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel).absolute,
         'and on Linux, where the loader needs telling, points at SQLCipher';
+
+    # Windows resolves a DLL by name off PATH rather than a linker
+    # variable, so it gets a different pair of exports — the same ones
+    # the launcher templates set.
+    my $sqlcipher-rel-win = 'native/sqlcipher/sqlcipher.dll';
+    my %rt-win = App::Ariza::Smoke.runtime-env($root,
+        { platform => 'windows-x86_64',
+          components => { sqlcipher => { path => $sqlcipher-rel-win } } });
+    is %rt-win<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel-win).absolute,
+        'on Windows, the same verbatim-path preload';
+    ok %rt-win<PATH>.contains($root.add($sqlcipher-rel-win).parent.absolute),
+        'with the DLL\'s directory prepended onto PATH, because that is'
+      ~ ' how Windows finds it';
+    nok %rt-win<LD_LIBRARY_PATH>:exists,
+        'and none of the POSIX-only variable, which means nothing there';
 };
 
 subtest 'macOS gets no SQLCipher variables, because it does not need them', {
