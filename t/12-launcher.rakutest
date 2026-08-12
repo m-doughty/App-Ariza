@@ -21,9 +21,9 @@ sub config(--> App::Ariza::Config) {
     my $dir = tmp-dir;
     $dir.add('ariza.toml').spurt(q:to/TOML/);
     [app]
-    name = "App::Moneymoor"
-    exec = "moneymoor"
-    display = "Moneymoor"
+    name = "App::ExampleApp"
+    exec = "exampleapp"
+    display = "Example App"
     TOML
     my $cfg = App::Ariza::Config.load($dir);
     rm-rf($dir);
@@ -37,8 +37,8 @@ my $CFG = config();
 sub ctx(Str $slug --> Hash) {
     App::Ariza::Launcher.context(
         :config($CFG), :$slug,
-        :target<site/bin/moneymoor.raku>,
-        :app-version<0.2.0>,
+        :target<site/bin/exampleapp.raku>,
+        :app-version<9.9.9>,
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
     )
 }
@@ -142,7 +142,7 @@ subtest 'the POSIX launcher does what a bundle needs', {
     nok @code.first(/'NOTCURSES_NATIVE_LIB_DIR'/),
         'never via LIB_DIR, which suppresses the TERMINFO_DIRS setup';
 
-    ok $sh.contains('exec "$ARIZA_RAKU" "$BUNDLE_ROOT/site/bin/moneymoor.raku" "$@"'),
+    ok $sh.contains('exec "$ARIZA_RAKU" "$BUNDLE_ROOT/site/bin/exampleapp.raku" "$@"'),
         'and it execs the bundled interpreter on the installed script';
 
     # A quoting slip here is a bundle that only works from a path with no
@@ -172,7 +172,7 @@ subtest 'macOS and Linux differ in exactly one place', {
 
     my $none = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
         |App::Ariza::Launcher.context(:config($CFG), :slug<linux-x86_64-glibc>,
-                                      :target<site/bin/moneymoor.raku>));
+                                      :target<site/bin/exampleapp.raku>));
     nok $none.contains('DBIISH_SQLCIPHER_LIB'),
         'an app that does not use SQLCipher gets no SQLCipher wiring at all';
 };
@@ -183,18 +183,18 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
     LEAVE { rm-rf($dir) }
 
     my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<macos-arm64>, :target<site/bin/moneymoor.raku>,
-        :app-version<0.2.0>,
+        :slug<macos-arm64>, :target<site/bin/exampleapp.raku>,
+        :app-version<9.9.9>,
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
     my @written = %w<written>.list;
 
     is +@written, 1, 'one launcher for macOS';
     # `.relative` speaks the native separator, so Windows says
-    # `bin\moneymoor` for a launcher written to exactly the right place.
+    # `bin\exampleapp` for a launcher written to exactly the right place.
     # The bundle names this member `bin/<exec>` — that is the archive
     # path a manifest records and a POSIX sh consumes — so the comparison
     # is made in the bundle's spelling, not the build machine's.
-    is @written[0].relative($dir).subst('\\', '/', :g), 'bin/moneymoor',
+    is @written[0].relative($dir).subst('\\', '/', :g), 'bin/exampleapp',
         'at bin/<exec>';
     # POSIX permission bits, on a platform that has them: a downloaded
     # launcher that is not executable is a support ticket. Windows has no
@@ -220,10 +220,10 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
     # thing in `write` that would otherwise reach the network. Its
     # behaviour has its own file; what is asserted here is the wiring.
     my %win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>,
+        :slug<windows-x86_64>, :target<site/bin/exampleapp.raku>,
         :stage-runner(-> |c { %() }));
     is %win<written>.map(*.basename).List,
-        ('moneymoor.ps1', 'moneymoor.cmd', 'moneymoor.ariza'),
+        ('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza'),
         'and Windows gets both twins plus the runner\'s sidecar';
 };
 
@@ -269,9 +269,9 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     # any of them mean. This is the same environment the .cmd launcher
     # sets, expressed as instructions rather than as batch.
     is directives($side).List, (
-        'target site\bin\moneymoor.raku',
-        'app-exec moneymoor',
-        'app-display Moneymoor',
+        'target site\bin\exampleapp.raku',
+        'app-exec exampleapp',
+        'app-display Example App',
         'set RAKULIB=inst#{root}\site',
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
@@ -300,11 +300,11 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     # design — a future recipe adds lines here and no new executable.
     my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
         |App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
-                                      :target<site/bin/moneymoor.raku>));
+                                      :target<site/bin/exampleapp.raku>));
     is directives($none).List, (
-        'target site\bin\moneymoor.raku',
-        'app-exec moneymoor',
-        'app-display Moneymoor',
+        'target site\bin\exampleapp.raku',
+        'app-exec exampleapp',
+        'app-display Example App',
         'set RAKULIB=inst#{root}\site',
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
@@ -315,7 +315,7 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
     my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>,
+        :slug<windows-x86_64>, :target<site/bin/exampleapp.raku>,
         :stage-runner(-> :$bundle-dir, :$slug, :$exec {
             my $exe = $bundle-dir.IO.add('bin').add("$exec.exe");
             $exe.spurt('MZ');
@@ -324,7 +324,7 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
                sha256 => 'a' x 64 );
         }));
     is %w<written>.map(*.basename).List,
-        ('moneymoor.ps1', 'moneymoor.cmd', 'moneymoor.ariza', 'moneymoor.exe'),
+        ('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza', 'exampleapp.exe'),
         'a staged runner is written into bin/ beside its sidecar and reported';
 
     # What the runner step found is carried out of `write` rather than

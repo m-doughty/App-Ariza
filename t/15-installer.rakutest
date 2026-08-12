@@ -22,25 +22,25 @@ sub config(Str $toml --> App::Ariza::Config) {
     App::Ariza::Config.load($dir);
 }
 
-# The same values App-Moneymoor's manifest carries, as a fixture rather
+# The same values App-ExampleApp's manifest carries, as a fixture rather
 # than by reading that repository: the golden files are a statement about
 # ariza's templates, and they should fail when a template changes, not
 # when a sibling app's platform list does.
-my constant MONEYMOOR = q:to/TOML/;
+my constant EXAMPLEAPP = q:to/TOML/;
 [app]
-name = "App::Moneymoor"
-exec = "moneymoor"
-display = "Moneymoor"
+name = "App::ExampleApp"
+exec = "exampleapp"
+display = "Example App"
 
 [bundle]
 platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
 native = ["notcurses", "sqlcipher"]
 
 [installer]
-repo = "m-doughty/App-Moneymoor"
+repo = "example-org/App-ExampleApp"
 TOML
 
-my $CFG = config(MONEYMOOR);
+my $CFG = config(EXAMPLEAPP);
 my %CTX = App::Ariza::Installer.context(:config($CFG));
 
 sub render(Str $template --> Str) {
@@ -98,21 +98,21 @@ subtest 'an app gets the installers its platforms justify', {
     is App::Ariza::Installer.scripts-for($posix-only).map(*.<output>).List,
         ('install.sh', 'uninstall.sh'), 'and a POSIX-only app no install.ps1';
 
-    is App::Ariza::Installer.env-url($CFG), 'MONEYMOOR_BUNDLE_URL',
+    is App::Ariza::Installer.env-url($CFG), 'EXAMPLEAPP_BUNDLE_URL',
         'the source override is named after the executable';
 };
 
 subtest 'the context carries the app, not the machine that rendered it', {
     plan 6;
 
-    is %CTX<repo>, 'm-doughty/App-Moneymoor', 'the repository releases come from';
-    is %CTX<raw_base>, 'https://raw.githubusercontent.com/m-doughty/App-Moneymoor/main',
+    is %CTX<repo>, 'example-org/App-ExampleApp', 'the repository releases come from';
+    is %CTX<raw_base>, 'https://raw.githubusercontent.com/example-org/App-ExampleApp/main',
         'and where the one-liner reads the scripts from';
     is %CTX<slugs>, 'macos-arm64 linux-x86_64-glibc',
         'POSIX slugs are a shell word list';
     is %CTX<slugs_ps>, "'windows-x86_64'",
         'and Windows ones a PowerShell array literal, since PowerShell has no word splitting';
-    is %CTX<env_url_expr>, '"${MONEYMOOR_BUNDLE_URL:-}"',
+    is %CTX<env_url_expr>, '"${EXAMPLEAPP_BUNDLE_URL:-}"',
         'the override is a whole expansion: the shell cannot expand a variable another names';
 
     # An installer is downloaded onto someone else's machine, so nothing

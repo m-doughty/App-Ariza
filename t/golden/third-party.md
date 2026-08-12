@@ -1,6 +1,6 @@
 # Third-party components in this bundle
 
-Moneymoor 0.2.0 for `macos-arm64`.
+Example App 9.9.9 for `macos-arm64`.
 
 A bundle is self-contained: it carries a Raku runtime, every Raku module
 the application needs, and every native library it loads, so that
@@ -22,7 +22,7 @@ row here was written by hand into a tool.
 
 | Component | Version | Licence (SPDX) | Provenance |
 |---|---|---|---|
-| App::Moneymoor | 0.2.0 | `Artistic-2.0` | app META6 |
+| App::ExampleApp | 9.9.9 | `Artistic-2.0` | app META6 |
 | cmp (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
 | DynASM (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
 | dyncall (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `ISC` | ariza runtime data (runtime-third-party.json) |
@@ -43,13 +43,13 @@ row here was written by hand into a tool.
 
 ## Details
 
-### App::Moneymoor — 0.2.0
+### App::ExampleApp — 9.9.9
 
 * Kind: application
 * Licence: `Artistic-2.0`
-* Licence text: `LICENSES/App-Moneymoor.txt`
+* Licence text: `LICENSES/App-ExampleApp.txt`
 * Authors: A Person
-* Upstream: <https://example.invalid/moneymoor.git>
+* Upstream: <https://example.invalid/exampleapp.git>
 * Source: this bundle is a build of it
 * Provenance: app META6
 

@@ -136,7 +136,7 @@ subtest 'the shipped pin file is one of the two states it is allowed to be in', 
 };
 
 subtest 'a bundle with nothing pinned is built without the executable', {
-    plan 3;
+    plan 4;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
     my @log;
@@ -145,14 +145,28 @@ subtest 'a bundle with nothing pinned is built without the executable', {
     # the release it downloads can, so a Windows bundle built in that
     # window is the same bundle ariza produced before the runner —
     # scripts only, and a loud notice rather than a silent difference.
-    my %got = App::Ariza::Runner.stage(:bundle-dir($dir),
-        :slug<windows-x86_64>, :exec<moneymoor>,
-        :pins-path(write-file($dir.add('no-pins.txt'), "# nothing yet\n")),
-        :download(fake-download('MZ', @log)));
+    #
+    # The notice goes to $*ERR, and this test captures it rather than
+    # letting it land in the harness output: a passing suite printing
+    # "no pinned runner build yet" reads like something is wrong with
+    # the checkout's real pins, which this fixture never consults. The
+    # capture also makes the notice itself an assertion instead of a
+    # side effect nobody checks.
+    my $err-file = $dir.add('captured-err.txt');
+    my %got = do {
+        my $*ERR = open($err-file, :w);
+        LEAVE { $*ERR.close }
+        App::Ariza::Runner.stage(:bundle-dir($dir),
+            :slug<windows-x86_64>, :exec<exampleapp>,
+            :pins-path(write-file($dir.add('no-pins.txt'), "# nothing yet\n")),
+            :download(fake-download('MZ', @log)));
+    };
 
     nok %got, 'nothing is staged';
     is @log.List, (), 'and nothing was downloaded to not stage';
-    nok $dir.add('bin/moneymoor.exe').e, 'bin/ has no executable in it';
+    nok $dir.add('bin/exampleapp.exe').e, 'bin/ has no executable in it';
+    like $err-file.slurp, /'no pinned runner build yet'/,
+        'and the bootstrap notice was printed, to $*ERR, once';
 };
 
 subtest 'a pinned runner is downloaded, verified and staged', {
@@ -166,14 +180,14 @@ subtest 'a pinned runner is downloaded, verified and staged', {
         'ariza-runner-windows-x86_64.exe' => digest-of($body)));
 
     my %staged = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle')),
-        :slug<windows-x86_64>, :exec<moneymoor>,
+        :slug<windows-x86_64>, :exec<exampleapp>,
         :pins-path($pins), :cache-dir($dir.add('cache')),
         :download(fake-download($body, @log)));
     my $exe = %staged<path>;
 
     ok $exe.defined && $exe.f, 'the executable is staged';
     is $exe.relative($dir.add('bundle')).subst('\\', '/', :g),
-        'bin/moneymoor.exe',
+        'bin/exampleapp.exe',
         'at bin/<exec>.exe, beside the sidecar the runner reads';
     is $exe.slurp, $body, 'byte for byte what was published';
     is +@log, 1, 'downloaded once';
@@ -194,7 +208,7 @@ subtest 'a pinned runner is downloaded, verified and staged', {
     # not touched — and the cached copy is re-verified on the way past,
     # which is what catches a half-written file from a killed run.
     my %again = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle2')),
-        :slug<windows-x86_64>, :exec<moneymoor>,
+        :slug<windows-x86_64>, :exec<exampleapp>,
         :pins-path($pins), :cache-dir($dir.add('cache')),
         :download(fake-download($body, @log)));
     is +@log, 1, 'a second bundle reuses the cached artefact'
@@ -215,7 +229,7 @@ subtest 'once anything is pinned, every failure is fatal', {
         'ariza-runner-windows-x86_64.exe' => 'c' x 64));
     throws-like {
         App::Ariza::Runner.stage(:bundle-dir($dir.add('b1')),
-            :slug<windows-x86_64>, :exec<moneymoor>,
+            :slug<windows-x86_64>, :exec<exampleapp>,
             :pins-path($wrong), :cache-dir($dir.add('c1')),
             :download(fake-download($body, @log)));
     }, Exception, message => /'does not match its pin'/,
@@ -230,7 +244,7 @@ subtest 'once anything is pinned, every failure is fatal', {
         'ariza-runner-windows-x86_64.exe' => digest-of($body)));
     throws-like {
         App::Ariza::Runner.stage(:bundle-dir($dir.add('b2')),
-            :slug<windows-arm64>, :exec<moneymoor>,
+            :slug<windows-arm64>, :exec<exampleapp>,
             :pins-path($partial), :cache-dir($dir.add('c2')),
             :download(fake-download($body, @log)));
     }, Exception, message => /'no digest for ariza-runner-windows-aarch64.exe'/,
@@ -239,7 +253,7 @@ subtest 'once anything is pinned, every failure is fatal', {
     # A download that never arrives.
     throws-like {
         App::Ariza::Runner.stage(:bundle-dir($dir.add('b3')),
-            :slug<windows-x86_64>, :exec<moneymoor>,
+            :slug<windows-x86_64>, :exec<exampleapp>,
             :pins-path($partial), :cache-dir($dir.add('c3')),
             :download(-> $url, $dest { die "ariza: downloading $url failed" }));
     }, Exception, message => /'failed'/, 'so does a failed download';
@@ -256,7 +270,7 @@ subtest 'a POSIX bundle asks for nothing and gets nothing', {
     my $pins = pins-file($dir, %(
         'ariza-runner-windows-x86_64.exe' => 'd' x 64));
     my %got = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle')),
-        :slug<macos-arm64>, :exec<moneymoor>, :pins-path($pins),
+        :slug<macos-arm64>, :exec<exampleapp>, :pins-path($pins),
         :download(fake-download('MZ', @log)));
 
     nok %got, 'nothing is staged for macOS';

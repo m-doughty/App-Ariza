@@ -39,24 +39,24 @@ sub versions(--> App::Ariza::Versions) {
     App::Ariza::Versions.load($dir.add('versions.toml'));
 }
 
-# The same values App-Moneymoor's manifest carries, for the same reason
+# The same values App-ExampleApp's manifest carries, for the same reason
 # t/15 keeps its own copy: this file is about ariza's templates, not
 # about a sibling app's current platform list.
-my constant MONEYMOOR = q:to/TOML/;
+my constant EXAMPLEAPP = q:to/TOML/;
 [app]
-name = "App::Moneymoor"
-exec = "moneymoor"
-display = "Moneymoor"
+name = "App::ExampleApp"
+exec = "exampleapp"
+display = "Example App"
 
 [bundle]
 platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
 native = ["notcurses", "sqlcipher"]
 
 [installer]
-repo = "m-doughty/App-Moneymoor"
+repo = "example-org/App-ExampleApp"
 TOML
 
-my $CFG  = config(MONEYMOOR);
+my $CFG  = config(EXAMPLEAPP);
 my $VERS = versions();
 
 # Pinned rather than read off the running distribution: under `prove6
@@ -135,9 +135,9 @@ subtest 'an app gets one build lane per platform it declares', {
 subtest 'the context carries the app and the pins, not the machine', {
     plan 11;
 
-    is %CTX<app_name>, 'App::Moneymoor', 'the dist name';
-    is %CTX<app_exec>, 'moneymoor', 'the launcher name';
-    is %CTX<repo>, 'm-doughty/App-Moneymoor', 'where releases are published';
+    is %CTX<app_name>, 'App::ExampleApp', 'the dist name';
+    is %CTX<app_exec>, 'exampleapp', 'the launcher name';
+    is %CTX<repo>, 'example-org/App-ExampleApp', 'where releases are published';
     is %CTX<rakudo_tag>, '2026.07-01', 'the runtime pin a bundle embeds';
     is %CTX<rakudo_revision_int>, 1,
         'as a number, because the release index records it as one';
@@ -268,7 +268,7 @@ subtest 'installer smoke is scoped to the platforms actually declared', {
     [bundle]
     platforms = ["linux-x86_64-glibc"]
     [installer]
-    repo = "m-doughty/A"
+    repo = "example-org/A"
     TOML
     my $linux-release = render('release.yml.j2', $linux-only);
 

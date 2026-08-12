@@ -2,6 +2,380 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.1.0  2026-08-12T22:34:02+01:00
+    - The bootstrap-rung test captures the "no pinned runner build
+      yet" notice instead of letting it reach the harness's stderr. A
+      passing suite printing that line reads as a statement about the
+      checkout's real pin file, which the test's fixture never
+      consults — it confused exactly the person it should not have,
+      twice. The capture also turns the notice into an assertion, so
+      the loud-rather-than-silent contract is now tested rather than
+      incidental.
+
+    - Changed: the test suite's fixture application is now a fictional
+      one -- `App::ExampleApp` / `exampleapp` / "Example App" 9.9.9,
+      publishing from `example-org/App-ExampleApp` -- everywhere it used
+      to be a real consumer of this tool. ariza is general-purpose, and a
+      suite whose every golden launcher, installer, workflow and
+      licensing document is branded for one application reads like that
+      application is part of the product. It also meant the committed
+      goldens named a repository that does not exist under an
+      organisation that does. Illustrative examples in the Pod and in
+      `docs/` are untouched: those describe using ariza against a real
+      application, which is what they are for, and they are not fixtures.
+      Every golden was REGENERATED through its own generator rather than
+      edited, so what changed is the identity in them and nothing else;
+      line endings are as they were, CRLF for the Windows launchers and
+      the PowerShell installers.
+    - Changed: `t/18-licensing`'s golden takes `ARIZA_REGENERATE_GOLDEN`
+      like the launcher, installer and workflow goldens already did. It
+      was the only one that could only be updated by hand, which is the
+      same as saying it was the only one that could be updated from
+      something other than the generator.
+    - Note: the fixture's display name now contains a space ("Example
+      App"). That is free coverage rather than an accident -- every
+      template quotes `app_display` where it lands in code, and a
+      fixture that never exercises a space is one that cannot notice if
+      one stops being quoted.
+    - Fixed: `ariza smoke` crashed on Windows whenever the bundle it was
+      given was not a Windows one. The launcher check asked
+      `IO::Path.x`, and the platform it branches on comes from the
+      manifest rather than from the machine -- deliberately, so an
+      archive can be checked anywhere -- so a Windows box inspecting a
+      Linux bundle reached that call and died with `rindex search target
+      requires a concrete string, but got null`. That message is
+      MoarVM's, and the bug behind it is upstream: its `file-stat`
+      syscall never populates the stat object's `filename`, and its
+      Windows `stat-is-executable` reads exactly that field to find the
+      extension to compare against PATHEXT, so `.x` on Windows does not
+      return False -- it throws, for every file. Nothing here can fix
+      that, but nothing here should have been asking: the executable bit
+      needs both a POSIX bundle to have one and a POSIX host to read
+      one, and a POSIX bundle unpacked on Windows has no such bit
+      anyway, because NTFS has none and tar cannot set one. The check
+      now asks only where there is an answer, and reports the file it
+      found either way. The case that exposed it was the new
+      cross-platform smoke fixture, which is the first thing in the
+      suite to smoke a bundle whose platform disagrees with the host --
+      and is now the regression test for it.
+    - Fixed: `App::Ariza::Runner.pins` leaked a file handle on the one
+      path it is designed to take -- dying part way through a malformed
+      pin file. It read with `IO::Path.lines`, whose handle is closed
+      when the sequence is exhausted, and a `die` on line two of ten
+      exhausts nothing. POSIX never noticed; on Windows the file then
+      could not be deleted at all (`resource busy or locked`), so the
+      test that checks the parser's refusal blew up in its own cleanup
+      several assertions later, naming nothing useful. It slurps and
+      splits now -- the whole file read and the handle closed before a
+      single line is examined, which is what every other file read in
+      ariza already does -- and the test deletes the file it just fed to
+      the parser, so the leak fails as an assertion about handles rather
+      than as an explosion in a LEAVE block.
+    - Added: a Windows bundle now launches from `bin/<exec>.exe`, a
+      compiled launcher of ariza's own -- ~400 lines of C17 in the new
+      `runner/` directory -- and it is the documented entry point. The
+      `.cmd` and `.ps1` launchers still ship, still work, and are still
+      what the bundle falls back to; what changed is which one users
+      run, which one the installers put on PATH, and which one the smoke
+      harness proves. Two things a batch trampoline cannot fix are why
+      it exists. The first is that `%*` is not the user's arguments, it
+      is the user's arguments after cmd.exe has had a second go at them:
+      `^` is an escape character, `%VAR%` and `!x!` are expansions, and
+      a quoted argument gets re-split, so an app taking a prompt, a
+      regex or a snippet of code as an argument receives something
+      nobody typed -- and the damage happens inside the substitution,
+      where nothing can intercept it. The second is that AppLocker and
+      SRP script rules block a `.cmd` however it is invoked, including
+      from a parent process, and a locked-down ExecutionPolicy stops the
+      PowerShell twin on its own, which made a bundle unusable at
+      exactly the sort of managed desktop these apps are wanted on.
+      Exec-ing the `.cmd` from an exe would have kept both problems, so
+      the runner does the whole launch itself: GetModuleFileNameW for
+      its own path, the directory above `bin/` as the root,
+      SetEnvironmentVariableW for the environment, CreateProcessW for
+      the child, and the child's exit code as its own. No cmd.exe is
+      involved at any point.
+    - Added: the argument tail is copied, never parsed. The runner
+      follows the C runtime's argv[0] rule exactly -- leading whitespace
+      skipped, a quoted argv[0] ending at the next quote with no escape
+      processing (a path cannot contain one), an unquoted one ending at
+      the first space or tab -- and hands the child every byte after
+      that point unchanged. There is no re-quoting step for anything to
+      be lost in, so what the app's `@*ARGS` sees is what the user's
+      shell produced. The test table for that rule is the list of things
+      a batch file damages: carets, `%VAR%`, `!x!`, escaped quotes
+      inside quoted arguments, trailing backslashes before a closing
+      quote, unicode, and an unterminated quoted argv[0].
+    - Added: `bin/<exec>.ariza`, the sidecar the runner reads, rendered
+      like every other launcher and CRLF like its neighbours. It carries
+      the target script, the exec and display names, and then the
+      bundle's environment as ORDERED DIRECTIVES -- `set NAME=VALUE`,
+      `unset NAME`, `prepend-path VALUE`, applied top to bottom, with
+      `{root}` expanded to the bundle root the executable worked out at
+      run time. The runner has no idea what any of them mean. That is
+      the point, and it is the second design ruling here: an earlier
+      draft had `sqlcipher_dir` / `sqlcipher_lib` keys and a hardcoded
+      NOTCURSES_NATIVE_DATA_DIR, which put knowledge of every native
+      dependency a bundle might ever carry inside a pinned binary on its
+      own release cadence -- so adding a dependency would have meant a
+      runner release, a checksum commit, and a window in which a new
+      bundle could not be launched by an old runner. With directives
+      that knowledge stays in the renderer, beside the `.cmd` template
+      where it already was, and a future app-declared "recipe" can
+      contribute env lines without a sidecar format break.
+    - Added: the parser fails closed, twice over. An unrecognised
+      directive and an unknown `{token}` are both hard errors naming the
+      line number, because a bundle whose configuration mentions
+      something the runner cannot do would otherwise start an app with a
+      silently incomplete environment -- which fails later, further
+      away, and much worse than not starting. `#` starts a comment only
+      in the first non-blank column, since `inst#{root}\site` is a real
+      value and an inline-comment rule would truncate it into a RAKULIB
+      naming a relative directory.
+    - Added: `App::Ariza::Runner`, and the bootstrap ladder it
+      implements. The runner is built once per release by CI and pinned
+      by digest rather than compiled during `ariza bundle`, because
+      compiling it at bundle time would put a C toolchain in the
+      bundling path, on every machine, for every cross-build, to produce
+      a file that is identical for every app. `resources/RUNNER_VERSION`
+      names the release and `resources/runner-checksums.txt` pins the
+      artefacts, and that pin file has exactly two states: while it
+      lists nothing, a Windows bundle is built WITHOUT the executable
+      and the build says so once, loudly, which is byte-for-byte the
+      output ariza produced before the runner existed; once it lists
+      anything, a missing entry, a failed download or a digest mismatch
+      fails the build. That is the same precedent as Notcurses-Native's
+      checksums.txt, and it is what lets this ship before the first
+      `runner-v1` artefacts are cut without a placeholder anywhere.
+      There is deliberately no third rung, no `--no-runner` and no
+      `--skip-verify`: an unverified executable staged into a bundle is
+      not a degraded build, it is a different piece of software.
+    - Added: `.github/workflows/runner-release.yml`. Both lanes in MSYS2
+      -- UCRT64 for x86_64, CLANGARM64 for aarch64, the same toolchains
+      that build the notcurses packs a bundle already carries -- ctest
+      on the x86_64 lane, and publication ONLY on a pushed `runner-v*`
+      tag validated against `resources/RUNNER_VERSION`. A dispatch
+      builds and tests and stops, because "validate the recipe" and
+      "overwrite the artefacts every ariza release verifies against"
+      should not be one click apart. The executable is linked statically
+      and the lane then asserts its import table holds nothing but
+      Windows' own DLLs: a `libgcc_s_seh-1.dll` picked up from the build
+      environment would work on the runner, work on every machine with a
+      toolchain, and fail on a clean install -- the identical failure
+      shape to 0.0.7's vcruntime140.dll.
+    - Added: the runner is split so the interesting half is portable.
+      Config parsing, `{root}` expansion, path joining and the
+      command-line-tail rule are plain C17 over a character type that is
+      `wchar_t` on Windows and `char` everywhere else; the win32 API
+      calls live in one file that is not compiled at all off Windows. So
+      `cmake -B build -S runner && ctest --test-dir build` runs on a Mac
+      or a Linux CI box and covers the rules that are actually easy to
+      get wrong. One of those tests parses
+      `t/golden/launcher-windows-x86_64.ariza` -- the committed output
+      of the Jinja2 template, compared byte for byte by the Raku suite --
+      with the real C parser, because the renderer and the reader are in
+      different languages and nothing else connects them.
+    - Added: `ariza smoke` runs every `{exec}` command a second time
+      through `bin/<exec>.exe` when a bundle carries one, in addition to
+      the `.cmd` run and never instead of it, plus a `runner` check for
+      the executable and its sidecar. The two entry points set the same
+      environment by completely different means -- batch `set` against
+      SetEnvironmentVariableW, `%*` against a verbatim command-line tail
+      -- so one passing says nothing whatever about the other. The
+      check passes when there is no executable, because that is the
+      bootstrap state and not a fault; it fails when there is one with
+      no sidecar beside it, because that is a bundle that cannot start.
+    - Changed: the generated Windows installer accepts either entry
+      point. `Ariza-HasEntryPoint` looks for `bin\<exec>.exe` and then
+      `bin\<exec>.cmd`, so the "incomplete install" and "that is not a
+      bundle" checks stay true either side of the bootstrap. Nothing had
+      to change about PATH: the installer puts `current\bin` on it, and
+      PATHEXT already prefers an `.exe` to a `.cmd` of the same name.
+    - Note: the published runner binaries are not code-signed, so
+      SmartScreen shows its "unrecognised app" prompt on first run.
+      Signing needs a certificate and a signing story ariza does not
+      have today; saying so in the README, in the release notes and in
+      the design record is better than a prompt nobody warned about, and
+      the `.cmd` launcher is the way past one somebody would rather not
+      click through.
+    - Added: a bundle now says what it redistributes. Every build writes
+      `THIRD-PARTY.md` at the bundle root -- one row per component with
+      its version, its licence, its copyright and where that fact came
+      from -- and a `LICENSES/` directory holding the text of every
+      licence those rows cite. What it replaces was a table of filename
+      prefixes inside `App::Ariza::Bundle` mapping `libav*` to FFmpeg
+      and so on, which was wrong twice over: it had gone stale (it still
+      declared the notcurses pack's FFmpeg a GPL build because of
+      libx264, which that pack no longer ships) and it was knowledge
+      about other people's software living in the source of a tool that
+      bundles anybody's application. A stranger's app with a native
+      dependency ariza had never heard of got a row saying
+      `(unclassified)` and no way to fix it short of patching ariza.
+    - Added: the new `App::Ariza::Licensing` reads all of it rather than
+      remembering any of it, from four sources, and every row records
+      which one it came from. A native pack's own licensing kit --
+      `third-party.json` where it ships one, filtered to the platform
+      being built, and its generated `THIRD-PARTY.md` where it does not.
+      `resources/runtime-third-party.json`, ariza's maintained record of
+      the components that have nowhere else to speak from. The `license`
+      field of every distribution installed into the bundle, from its
+      own site repository AND from the one inside the vendored runtime,
+      which is where the zef that came down with Rakudo lives. And the
+      app's `ariza.toml`, for what it ships that ariza cannot see. The
+      row schema is deliberately the one Notcurses-Native's
+      `third-party.json` already uses, because that format is an
+      interface rather than something to reimplement, and the 0.2.0
+      recipe work contributes rows in the same shape without a break.
+    - Added: `resources/runtime-third-party.json` -- the vendored
+      Rakudo, NQP and MoarVM (Artistic-2.0), and the C libraries MoarVM
+      vendors under its own `3rdparty/`, which are the reason the file
+      exists: they are compiled into `libmoar` rather than shipped as
+      files, so no audit of a bundle's contents can find them and
+      nothing in the bundle can be asked about them. libuv (MIT, plus
+      BSD-2-Clause for `tree.h` and ISC for the inet_pton pair), dyncall
+      (ISC), DynASM (MIT), LibTomMath (public domain), cmp (MIT),
+      libatomic_ops (MIT -- its GPL files are build and test tooling
+      that MoarVM's own 3rdparty/README states are in no built binary),
+      mimalloc, rapidhash and zmij (MIT), musl's memmem (MIT, in a
+      directory called `freebsd`), Steve Reid's SHA-1 (public domain)
+      and msinttypes (BSD-3-Clause). Each was checked against the
+      LICENSE file of the submodule at the commit MoarVM pins, not
+      recalled. That set moves between MoarVM releases and which members
+      are compiled in depends on the platform, so the file documents
+      itself as a superset for the pinned runtime and names the
+      `[rakudo]` pin as the trigger to re-check it: naming a library
+      that did not make the binary costs a paragraph, omitting one that
+      did is a notice not given.
+    - Added: licence texts ship in `resources/licenses/` for the
+      identifiers ariza can be expected to resolve -- Artistic-2.0, MIT,
+      Apache-2.0, BSD-2-Clause, BSD-3-Clause, LGPL-2.1, LGPL-3.0,
+      GPL-2.0, GPL-3.0, Zlib, ISC, Unlicense and a public-domain
+      statement -- and are cited by SPDX identifier, with `-or-later`,
+      `-only` and `+` resolving to the text they qualify and `AND`, `OR`
+      and `WITH` treated as separators so every arm of an expression
+      travels with the binary. Anything else comes from a pack's own
+      `LICENSES/` or from a `license-files` entry in the app's config.
+    - Added: `[licensing]` in `ariza.toml`. `strict` promotes an
+      unattributed native pack from a warning to a failed build;
+      `[licensing.app]` overrides any field of the application's own
+      row (which otherwise derives from its META6 and its LICENSE file);
+      `[[licensing.third-party]]` declares what ariza cannot see -- a
+      font, a dataset, artwork -- and `[[licensing.dists]]` corrects a
+      dependency whose own metadata is absent or wrong. Unknown keys
+      warn and wrong types die, as everywhere else. `license-files`
+      entries are paths inside the app's repository and an absolute one
+      is refused: a licence text belongs to the repository that declares
+      it, and an absolute path in a committed config file is a path that
+      exists on one machine.
+    - Added: the fail-closed rulings, and the asymmetry in them. A Raku
+      distribution with no `license` field, or one whose licence has no
+      shipped text, FAILS the build -- naming every such distribution in
+      the closure at once rather than the first, since three unlicensed
+      dependencies should cost one build and not three -- with both
+      fixes: the field itself, or a `[[licensing.dists]]` row. The field
+      exists, most of the ecosystem fills it in, and an "unknown" row
+      there would be a hole nobody ever closes. A cited
+      licence text that is nowhere fails the build for the same reason.
+      A native pack with no licensing kit is a VISIBLE row saying so
+      plus a warning, because there ariza has nothing true to say: the
+      pack is somebody else's artefact, refusing to build would punish
+      an app for its dependency's packaging, and dropping it would hide
+      a redistributed binary. Whether that is fatal is the app's call,
+      which is what `licensing.strict` is.
+    - Added: a fallback for the pack every app actually has. The
+      upstream generator writes `THIRD-PARTY.md` into the archive and
+      keeps `third-party.json` in its own repository, so no pack in
+      circulation carries the manifest. Rather than report a complete
+      notice sitting inside the bundle as "unattributed", the document
+      is parsed -- but only on its own terms: the Summary table's exact
+      generated header is required, four columns and two labelled
+      Details bullets are read, and anything else returns NOTHING and
+      falls through to the unattributed row. Rows assembled out of the
+      wrong columns would be worse than no rows.
+    - Added: `ariza-manifest.json` gains a `licensing` object -- the row
+      count, how many were unattributed, and the sorted set of SPDX
+      identifiers the bundle is conveyed under -- so a release gate
+      downstream can test it without parsing prose. `unknown > 0` means
+      something in the bundle is unnamed, and the identifier set is
+      where a copyleft component that arrived inside a native pack
+      becomes visible to a policy that cares about one.
+    - Added: `components.runner` in the manifest, closing the last gap
+      in it. `bin/<exec>.exe` was the only artefact a bundle downloads
+      with no URL and no digest recorded anywhere, while the runtime
+      archive and SQLCipher both had one -- and it is the file a Windows
+      user actually runs. `App::Ariza::Runner.stage` now returns what it
+      staged (path, artefact, tag, URL and the digest it was verified
+      against) rather than only where it put it, and
+      `App::Ariza::Launcher.write` returns `{ written, runner }` so that
+      account reaches the manifest.
+    - Added: the merged document is deterministic. Rows sort by kind,
+      then folded name, then id -- never by the order a directory was
+      read in -- and nothing in it is a timestamp or a path from the
+      build machine, so two builds of the same inputs produce
+      byte-identical output and a golden test means something. Licence
+      texts are deduplicated by filename in a fixed priority -- the
+      app's copy, then a native pack's, then ariza's own -- and two
+      sources offering the same name with different bytes warn, naming
+      both, rather than resolving by whichever directory was walked
+      first. Nearest to the software wins because ariza's texts are SPDX
+      TEMPLATES, carrying `<year> <owner>` where a real notice carries a
+      name: an OFL font's text has its Reserved Font Name filled in, and
+      a pack's own copy is the notice shipped beside its binaries, so
+      the generic text is the fallback for a licence nobody supplied and
+      never a replacement for one somebody did. A text no row cites is
+      removed from `LICENSES/` rather than left over from an earlier
+      build to mislead.
+    - Added: three more licence texts -- AGPL-3.0, X11 and OFL-1.1 --
+      taken from SPDX's own license-list-data, bringing the shipped set
+      to sixteen. All three came out of a scan of real installed
+      distributions rather than a guess at what might be wanted, and the
+      X11 text is byte-identical to the one the notcurses pack carries,
+      so a bundle with that pack merges the two without a word. A test
+      enumerates the whole set: adding or losing a text is a decision,
+      not a side effect.
+    - Added: `NOASSERTION` support, as a declaration and only as a
+      declaration. An app may write `spdx-license = "NOASSERTION"` in a
+      `[[licensing.dists]]` or `[[licensing.third-party]]` row after it
+      has looked and found nothing -- SPDX's own spelling for exactly
+      that -- and the row is rendered distinctly, called out at the top
+      of THIRD-PARTY.md beside the unattributed, and carries a GENERATED
+      sentence (not the app's wording) saying licensing was not asserted
+      and pointing at the component's own repository. No licence text is
+      looked up, because there is none. `ariza-manifest.json` counts
+      them in `licensing.noassertion`, apart from `spdx-ids`, so a gate
+      reading the identifier set never sees NOASSERTION sitting in it
+      looking like a permissive licence.
+    - Added: three rulings that keep NOASSERTION from becoming a place
+      to put things. A distribution whose OWN metadata says NOASSERTION
+      still fails the build -- that is not a declaration anybody made
+      about this bundle, it is "nobody has looked" spelled differently,
+      and the fix is for somebody to look and then say so in the app's
+      config with the evidence in `notes`. An application may not say it
+      about itself: NOASSERTION means a third party's licensing could
+      not be determined, and there is nobody to look on behalf of the
+      thing being built. And `licensing.strict` refuses a bundle that
+      contains one, because strict is the statement that this bundle
+      ships nothing it cannot name and "we could not find out" is not a
+      name -- the same rule the unattributed-pack check enforces,
+      applied to the other way a bundle can carry something nameless.
+    - Fixed: nothing derives a name from a resource's `.basename` any
+      more. `zef install` stages every META6 resource under a
+      content-hashed filename, so an installed ariza's `MIT.txt` is
+      `0E9B31....txt` and its data file is `A3FCDF....json` -- which
+      made the licence-text pool key on digests (every build failing on
+      a row citing `LICENSES/MIT.txt`) and every runtime row cite a
+      digest as its provenance. Both work perfectly from a checkout,
+      which is the only place the suite runs, so
+      `xt/04-installed-resources` now installs ariza into a throwaway
+      repository and asks the installed copy for both. A resource's name
+      is its META6 key; the file is only where the bytes are.
+    - Fixed: `App::Ariza::Config` validated arrays of tables lazily, so
+      a `[[licensing.third-party]]` row missing its required
+      `spdx-license` did not complain until something happened to
+      consume the result -- which was outside the caller's `try` and a
+      long way from the file that was wrong. The rows are built
+      eagerly now.
+
 0.0.7  2026-08-12T15:58:10+01:00
 
     - Fixed, and it is the same class of bug as 0.0.6's missing OpenSSL

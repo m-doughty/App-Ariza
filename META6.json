@@ -3,7 +3,8 @@
   "authors": [
     "Matt Doughty"
   ],
-  "build-depends": [],
+  "build-depends": [
+  ],
   "depends": [
     "Config::TOML:ver<0.1.3+>:auth<zef:raku-community-modules>",
     "JSON::Fast:ver<0.19+>:auth<cpan:TIMOTIMO>",
@@ -79,6 +80,7 @@
     "installer",
     "devtools"
   ],
-  "test-depends": [],
-  "version": "0.0.7"
+  "test-depends": [
+  ],
+  "version": "0.1.0"
 }

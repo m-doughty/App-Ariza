@@ -19,9 +19,9 @@ sub config(--> App::Ariza::Config) {
     my $dir = tmp-dir;
     $dir.add('ariza.toml').spurt(q:to/TOML/);
     [app]
-    name = "App::Moneymoor"
-    exec = "moneymoor"
-    display = "Moneymoor"
+    name = "App::ExampleApp"
+    exec = "exampleapp"
+    display = "Example App"
     TOML
     my $cfg = App::Ariza::Config.load($dir);
     rm-rf($dir);
@@ -85,24 +85,24 @@ subtest 'installed-dists reads the repository, not the app metadata', {
         { name => 'Selkie', ver => '0.13.0', auth => 'zef:apogee',
           provides => { 'Selkie' => 'lib/Selkie.rakumod' },
           depends => ['Notcurses::Native:ver<0.4.3+>'] },
-        { name => 'App::Moneymoor', version => '0.2.0', auth => 'zef:apogee',
-          provides => { 'App::Moneymoor' => 'x', 'App::Moneymoor::DB' => 'y' } },
+        { name => 'App::ExampleApp', version => '9.9.9', auth => 'zef:apogee',
+          provides => { 'App::ExampleApp' => 'x', 'App::ExampleApp::DB' => 'y' } },
     ;
     fake-repo($dir, @fake);
 
     my @dists = App::Ariza::Site.installed-dists($dir);
-    is-deeply @dists.map(*.<name>).List, ('App::Moneymoor', 'Selkie'),
+    is-deeply @dists.map(*.<name>).List, ('App::ExampleApp', 'Selkie'),
         'sorted by name';
-    is @dists[0]<version>, '0.2.0',
+    is @dists[0]<version>, '9.9.9',
         'version comes from `ver` or `version`, whichever the repository wrote';
-    is-deeply @dists[0]<provides>.List, ('App::Moneymoor', 'App::Moneymoor::DB'),
+    is-deeply @dists[0]<provides>.List, ('App::ExampleApp', 'App::ExampleApp::DB'),
         'with the modules it provides, which is what gets precompiled';
 };
 
 subtest 'closure-gaps catches a dependency satisfied from outside the bundle', {
     plan 4;
     my @complete =
-        { name => 'App::Moneymoor', depends => ['Selkie:ver<0.11.0+>:auth<zef:apogee>',
+        { name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>:auth<zef:apogee>',
                                                 'JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>'] },
         { name => 'Selkie', depends => [] },
         { name => 'JSON::Fast', depends => [] },
@@ -116,12 +116,12 @@ subtest 'closure-gaps catches a dependency satisfied from outside the bundle', {
         'and `::` in a dependency name is not mistaken for an adverb';
 
     my @broken =
-        { name => 'App::Moneymoor', depends => ['Selkie:ver<0.11.0+>'] },
+        { name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>'] },
         { name => 'JSON::Fast', depends => [] },
     ;
     my @gaps = App::Ariza::Site.closure-gaps(@broken);
     is +@gaps, 1, 'a missing distribution is one gap';
-    is @gaps[0], 'App::Moneymoor needs Selkie', 'naming who needs what';
+    is @gaps[0], 'App::ExampleApp needs Selkie', 'naming who needs what';
 };
 
 subtest 'exec-target prefers the .raku stub over the sh wrapper', {
@@ -132,21 +132,21 @@ subtest 'exec-target prefers the .raku stub over the sh wrapper', {
     my $bin = ensure-dir($dir.add('bin'));
 
     throws-like { App::Ariza::Site.exec-target($dir, :config($cfg)) },
-        Exception, message => /"installed no 'moneymoor' script"/,
+        Exception, message => /"installed no 'exampleapp' script"/,
         'an empty bin/ names the executable that is missing';
 
     # zef writes both: a `sh` wrapper that execs a bare `rakudo` off
     # PATH (useless in a bundle) and a `.raku` stub that calls
     # CompUnit::RepositoryRegistry.run-script (exactly right).
-    $bin.add('moneymoor').spurt("#!/usr/bin/env sh\nexec rakudo …\n");
-    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'moneymoor',
+    $bin.add('exampleapp').spurt("#!/usr/bin/env sh\nexec rakudo …\n");
+    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp',
         'with only the wrapper present, that is the target';
 
-    $bin.add('moneymoor.raku').spurt('sub MAIN(*@, *%) { }');
-    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'moneymoor.raku',
+    $bin.add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
+    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp.raku',
         'but the stub wins whenever it exists';
 
-    ok $bin.add('moneymoor').slurp.contains('exec rakudo'),
+    ok $bin.add('exampleapp').slurp.contains('exec rakudo'),
         'because the wrapper execs a `rakudo` off PATH, which a bundle has not got';
 };
 

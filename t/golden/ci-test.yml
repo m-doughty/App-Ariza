@@ -1,4 +1,4 @@
-# Run App::Moneymoor's own test suite on Linux, macOS and Windows.
+# Run App::ExampleApp's own test suite on Linux, macOS and Windows.
 #
 # Scaffolded by ariza 0.0.1 (`ariza scaffold-ci`), and yours
 # from here on: this file is written only when it is absent, and never

@@ -18,8 +18,8 @@ produce in a second. Nothing here touches the network: the installer's
 C<--url> escape hatch takes a plain file path, which is exactly the seam
 this test drives.
 
-    ariza bundle --app=../App-Moneymoor --out-dir=/tmp/dist
-    ARIZA_E2E_ARCHIVE=/tmp/dist/moneymoor-0.2.0-macos-arm64.tar.gz \
+    ariza bundle --app=../App-ExampleApp --out-dir=/tmp/dist
+    ARIZA_E2E_ARCHIVE=/tmp/dist/exampleapp-9.9.9-macos-arm64.tar.gz \
         prove6 -Ilib xt/02-installer-e2e.rakutest
 
 Without C<ARIZA_E2E_ARCHIVE> the whole file skips: there is no honest
@@ -29,7 +29,7 @@ than no run at all.
 =end comment
 
 my $ARCHIVE = (%*ENV<ARIZA_E2E_ARCHIVE> // '').trim;
-my $APP     = checkout-root().parent.add('App-Moneymoor');
+my $APP     = checkout-root().parent.add('App-ExampleApp');
 
 sub bail(Str $why) {
     plan 1;
@@ -40,7 +40,7 @@ sub bail(Str $why) {
 bail 'set ARIZA_E2E_ARCHIVE to a built bundle archive to run this'
     unless $ARCHIVE;
 bail "no bundle archive at $ARCHIVE" unless $ARCHIVE.IO.f;
-bail "no App-Moneymoor beside this checkout (looked in $APP)"
+bail "no App-ExampleApp beside this checkout (looked in $APP)"
     unless $APP.add('ariza.toml').f;
 
 my $CFG  = App::Ariza::Config.load($APP);

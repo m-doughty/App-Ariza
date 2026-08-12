@@ -36,13 +36,13 @@ sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
 #| called C<raku.exe> is a file whatever created it.
 sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
                 :$platform = current-slug(), :$runner --> IO::Path) {
-    my $root = ensure-dir($where.add("moneymoor-0.2.0-$platform"));
+    my $root = ensure-dir($where.add("exampleapp-9.9.9-$platform"));
     my $win  = $platform.starts-with('windows');
 
     # Non-interpolating heredocs: these are shell scripts, and `${VAR}`
     # and `{...}` both mean something to qq.
     my $launcher = ensure-dir($root.add('bin'))
-        .add('moneymoor' ~ ($win ?? '.cmd' !! ''));
+        .add('exampleapp' ~ ($win ?? '.cmd' !! ''));
     $launcher.spurt(q:to/SH/.subst('EXIT_STATUS', $exec-status));
         #!/bin/sh
         # Prints whether anything leaked in from the invoking shell —
@@ -64,32 +64,32 @@ sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
     # runs the one and requires the other — the executable's own
     # behaviour is the runner suite's business.
     if $runner {
-        my $exe = $root.add('bin').add('moneymoor.exe');
+        my $exe = $root.add('bin').add('exampleapp.exe');
         $exe.spurt(q:to/SH/);
             #!/bin/sh
             printf 'runner ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
             SH
         $exe.chmod(0o755);
-        $root.add('bin').add('moneymoor.ariza').spurt(
-            "target site\\bin\\moneymoor.raku\r\n"
-          ~ "app-exec moneymoor\r\napp-display Moneymoor\r\n")
+        $root.add('bin').add('exampleapp.ariza').spurt(
+            "target site\\bin\\exampleapp.raku\r\n"
+          ~ "app-exec exampleapp\r\napp-display Example App\r\n")
             unless $runner eq 'no-sidecar';
     }
 
-    ensure-dir($root.add('site/bin')).add('moneymoor.raku').spurt('sub MAIN(*@, *%) { }');
+    ensure-dir($root.add('site/bin')).add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
     ensure-dir($root.add('site/precomp/ABC')).add('DEF').spurt('bytecode');
 
     $root.add('ariza-manifest.json').spurt(to-json({
         'ariza-manifest' => 1,
         platform => $platform,
-        app => { name => 'App::Moneymoor', exec => 'moneymoor',
-                 display => 'Moneymoor', version => '0.2.0' },
-        launcher => { target => 'site/bin/moneymoor.raku', scripts => ['bin/moneymoor'] },
+        app => { name => 'App::ExampleApp', exec => 'exampleapp',
+                 display => 'Example App', version => '9.9.9' },
+        launcher => { target => 'site/bin/exampleapp.raku', scripts => ['bin/exampleapp'] },
         components => { rakudo => { tag => '2026.07-01' } },
         # Trailing comma: `[ %h ]` hits the single-arg rule and flattens
         # the Hash into Pairs, producing exactly the broken shape the
         # manifest check exists to catch.
-        dists => $dists // [{ name => 'App::Moneymoor', version => '0.2.0' },],
+        dists => $dists // [{ name => 'App::ExampleApp', version => '9.9.9' },],
         smoke => @smoke,
     }));
 
@@ -271,7 +271,7 @@ subtest 'the manifest has to be the right shape, not merely parseable', {
     # an array of one-key objects per distribution. It parses, it reads
     # plausibly, and it lists nothing.
     my $broken = pack(fake-bundle($dir, :smoke([]),
-        :dists([[{ name => 'App::Moneymoor' }, { version => '0.2.0' }]])));
+        :dists([[{ name => 'App::ExampleApp' }, { version => '9.9.9' }]])));
 
     my %r = App::Ariza::Smoke.smoke(:archive($broken), :work-dir($dir), :!verbose);
     nok %r<passed>, 'a manifest whose dists are not objects fails';
@@ -299,7 +299,7 @@ subtest 'the compiled Windows launcher is checked when it is there', {
         :work-dir($dir), :!verbose);
     my %by = checks-by-name(%with);
     ok %by<runner><ok>, 'the executable and its sidecar are both there';
-    ok %by<runner><detail>.contains('moneymoor.ariza'),
+    ok %by<runner><detail>.contains('exampleapp.ariza'),
         'and the check names the sidecar, which is the half nobody looks for';
 
     # An executable with no configuration to read cannot start anything,
@@ -321,7 +321,7 @@ subtest 'the compiled Windows launcher is checked when it is there', {
         :work-dir($dir), :!verbose);
     my %none = checks-by-name(%without);
     ok %none<runner><ok>, 'a bundle with no executable passes';
-    ok %none<runner><detail>.contains('bin/moneymoor.cmd'),
+    ok %none<runner><detail>.contains('bin/exampleapp.cmd'),
         'saying what it launches from instead';
 
     # And a POSIX bundle is never asked about a thing it cannot have.

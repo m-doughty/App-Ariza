@@ -27,9 +27,9 @@ sub write-config(IO::Path $dir, Str $content --> IO::Path) {
 
 my constant FULL = q:to/TOML/;
 [app]
-name = "App::Moneymoor"
-exec = "moneymoor"
-display = "Moneymoor"
+name = "App::ExampleApp"
+exec = "exampleapp"
+display = "Example App"
 
 [bundle]
 platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
@@ -37,7 +37,7 @@ native = ["notcurses", "sqlcipher"]
 smoke = "{exec} --version"
 
 [installer]
-repo = "m-doughty/App-Moneymoor"
+repo = "example-org/App-ExampleApp"
 TOML
 
 my constant MINIMAL = q:to/TOML/;
@@ -54,38 +54,38 @@ subtest 'the v1 schema, in full', {
     write-config($dir, FULL);
 
     my $cfg = App::Ariza::Config.load($dir);
-    is $cfg.app-name, 'App::Moneymoor', 'app.name is the dist name';
-    is $cfg.app-exec, 'moneymoor', 'app.exec is the launcher name';
-    is $cfg.app-display, 'Moneymoor', 'app.display is the human name';
+    is $cfg.app-name, 'App::ExampleApp', 'app.name is the dist name';
+    is $cfg.app-exec, 'exampleapp', 'app.exec is the launcher name';
+    is $cfg.app-display, 'Example App', 'app.display is the human name';
     is-deeply $cfg.bundle-platforms.List,
         ('macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64'),
         'bundle.platforms keeps its order';
     is-deeply $cfg.bundle-native.List, ('notcurses', 'sqlcipher'),
         'bundle.native';
     is $cfg.bundle-smoke, '{exec} --version', 'bundle.smoke is stored raw';
-    is $cfg.smoke-command, 'moneymoor --version', '{exec} expands to app.exec';
-    is $cfg.installer-repo, 'm-doughty/App-Moneymoor',
+    is $cfg.smoke-command, 'exampleapp --version', '{exec} expands to app.exec';
+    is $cfg.installer-repo, 'example-org/App-ExampleApp',
         'installer.repo is where the generated installers download from';
     is-deeply $cfg.warnings.List, (), 'a clean manifest warns about nothing';
 };
 
-subtest 'App-Moneymoor ships the first real manifest', {
+subtest 'App-ExampleApp ships the first real manifest', {
     plan 6;
 
-    # App-Moneymoor is checked out beside App-Ariza on a development box;
+    # App-ExampleApp is checked out beside App-Ariza on a development box;
     # skip rather than fail if this checkout is somewhere else entirely.
-    my $repo = checkout-root().parent.add('App-Moneymoor');
+    my $repo = checkout-root().parent.add('App-ExampleApp');
     if $repo.add('ariza.toml').f {
         my $cfg = App::Ariza::Config.load($repo);
-        is $cfg.app-name, 'App::Moneymoor', 'names the distribution';
-        is $cfg.app-exec, 'moneymoor', 'names the launcher';
-        is $cfg.app-display, 'Moneymoor', 'names the product';
-        is $cfg.smoke-command, 'moneymoor --version', 'has a usable smoke command';
+        is $cfg.app-name, 'App::ExampleApp', 'names the distribution';
+        is $cfg.app-exec, 'exampleapp', 'names the launcher';
+        is $cfg.app-display, 'Example App', 'names the product';
+        is $cfg.smoke-command, 'exampleapp --version', 'has a usable smoke command';
         like $cfg.installer-repo, / ^ <-[/]>+ '/' <-[/]>+ $ /,
             'and names the repository its installers download from';
         is-deeply $cfg.warnings.List, (), 'and parses without warnings';
     } else {
-        skip 'App-Moneymoor is not a sibling of this checkout', 6;
+        skip 'App-ExampleApp is not a sibling of this checkout', 6;
     }
 };
 

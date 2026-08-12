@@ -16,14 +16,14 @@ sub tmp-dir(--> IO::Path) {
 
 #| An app checkout: a META6.json, an ariza.toml, and nothing else. Enough
 #| for everything `build` decides before it touches the network.
-sub fake-app(IO::Path $dir, :$version = '0.2.0', :$meta = True,
+sub fake-app(IO::Path $dir, :$version = '9.9.9', :$meta = True,
              :@platforms = <macos-arm64 linux-x86_64-glibc>  --> IO::Path) {
     $dir.add('META6.json').spurt(to-json({
-        name => 'App::Moneymoor', version => $version, license => 'Artistic-2.0',
+        name => 'App::ExampleApp', version => $version, license => 'Artistic-2.0',
     })) if $meta;
     $dir.add('ariza.toml').spurt(
-        "[app]\nname = \"App::Moneymoor\"\nexec = \"moneymoor\"\n"
-      ~ "display = \"Moneymoor\"\n\n[bundle]\n"
+        "[app]\nname = \"App::ExampleApp\"\nexec = \"exampleapp\"\n"
+      ~ "display = \"Example App\"\n\n[bundle]\n"
       ~ "platforms = [{@platforms.map({ "\"$_\"" }).join(', ')}]\n");
     $dir;
 }
@@ -33,27 +33,27 @@ my constant MANIFEST = {
     ariza    => '0.1.0',
     built-at => '2026-08-11T18:43:01Z',
     platform => 'macos-arm64',
-    app => { name => 'App::Moneymoor', exec => 'moneymoor',
-             display => 'Moneymoor', version => '0.2.0' },
+    app => { name => 'App::ExampleApp', exec => 'exampleapp',
+             display => 'Example App', version => '9.9.9' },
     components => {
         rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
         sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
         notcurses => { tag => 'binaries-notcurses-3.0.17-r9' },
         runner => { tag => 'runner-v1', artifact => 'ariza-runner-windows-x86_64.exe',
                     sha256 => 'f' x 64, url => 'https://example.invalid/r.exe',
-                    path => 'bin/moneymoor.exe' },
+                    path => 'bin/exampleapp.exe' },
     },
 };
 
 subtest 'the bundle is named after the app, its version and its platform', {
     plan 2;
-    is App::Ariza::Bundle.bundle-name(:exec<moneymoor>, :version<0.2.0>,
+    is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
                                       :platform<macos-arm64>),
-        'moneymoor-0.2.0-macos-arm64',
+        'exampleapp-9.9.9-macos-arm64',
         'which is the workdir name and the archive stem';
-    is App::Ariza::Bundle.bundle-name(:exec<moneymoor>, :version<0.2.0>,
+    is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
                                       :platform<windows-x86_64>),
-        'moneymoor-0.2.0-windows-x86_64', 'per platform, so releases coexist';
+        'exampleapp-9.9.9-windows-x86_64', 'per platform, so releases coexist';
 };
 
 subtest 'the version comes from the checkout, and a bad one is named', {
@@ -61,7 +61,7 @@ subtest 'the version comes from the checkout, and a bad one is named', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
-    is App::Ariza::Bundle.app-version(fake-app($dir)), '0.2.0',
+    is App::Ariza::Bundle.app-version(fake-app($dir)), '9.9.9',
         'read from the checkout\'s META6.json';
 
     throws-like { App::Ariza::Bundle.app-version($dir.add('elsewhere')) },
@@ -71,10 +71,10 @@ subtest 'the version comes from the checkout, and a bad one is named', {
     throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
         message => /'malformed META6.json'/, 'a broken META6';
 
-    $dir.add('META6.json').spurt(to-json({ name => 'App::Moneymoor' }));
+    $dir.add('META6.json').spurt(to-json({ name => 'App::ExampleApp' }));
     throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
         message => /'has no version'/,
-        'and one with no version, rather than naming the bundle "moneymoor--macos-arm64"';
+        'and one with no version, rather than naming the bundle "exampleapp--macos-arm64"';
 };
 
 subtest 'a build refuses the wrong platform before it downloads anything', {
@@ -125,9 +125,9 @@ subtest 'VERSION is one screen a human can quote in a bug report', {
     my $text = App::Ariza::Bundle.version-file(MANIFEST);
     my @lines = $text.lines;
 
-    is @lines[0], 'Moneymoor 0.2.0 (macos-arm64)',
+    is @lines[0], 'Example App 9.9.9 (macos-arm64)',
         'the headline names the product, the version and the platform';
-    ok @lines.first(/^ 'app' \s+ 'App::Moneymoor 0.2.0'/), 'the distribution';
+    ok @lines.first(/^ 'app' \s+ 'App::ExampleApp 9.9.9'/), 'the distribution';
     ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
     ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
     ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r9'/),
@@ -135,7 +135,7 @@ subtest 'VERSION is one screen a human can quote in a bug report', {
     ok @lines.first(/^ 'runner' \s+ 'runner-v1'/),
         'the compiled Windows launcher, by the release it was pinned from';
     ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
-    ok $text.contains('Run bin/moneymoor'),
+    ok $text.contains('Run bin/exampleapp'),
         'ending with the one thing the reader has to do';
 };
 
@@ -172,7 +172,7 @@ subtest 'the manifest can account for the runner it downloaded', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
-    my $exe = ensure-dir($dir.add('bin')).add('moneymoor.exe');
+    my $exe = ensure-dir($dir.add('bin')).add('exampleapp.exe');
     $exe.spurt('MZ');
 
     # The one binary in a bundle that is not somebody else's software is
@@ -193,7 +193,7 @@ subtest 'the manifest can account for the runner it downloaded', {
     is %c<sha256>, 'f' x 64, 'the digest it was verified against';
     ok %c<url>.ends-with('ariza-runner-windows-x86_64.exe'),
         'the URL a reader can fetch it from themselves';
-    is %c<path>, 'bin/moneymoor.exe',
+    is %c<path>, 'bin/exampleapp.exe',
         'and where it went, bundle-relative and forward-slashed';
 
     # A platform with no runner, or a Windows build made before the

@@ -26,17 +26,17 @@ sub fake-app(
 ) {
     ensure-dir($dir);
     my %meta =
-        name => 'App::Moneymoor', version => '0.2.0',
+        name => 'App::ExampleApp', version => '9.9.9',
         authors => ['A Person'],
-        source-url => 'https://example.invalid/moneymoor.git',
+        source-url => 'https://example.invalid/exampleapp.git',
     ;
     %meta<license> = $license if $license.defined;
     $dir.add('META6.json').spurt(to-json(%meta));
     $dir.add('LICENSE').spurt("The application's own licence text.\n")
         if $license-file;
     $dir.add('ariza.toml').spurt(
-        "[app]\nname = \"App::Moneymoor\"\nexec = \"moneymoor\"\n"
-      ~ "display = \"Moneymoor\"\n" ~ $licensing);
+        "[app]\nname = \"App::ExampleApp\"\nexec = \"exampleapp\"\n"
+      ~ "display = \"Example App\"\n" ~ $licensing);
     $dir
 }
 
@@ -51,7 +51,7 @@ sub fake-dist(IO() $repo, *%meta) {
 #| repository holding the app, and nothing else.
 sub fake-bundle(IO::Path $dir --> IO::Path) {
     my $bundle = ensure-dir($dir.add('bundle'));
-    fake-dist($bundle.add('site'), :name<App::Moneymoor>, :ver<0.2.0>,
+    fake-dist($bundle.add('site'), :name<App::ExampleApp>, :ver<9.9.9>,
               :auth<zef:apogee>, :license<Artistic-2.0>);
     $bundle
 }
@@ -59,7 +59,7 @@ sub fake-bundle(IO::Path $dir --> IO::Path) {
 sub write-licensing(IO::Path $bundle, IO::Path $app, *%extra --> Hash) {
     App::Ariza::Licensing.write(
         :bundle-dir($bundle), :config(App::Ariza::Config.load($app)),
-        :app-dir($app), :app-version<0.2.0>, :app-display<Moneymoor>,
+        :app-dir($app), :app-version<9.9.9>, :app-display('Example App'),
         :platform<macos-arm64>,
         :placeholders(%(
             'rakudo-version'    => '2026.07',
@@ -69,7 +69,7 @@ sub write-licensing(IO::Path $bundle, IO::Path $app, *%extra --> Hash) {
             'sqlcipher-source'  => 'homebrew keg: /opt/x/lib/libsqlcipher.0.dylib',
             'runner-tag'        => 'runner-v1',
             'runner-url'        => 'https://example.invalid/runner.exe',
-            'app-exec'          => 'moneymoor',
+            'app-exec'          => 'exampleapp',
             'ariza-version'     => '0.1.0',
         )),
         |%extra)
@@ -169,7 +169,7 @@ subtest 'runtime rows are substituted, conditional, and can name what they cover
             'rakudo-url' => 'https://example.invalid/r.tar.gz',
             'sqlcipher-version' => '4.14.0', 'sqlcipher-source' => 'a keg',
             'runner-tag' => 'runner-v1', 'runner-url' => 'https://example.invalid/x.exe',
-            'app-exec' => 'moneymoor', 'ariza-version' => '0.1.0';
+            'app-exec' => 'exampleapp', 'ariza-version' => '0.1.0';
 
     my @plain = App::Ariza::Licensing.runtime-rows(:placeholders(%p));
     my %by = @plain.map({ .<id> => $_ }).Hash;
@@ -186,7 +186,7 @@ subtest 'runtime rows are substituted, conditional, and can name what they cover
     is %on<sqlcipher><version>, '4.14.0', 'a staged SQLCipher gets its row';
     is %on<sqlcipher><files>.List, ('libsqlcipher.0.dylib', 'libcrypto.3.dylib'),
         'naming the files that were actually staged, not a guess';
-    ok %on<ariza-runner><name>.contains('moneymoor.exe'),
+    ok %on<ariza-runner><name>.contains('exampleapp.exe'),
         'and the runner row is named after the executable it became';
 };
 
@@ -404,7 +404,7 @@ subtest 'the Raku closure fails closed', {
         'and each one cites the text for the licence its metadata declares';
 
     # The app is the application row, not one of its own dependencies.
-    nok write-licensing($bundle, $app)<rows>.first({ .<id> eq 'dist/App::Moneymoor' }),
+    nok write-licensing($bundle, $app)<rows>.first({ .<id> eq 'dist/App::ExampleApp' }),
         'the app itself is not listed twice';
 
     fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
@@ -444,9 +444,9 @@ subtest 'the app declares its own row, and what ariza cannot see', {
     my $bundle = fake-bundle($dir);
     my %row = write-licensing($bundle, $app)<rows>.first({ .<kind> eq 'application' });
 
-    is %row<name>, 'App::Moneymoor', 'the application row is the dist name';
+    is %row<name>, 'App::ExampleApp', 'the application row is the dist name';
     is %row<spdx>, 'Artistic-2.0', 'its licence comes from its own META6';
-    is %row<license-files>.List, ('App-Moneymoor.txt',),
+    is %row<license-files>.List, ('App-ExampleApp.txt',),
         'and its text is the LICENSE file in its repository, not a template';
     is %row<copyright>, 'Authors: A Person',
         'META6 has authors and no copyright, so that is what is said';
@@ -572,7 +572,7 @@ subtest 'the merged document is what the bundle root gets', {
 
     ok $bundle.add('THIRD-PARTY.md').f, 'THIRD-PARTY.md is written at the root';
     ok $bundle.add('LICENSES').d, 'with LICENSES/ beside it';
-    ok $text.contains('| App::Moneymoor | 0.2.0 | `Artistic-2.0` |'),
+    ok $text.contains('| App::ExampleApp | 9.9.9 | `Artistic-2.0` |'),
         'the application is the first row';
     ok $text.contains('could not be attributed'),
         'an unattributed component is called out at the top, not buried';
@@ -606,6 +606,15 @@ subtest 'the emitted document matches its golden', {
     # MoarVM's vendored C libraries shows up in review as a diff rather
     # than as nothing at all.
     my $golden = $*PROGRAM.parent.add('golden').add('third-party.md');
+
+    # Set ARIZA_REGENERATE_GOLDEN=1 to rewrite this after an intentional
+    # change; read the diff before you commit it. The same switch the
+    # launcher, installer and workflow goldens take, and for the same
+    # reason: a golden that can only be updated by hand is one that gets
+    # updated by hand, from something other than the generator.
+    $golden.spurt($bundle.add('THIRD-PARTY.md').slurp)
+        if %*ENV<ARIZA_REGENERATE_GOLDEN> || !$golden.f;
+
     is $bundle.add('THIRD-PARTY.md').slurp, $golden.slurp,
         'the merged document is byte for byte the golden';
 };
