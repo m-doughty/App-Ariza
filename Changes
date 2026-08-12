@@ -2,6 +2,71 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.6  2026-08-12T11:45:28+01:00
+
+    - Fixed, and this is the one that was actually breaking Windows:
+      `App::Ariza::Native.stage-sqlcipher` had a macOS branch and a Linux
+      branch for making the staged library self-contained, and no Windows
+      branch at all. A Windows bundle therefore got `sqlcipher.dll` on
+      its own, without the vcpkg OpenSSL it imports
+      (`libcrypto-3-x64.dll`), so `LoadLibrary` failed while resolving
+      imports on every machine that ran it -- surfacing as
+      "DBDish::SQLCipher needs 'sqlcipher.dll', not found", a message
+      about the DLL that *is* there produced by the DLL that is not. The
+      two previous fixes for that symptom (0.0.5's `runtime-env` PATH,
+      0.0.4's `zef.raku`) were both real bugs and neither could have made
+      it go away, because there was no OpenSSL in the bundle for any
+      PATH to point at. `!stage-pe-deps` now does for PE what
+      `!stage-elf-deps` does for ELF: read the imports, skip the ones
+      Windows provides, copy the rest in beside the library out of the
+      source library's own directory, and recurse. A vcpkg port installs
+      its whole runtime closure into one `installed/<triplet>/bin`, so
+      that directory is the search space and the contract -- an import
+      that is not in it fails the build naming the import, the directory,
+      and the one other thing it could have been.
+    - Added: `pe-imports`, a PE import-table reader in pure Raku (~80
+      lines) -- DOS header to `PE\0\0`, COFF header, optional header in
+      both PE32 and PE32+ shapes, data directory 1, the import
+      descriptors, and the section table that maps their RVAs back to
+      file offsets. Written out rather than shelled out to because there
+      is nothing to shell out *to*: `dumpbin` ships with Visual Studio
+      and `objdump` with neither, and a dependency walk that quietly
+      finds nothing when its helper is absent is precisely how the hole
+      above stayed open. Anything that does not parse dies naming the
+      file and what was wrong with it; there is no "I don't know" return,
+      because both callers would pass on one. Delay-load imports (data
+      directory 13) are deliberately not read, and the Pod says why.
+    - Fixed: the Windows half of the audit was a presence check --
+      "the payload is there and is not empty" -- on the reasoning that a
+      PE records no rpath to inspect. What it records is its import
+      table, which is the entire question, and a bundle holding only
+      `sqlcipher.dll` passed that check with two files and no findings.
+      The PE audit now resolves every non-system import of every staged
+      `.dll` against the directory the file sits in (which is how Windows
+      resolves it, and where ariza stages everything) and requires the
+      result to be inside the bundle, sharing the ELF audit's
+      separator-normalised containment check. `not found` is a finding, so
+      is a resolution outside the bundle, so is a `.dll` that is not a PE
+      or is empty, and a PE the parser cannot read stops the audit rather
+      than counting as checked. None of it needs Windows: the file is
+      read, not run, so the Windows verdict is as strong from a Mac as it
+      is on the machine the bundle is for.
+    - `PE-SYSTEM-DLLS`, the Windows skiplist, is measured rather than
+      guessed: the core Win32/UCRT/VC++/api-set names plus exactly the
+      DLLs that the 119 DLLs of the published notcurses Windows pack
+      import and do not carry (`gdi32`, `dwrite`, `secur32`, `winmm`,
+      `bcryptprimitives` and a dozen more). Without them the new audit
+      would have failed the Windows release lane on notcurses rather than
+      on SQLCipher. `xt/03-pe-imports.rakutest` (network-gated, like
+      xt/01) downloads that pack and re-measures the list against it,
+      parses all 119 DLLs, and runs the real audit over them staged the
+      way a bundle stages them.
+    - t/11-native.rakutest builds real PE files byte by byte -- a
+      hand-packed PE32/PE32+ with a live import table, which a downloaded
+      DLL could never be malformed enough to replace -- and drives the
+      parser, the skiplist, `pe-strays`, the staging walk and the audit
+      off them: 28 subtests, up from 24.
+
 0.0.5  2026-08-12T10:44:52+01:00
 
     - Fixed: `App::Ariza::Smoke.runtime-env` never gave a Windows

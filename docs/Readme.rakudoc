@@ -184,6 +184,43 @@ shell, and three negative controls (a planted absolute C<NEEDED>, a
 deleted dependency, a stripped rpath) that must each make the audit
 fail.
 
+=head3 Self-containment on Windows, and why it needs no Windows machine
+
+PE hides it worst of all, because it records nothing to hide. A vcpkg
+C<sqlcipher.dll> imports C<libcrypto-3-x64.dll> by bare name — no path,
+no C<rpath>, nothing in the file that an audit reading tags could object
+to — and a bundle staging the DLL alone does not load the user's OpenSSL
+the way the Unix failure does. It does not load B<at all>:
+C<LoadLibrary> fails resolving imports, and the app reports
+C<DBDish::SQLCipher needs 'sqlcipher.dll', not found> — a message about
+the file that is there, produced by the file that is not.
+
+So a Windows bundle gets the same walk-and-copy, spelled the way PE
+spells it. ariza reads the DLL's own import table (DOS header, PE
+signature, optional header, data directory, section table — about eighty
+lines of Raku, because there is no tool to shell out to: C<dumpbin>
+ships with Visual Studio and C<objdump> with neither, and a dependency
+walk that silently finds nothing when its helper is missing is how this
+hole stayed open). Everything that is not Windows' own — not
+C<KERNEL32>, not the API sets, not the Visual C++ redistributable — is
+copied in beside the library and recursed into. There is no third step:
+Windows resolves imports from the importing module's own directory, so
+putting them in one directory I<is> the relocation story.
+
+The search space is exactly one directory: the one the library came
+from. vcpkg installs a port's whole runtime closure into a single
+C<< installed/<triplet>/bin >>, so C<sqlcipher.dll>'s OpenSSL is the
+file sitting next to it — and searching wider (C<PATH>, C<System32>)
+would find a same-named DLL from a different build of a different
+version, which is the bug a bundle exists to avoid. An import that is
+not there fails the build, naming it and the directory searched.
+
+And unlike the Linux pass, none of this needs the platform it is for:
+reading a PE's imports means reading bytes, not running a loader. A
+Windows bundle can be assembled, walked and audited from a Mac and get
+exactly the same verdict it would get on Windows — which makes Windows,
+counter-intuitively, the platform ariza cross-builds most completely.
+
 Two overrides beat the package managers, in this order:
 C<--sqlcipher-archive=FILE> (an archive to unpack) and
 C<SQLCIPHER_LIB_DIR> (a directory holding the library). Both are how a
@@ -346,7 +383,7 @@ which of two files applies to them.
 =head2 Windows
 
 The same shape in PowerShell:
-C<%LOCALAPPDATA%\E<lt>DisplayE<gt>\versions\E<lt>versionE<gt>>, a
+C<< %LOCALAPPDATA%\<Display>\versions\<version> >>, a
 C<current> B<junction> rather than a symlink (which would need
 administrator rights or Developer Mode, and a per-user install has no
 business demanding either), and C<...\current\bin> added once to the

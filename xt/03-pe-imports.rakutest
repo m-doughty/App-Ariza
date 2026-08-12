@@ -1,0 +1,135 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Native;
+use App::Ariza::Tools;
+
+=begin comment
+
+This one downloads the published notcurses Windows pack, which is why it
+lives in xt/ rather than t/: the unit suite has to pass in a tunnel, and
+64MB of DLLs is not a fixture anyone wants in a repository.
+
+What it is for is the thing no hand-packed fixture can check. t/11's PE
+fixtures are assembled from parts by the same understanding of the format
+that `pe-imports` reads them with, so they prove the parser is
+self-consistent and prove every malformed branch — but they cannot prove
+it agrees with what a real toolchain emits. These are 119 DLLs built by
+MinGW and cross-compiled, carrying every shape a release actually ships:
+sections that are not the first, virtual sizes that exceed what is
+stored, import tables with sixty entries.
+
+It is also the one place the skiplist is measured rather than asserted.
+`PE-SYSTEM-DLLS` is only correct if every non-system import in a real
+payload resolves inside that payload's own directory; if a Windows DLL is
+missing from the list, this fails here rather than in a release lane.
+
+    prove6 -Ilib xt/
+
+    # A pack already on disk, or a different tag:
+    ARIZA_NOTCURSES_PACK=/path/to/notcurses-windows-x86_64.zip prove6 -Ilib xt/
+    ARIZA_NOTCURSES_TAG=binaries-notcurses-3.0.17-r9 prove6 -Ilib xt/
+
+=end comment
+
+plan 3;
+
+my constant TAG-DEFAULT = 'binaries-notcurses-3.0.17-r8';
+my constant PACK-URL-BASE =
+    'https://github.com/m-doughty/Notcurses-Native/releases/download';
+
+my $work = $*TMPDIR.add("ariza-pe-{$*PID}-{(^1_000_000).pick}");
+ensure-dir($work);
+END { rm-rf($work) }
+
+my $tag  = (%*ENV<ARIZA_NOTCURSES_TAG> // TAG-DEFAULT).trim;
+my $pack = (%*ENV<ARIZA_NOTCURSES_PACK> // '').trim;
+my $dir  = ensure-dir($work.add('pack'));
+
+subtest 'the published Windows pack is reachable and holds DLLs', {
+    plan 2;
+
+    my $zip = $pack.chars
+        ?? $pack.IO
+        !! http-download("{PACK-URL-BASE}/$tag/notcurses-windows-x86_64.zip",
+                         $work.add('notcurses-windows-x86_64.zip'));
+    ok $zip.f && $zip.s > 1_000_000, "the pack is on disk ({$zip.s} bytes)";
+
+    extract-archive($zip, $dir);
+    my @dlls = pack-dlls();
+    ok @dlls > 50, "and unpacks to {+@dlls} DLLs";
+};
+
+subtest 'every real DLL in it parses, and names plausible imports', {
+    my @dlls = pack-dlls();
+    plan 4;
+
+    my (%imports, @failed);
+    for @dlls -> $f {
+        my @names = try pe-imports($f);
+        @names.defined ?? (%imports{$f.basename} = @names)
+                       !! @failed.push("{$f.basename}: {$!.message}");
+    }
+    is-deeply @failed.List, (),
+        'the parser reads all of them — real MinGW/MSVC output, not a fixture';
+
+    ok %imports.values.grep(*.elems).elems > @dlls.elems * 0.9,
+        'and nearly every one of them imports something';
+
+    # Every Windows DLL imports KERNEL32; a media stack imports OpenSSL.
+    ok %imports.values.grep({ .first({ .lc eq 'kernel32.dll' }) }).elems
+        > @dlls.elems * 0.9,
+        'almost all of them name KERNEL32.dll, as any Windows DLL must';
+
+    my $notcurses = %imports<libnotcurses.dll> // ();
+    ok $notcurses.first({ .lc.starts-with('avcodec-') })
+        && $notcurses.first({ .lc eq 'libnotcurses-core.dll' }),
+        'and libnotcurses names the ffmpeg and notcurses-core it is built'
+      ~ ' against, which is what its import table should say';
+};
+
+subtest 'the skiplist is measured against the pack, not guessed at', {
+    plan 2;
+
+    my @dlls = pack-dlls();
+    my %have = $dir.dir.grep(*.f).map({ .basename.lc => True });
+    my %missing;
+    for @dlls -> $f {
+        for pe-imports($f).grep({ !pe-system-dll($_) }) -> $name {
+            %missing{$name.lc}.push($f.basename) unless %have{$name.lc};
+        }
+    }
+
+    # A name here is either a Windows DLL missing from PE-SYSTEM-DLLS, or
+    # a genuine hole in the pack. Both fail a Windows release lane at the
+    # audit; this is where they are cheap to find.
+    is-deeply %missing.keys.sort.List, (),
+        'every non-system import in the pack resolves inside the pack'
+      ~ (%missing ?? ": {%missing.sort.map({ .key ~ ' <- ' ~ .value.join(', ') }).join('; ')}"
+                  !! '');
+
+    # The audit, on the layout a bundle actually has: the pack staged
+    # under native/, judged by the same code path a release runs.
+    my $bundle = $work.add('bundle');
+    my $lib = ensure-dir($bundle.add("native/Notcurses-Native/$tag/lib"));
+    .copy($lib.add(.basename)) for $dir.dir.grep(*.f);
+
+    my %audit = App::Ariza::Native.audit(:bundle-dir($bundle),
+                                         :slug<windows-x86_64>);
+    is %audit<checked>, +@dlls,
+        "the Windows audit passes on all {+@dlls} of them, staged the way a"
+      ~ ' bundle stages them';
+};
+
+sub pack-dlls(--> List) {
+    my @out;
+    my @queue = $dir;
+    while @queue {
+        for @queue.shift.dir -> $e {
+            next if $e.l;
+            $e.d ?? @queue.push($e)
+                 !! (@out.push($e) if $e.basename.lc.ends-with('.dll'));
+        }
+    }
+    @out.sort(*.basename).List
+}

@@ -112,6 +112,16 @@ The audit then adds two checks that only exist on a Linux host, because both too
 
 That claim is proved rather than asserted: `xxt/linux-selfcontain-proof.sh` runs the whole thing in a `manylinux` container — real SQLCipher, real Rakudo, the test suite, a real bundle staged and audited, the result re-checked independently in shell, and three negative controls (a planted absolute `NEEDED`, a deleted dependency, a stripped rpath) that must each make the audit fail.
 
+### Self-containment on Windows, and why it needs no Windows machine
+
+PE hides it worst of all, because it records nothing to hide. A vcpkg `sqlcipher.dll` imports `libcrypto-3-x64.dll` by bare name — no path, no `rpath`, nothing in the file that an audit reading tags could object to — and a bundle staging the DLL alone does not load the user's OpenSSL the way the Unix failure does. It does not load **at all**: `LoadLibrary` fails resolving imports, and the app reports `DBDish::SQLCipher needs 'sqlcipher.dll', not found` — a message about the file that is there, produced by the file that is not.
+
+So a Windows bundle gets the same walk-and-copy, spelled the way PE spells it. ariza reads the DLL's own import table (DOS header, PE signature, optional header, data directory, section table — about eighty lines of Raku, because there is no tool to shell out to: `dumpbin` ships with Visual Studio and `objdump` with neither, and a dependency walk that silently finds nothing when its helper is missing is how this hole stayed open). Everything that is not Windows' own — not `KERNEL32`, not the API sets, not the Visual C++ redistributable — is copied in beside the library and recursed into. There is no third step: Windows resolves imports from the importing module's own directory, so putting them in one directory *is* the relocation story.
+
+The search space is exactly one directory: the one the library came from. vcpkg installs a port's whole runtime closure into a single `installed/<triplet>/bin `, so `sqlcipher.dll`'s OpenSSL is the file sitting next to it — and searching wider (`PATH`, `System32`) would find a same-named DLL from a different build of a different version, which is the bug a bundle exists to avoid. An import that is not there fails the build, naming it and the directory searched.
+
+And unlike the Linux pass, none of this needs the platform it is for: reading a PE's imports means reading bytes, not running a loader. A Windows bundle can be assembled, walked and audited from a Mac and get exactly the same verdict it would get on Windows — which makes Windows, counter-intuitively, the platform ariza cross-builds most completely.
+
 Two overrides beat the package managers, in this order: `--sqlcipher-archive=FILE` (an archive to unpack) and `SQLCIPHER_LIB_DIR` (a directory holding the library). Both are how a cross-build works, because they are the only way to be honest about it: a library installed on this machine is built **for** this machine, so ariza refuses to take one when the platform being built is not the platform it is building on. Missing entirely, on any platform, is a death naming the package to install **and** the override to pass — never a silent bundle without a database.
 
 The version in `versions.toml` is **advisory**. The package manager decides what is actually installed, so ariza reads the version out of the staged library's own bytes and warns if it disagrees with the pin:
@@ -211,7 +221,7 @@ The installer scripts that came before a bundle shipped `install-macos.sh` and `
 Windows
 -------
 
-The same shape in PowerShell: `%LOCALAPPDATA%\E<lt>DisplayE<gt>\versions\E<lt>versionE<gt>`, a `current` **junction** rather than a symlink (which would need administrator rights or Developer Mode, and a per-user install has no business demanding either), and `...\current\bin` added once to the user `PATH` in `HKCU\Environment`. Because the PATH entry points through the junction, an upgrade needs no PATH change at all.
+The same shape in PowerShell: `%LOCALAPPDATA%\<Display>\versions\<version> `, a `current` **junction** rather than a symlink (which would need administrator rights or Developer Mode, and a per-user install has no business demanding either), and `...\current\bin` added once to the user `PATH` in `HKCU\Environment`. Because the PATH entry points through the junction, an upgrade needs no PATH change at all.
 
 It is meant to be piped, so it never asks
 -----------------------------------------

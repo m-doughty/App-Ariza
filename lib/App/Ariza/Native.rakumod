@@ -197,6 +197,41 @@ my sub glob-match(Str:D $name, Str:D $pattern --> Bool) {
     $pos <= $name.chars - @parts[*-1].chars
 }
 
+#| Whether a resolved dependency path lies under one of the bundle's own
+#| directory prefixes.
+#|
+#| A resolved target is spelled in the host's native separators
+#| (backslashes, on Windows) while C<@inside>'s prefixes may not share
+#| that spelling — they can arrive already forward-slashed (as, for
+#| instance, App::Ariza::Resources always returns them). Containment is a
+#| path-identity question, not a byte question, so both sides are
+#| normalised to forward slashes before the prefix check. (A Windows
+#| drive letter can also differ in case, C<c:> vs C<C:>; that has not
+#| been the cause of a failure here, so it is left alone rather than
+#| folding case for a normalisation this narrow.)
+#|
+#| Shared by the ELF and PE audits, which ask exactly the same question
+#| of two different loaders.
+my sub path-inside(Str:D $target, @inside --> Bool) {
+    my $path = $target.subst('\\', '/', :g);
+    so @inside.first({ $path.starts-with($_.subst('\\', '/', :g) ~ '/') })
+}
+
+#| The file called C<$name> in C<$dir>, matched the way Windows matches
+#| it: exactly if it can, case-insensitively otherwise. The undefined
+#| C<IO::Path> when there is none.
+#|
+#| The case fold is not cosmetic. An import table records
+#| C<KERNEL32.dll> where the file on disk is C<kernel32.dll>, vcpkg's own
+#| casing varies by port, and a bundle built on a case-insensitive
+#| filesystem must audit the same on a case-sensitive one.
+my sub find-beside(IO::Path $dir, Str:D $name --> IO::Path) {
+    my $exact = $dir.add($name);
+    return $exact if $exact.f;
+    return IO::Path unless $dir.d;
+    $dir.dir.first({ .f && .basename.lc eq $name.lc }) // IO::Path
+}
+
 #| Compares two library filenames the way a version number should be
 #| compared: digit runs numerically, everything else as text — so
 #| C<libsqlcipher-3.34.1.so.0> sorts above C<libsqlcipher-3.9.0.so.0>,
@@ -327,20 +362,8 @@ our sub elf-strays(Str:D $report, :@inside = () --> List) is export {
                 next;
             }
             next unless @inside;
-            # `ldd`-style resolution hands back a target spelled in the
-            # host's native path separators (backslashes, on Windows),
-            # while `:@inside`'s prefixes may not share that spelling —
-            # they can arrive already forward-slashed (as, for instance,
-            # App::Ariza::Resources always returns them). Containment is
-            # a path-identity question, not a byte question, so both
-            # sides are normalised to forward slashes before the prefix
-            # check. (A Windows drive letter can also differ in case,
-            # `c:` vs `C:`; that has not been the cause of a failure
-            # here, so it is left alone rather than folding case for a
-            # normalisation this narrow.)
-            my $target = $dep.value.subst('\\', '/', :g);
             @strays.push("{$dep.key} => {$dep.value}")
-                unless @inside.first({ $target.starts-with($_.subst('\\', '/', :g) ~ '/') });
+                unless path-inside($dep.value, @inside);
         }
     }
 
@@ -369,6 +392,247 @@ our sub binary-format(IO() $file --> Str) is export {
                                   0xCAFE_BABE, 0xBEBA_FECA);
     return 'PE' if $magic[0] == 0x4D && $magic[1] == 0x5A;   # "MZ"
     Str
+}
+
+# The DLLs a Windows bundle must NOT carry a copy of: Windows' own, the
+# Visual C++ redistributable, and the API-set stubs the loader maps out
+# of the OS itself. Everything else is fair game, and gets copied in —
+# which on a vcpkg-sourced SQLCipher means OpenSSL, the entire point of
+# SQLCipher and a library no user's machine has.
+#
+# Every name here ships with Windows, and the list is not speculative:
+# it is the core set, plus exactly the DLLs the payloads ariza actually
+# stages import and do not carry — measured by walking the import table
+# of all 119 DLLs in the notcurses Windows pack and taking the names that
+# resolve nowhere inside it.
+#
+# Erring narrow is deliberate, and the asymmetry is the reason. A DLL
+# that belongs here and is missing fails the build loudly, naming itself
+# and this constant, which is a one-line fix. One that does not belong
+# here and is added anyway ships a bundle that loads a stranger's copy of
+# a library it needed to carry — invisible until a user's machine turns
+# out not to have it.
+#
+# Patterns, matched case-insensitively against the leaf name, where `*`
+# is the only metacharacter.
+our constant PE-SYSTEM-DLLS =
+    # The core Win32 set.
+    'kernel32.dll', 'kernelbase.dll', 'user32.dll', 'advapi32.dll',
+    'gdi32.dll', 'gdiplus.dll', 'msimg32.dll', 'ntdll.dll',
+    'rpcrt4.dll', 'shell32.dll', 'shlwapi.dll', 'ole32.dll',
+    'oleaut32.dll', 'version.dll', 'userenv.dll', 'cfgmgr32.dll',
+    # Sockets and networking.
+    'ws2_32.dll', 'wsock32.dll', 'iphlpapi.dll', 'dnsapi.dll',
+    # Cryptography and security.
+    'bcrypt.dll', 'bcryptprimitives.dll', 'crypt32.dll', 'ncrypt.dll',
+    'secur32.dll',
+    # Text, media and device stacks.
+    'dwrite.dll', 'usp10.dll', 'winmm.dll', 'avrt.dll', 'avicap32.dll',
+    # The C runtimes: the OS's own, the UCRT, and the Visual C++
+    # redistributable — which is a prerequisite, not a payload.
+    'msvcrt.dll', 'ucrtbase.dll', 'vcruntime*.dll', 'msvcp*.dll',
+    # The API sets, which are not files on disk at all: the loader
+    # resolves them out of the OS.
+    'api-ms-win-*.dll', 'ext-ms-*.dll',
+;
+
+# A PE file is read whole to walk its import table; this is the same
+# headroom `sqlcipher-version-of` allows itself. A DLL past it is not a
+# DLL anyone is shipping.
+#
+# The two walk limits are there so a malformed file cannot turn the
+# parser into a loop: the real numbers are 96 sections (the PE format's
+# own ceiling), a few dozen imports, and DLL names well under 64
+# characters.
+my constant PE-MAX-IMPORTS = 4096;
+my constant PE-MAX-NAME    = 512;
+
+# Where the PE header fields this reads live. All little-endian, all
+# fixed by the format.
+my constant PE-LFANEW      = 0x3C;      # in the DOS header
+my constant PE32-MAGIC     = 0x010B;
+my constant PE32PLUS-MAGIC = 0x020B;
+
+#| Whether an imported DLL name is one Windows itself provides, and so
+#| one a bundle neither carries nor audits. Takes a name or a path; only
+#| the leaf is considered, and the comparison is case-insensitive because
+#| the loader's is (C<KERNEL32.dll> and C<kernel32.dll> are one file).
+our sub pe-system-dll(Str:D $name --> Bool) is export {
+    my $leaf = $name.split('/').tail.split('\\').tail.lc;
+    so PE-SYSTEM-DLLS.first({ glob-match($leaf, $_) })
+}
+
+my sub pe-die(IO::Path $file, Str:D $why) {
+    die "ariza: cannot read the imports of {$file.absolute}: $why";
+}
+
+my sub pe-u16(Blob:D $b, Int:D $at, IO::Path $file, Str:D $what --> Int) {
+    pe-die($file, "$what wants 2 bytes at offset $at, and the file is"
+                ~ " {$b.elems} bytes long")
+        if $at < 0 || $at + 2 > $b.elems;
+    $b[$at] +| ($b[$at + 1] +< 8)
+}
+
+my sub pe-u32(Blob:D $b, Int:D $at, IO::Path $file, Str:D $what --> Int) {
+    pe-die($file, "$what wants 4 bytes at offset $at, and the file is"
+                ~ " {$b.elems} bytes long")
+        if $at < 0 || $at + 4 > $b.elems;
+    $b[$at] +| ($b[$at + 1] +< 8) +| ($b[$at + 2] +< 16) +| ($b[$at + 3] +< 24)
+}
+
+#| The NUL-terminated ASCII string at a file offset — how a PE stores
+#| every imported DLL name.
+my sub pe-string(Blob:D $b, Int:D $at, IO::Path $file --> Str) {
+    my $end = $at;
+    $end++ while $end < $b.elems && $end - $at < PE-MAX-NAME && $b[$end];
+    pe-die($file, "an imported DLL name at offset $at runs to the end of the"
+                ~ " file without a terminating NUL")
+        if $end >= $b.elems || $end - $at >= PE-MAX-NAME;
+    pe-die($file, "an imported DLL name at offset $at is empty")
+        unless $end > $at;
+    $b.subbuf($at, $end - $at).decode('latin-1')
+}
+
+my sub pe-bytes(IO::Path $file --> Blob) {
+    pe-die($file, 'it is not a file') unless $file.f;
+    pe-die($file, "it is {$file.s} bytes, past the {PROBE-MAX-BYTES}-byte"
+                ~ " ceiling this reader will read into memory")
+        if $file.s > PROBE-MAX-BYTES;
+    my $bytes = try $file.slurp(:bin);
+    pe-die($file, 'its bytes could not be read') without $bytes;
+    $bytes
+}
+
+#| The DLLs a PE file imports, by name, in the order its import table
+#| lists them.
+#|
+#| This is the Windows half of the self-containment story, and it is
+#| written out rather than shelled out to because there is nothing to
+#| shell out I<to>: C<dumpbin> ships with Visual Studio, not with
+#| Windows, and C<objdump> ships with neither. A staging pass whose
+#| dependency walk silently finds nothing when its helper is missing
+#| produces exactly the bundle the pass exists to prevent — so the
+#| format is parsed here, from the bytes, on any host.
+#|
+#| It is also what makes cross-inspection work: reading a C<.dll>'s
+#| imports needs no Windows, so the audit is as strong from a Mac as it
+#| is on the machine the bundle is for.
+#|
+#| The walk is the standard one — DOS header C<e_lfanew> to the C<PE\0\0>
+#| signature, COFF header for the section count and optional-header size,
+#| optional header (PE32 and PE32+ both, which differ only in where the
+#| data directories start), data directory 1 for the import table's RVA,
+#| then each 20-byte import descriptor's name RVA, mapped back to a file
+#| offset through the section table.
+#|
+#| Anything that does not parse is a die naming the file and what was
+#| wrong with it. There is no undefined-C<Str>-for-"I don't know" return:
+#| the caller is either staging a DLL's dependencies or auditing them,
+#| and a quiet "no imports" answer for a file this cannot read would pass
+#| both.
+#|
+#| Delay-load imports (data directory 13) are B<not> read. They are rare
+#| — no vcpkg-built OpenSSL or SQLCipher uses them — and the descriptor
+#| carries a format ambiguity (older linkers store virtual addresses
+#| where newer ones store RVAs) that would have this guessing. A
+#| delay-loaded dependency would go unstaged and unreported; if one ever
+#| turns up here, it belongs in this parser rather than in a workaround.
+our sub pe-imports(IO() $file --> List) is export {
+    my $b = pe-bytes($file);
+
+    pe-die($file, 'it does not begin with "MZ", so it is not a PE file at all')
+        unless $b.elems >= 2 && $b[0] == 0x4D && $b[1] == 0x5A;
+
+    my $pe = pe-u32($b, PE-LFANEW, $file, "the DOS header's e_lfanew");
+    pe-die($file, "its e_lfanew points at offset $pe, which is past the end"
+                ~ " of a {$b.elems}-byte file")
+        if $pe < 0 || $pe + 24 > $b.elems;
+    pe-die($file, "there is no \"PE\\0\\0\" signature at offset $pe, where"
+                ~ " e_lfanew points")
+        unless $b[$pe] == 0x50 && $b[$pe + 1] == 0x45
+            && $b[$pe + 2] == 0 && $b[$pe + 3] == 0;
+
+    my $coff     = $pe + 4;
+    my $sections = pe-u16($b, $coff + 2,  $file, 'NumberOfSections');
+    my $opt-size = pe-u16($b, $coff + 16, $file, 'SizeOfOptionalHeader');
+    my $opt      = $coff + 20;
+
+    # An object file (or a pure-resource DLL built as one) has no
+    # optional header, and so no data directories and no imports.
+    return () unless $opt-size;
+
+    my $magic = pe-u16($b, $opt, $file, 'the optional header magic');
+    my ($dirs, $dir-count-at) = do given $magic {
+        when PE32-MAGIC     { ($opt + 96,  $opt + 92)  }
+        when PE32PLUS-MAGIC { ($opt + 112, $opt + 108) }
+        default {
+            pe-die($file, sprintf('its optional header magic is 0x%04X, which'
+                                ~ ' is neither PE32 (0x010B) nor PE32+'
+                                ~ ' (0x020B)', $magic));
+        }
+    };
+
+    # A file with fewer than two data directories has no import table
+    # entry to read — legal, and means it imports nothing.
+    my $ndirs = pe-u32($b, $dir-count-at, $file, 'NumberOfRvaAndSizes');
+    return () if $ndirs < 2;
+
+    my $imports = pe-u32($b, $dirs + 8, $file, "the import table's RVA");
+    return () unless $imports;
+
+    my $table = $opt + $opt-size;
+    pe-die($file, "its $sections section header(s) do not fit inside a"
+                ~ " {$b.elems}-byte file")
+        if $sections < 1 || $table + 40 * $sections > $b.elems;
+
+    my @sections = (^$sections).map(-> $i {
+        my $s = $table + 40 * $i;
+        %( rva   => pe-u32($b, $s + 12, $file, 'a section VirtualAddress'),
+           vsize => pe-u32($b, $s + 8,  $file, 'a section VirtualSize'),
+           raw   => pe-u32($b, $s + 20, $file, 'a section PointerToRawData'),
+           rsize => pe-u32($b, $s + 16, $file, 'a section SizeOfRawData') )
+    });
+
+    # RVA to file offset: the section table is the only map between the
+    # addresses a PE records and the bytes on disk. A section's virtual
+    # size can exceed what is stored (zero-filled tail), which is why the
+    # span and the on-disk length are checked separately.
+    my sub at(Int:D $rva, Str:D $what --> Int) {
+        for @sections -> %s {
+            my $span = %s<vsize> || %s<rsize>;
+            next unless $span && $rva >= %s<rva> && $rva - %s<rva> < $span;
+            my $offset = %s<raw> + $rva - %s<rva>;
+            pe-die($file, sprintf('%s is at RVA 0x%X, which falls in a section'
+                                ~ ' that has no bytes for it in the file',
+                                  $what, $rva))
+                if $rva - %s<rva> >= %s<rsize> || $offset >= $b.elems;
+            return $offset;
+        }
+        pe-die($file, sprintf('%s is at RVA 0x%X, which falls in none of its'
+                            ~ ' %d section(s)', $what, $rva, +@sections));
+    }
+
+    my $descriptors = at($imports, 'the import table');
+    my @names;
+    my $terminated = False;
+    for ^PE-MAX-IMPORTS -> $i {
+        my $d = $descriptors + 20 * $i;
+        # The array ends with an all-zero descriptor; a file that runs
+        # out of bytes before one is truncated, and pe-u32 says so.
+        my $thunk = pe-u32($b, $d,      $file, 'an import descriptor');
+        my $name  = pe-u32($b, $d + 12, $file, "an import descriptor's name RVA");
+        my $first = pe-u32($b, $d + 16, $file, 'an import descriptor');
+        if !$thunk && !$name && !$first {
+            $terminated = True;
+            last;
+        }
+        @names.push(pe-string($b, at($name, 'an imported DLL name'), $file));
+    }
+    pe-die($file, "its import table has more than {PE-MAX-IMPORTS} entries and"
+                ~ " no terminator, so it is not an import table")
+        unless $terminated;
+
+    @names.unique.List
 }
 
 #| The C<readelf> on this machine, C<eu-readelf> where elfutils stands in
@@ -748,6 +1012,13 @@ method stage-sqlcipher(
     elsif %l<family> eq 'linux' {
         @staged.append: self!stage-elf-deps($lib, $dest-dir, :$host-kernel, :&run);
     }
+    elsif %l<family> eq 'windows' {
+        # The source library's own directory is the search space, and
+        # $src is the file itself — for an archive, the copy unpacked
+        # into the staging directory, whose siblings came out of the same
+        # archive.
+        @staged.append: self!stage-pe-deps($lib, $dest-dir, $src.parent);
+    }
 
     with %l<alias> -> $alias {
         self!alias-library($lib, $dest-dir.add($alias));
@@ -971,6 +1242,74 @@ method !set-origin-rpath(IO::Path $file, :&run!) {
         unless $code == 0;
 }
 
+#| Make a staged PE self-contained: copy every non-system DLL it imports
+#| in beside it, and recurse into each copy.
+#|
+#| Returns the extra files copied alongside, for the manifest and the
+#| audit.
+#|
+#| There is no rpath step and no rewriting: Windows resolves an import by
+#| name, and the first place it looks is the directory of the module
+#| doing the importing. Putting the DLLs in one directory I<is> the
+#| relocation story, which is why this pass is shorter than the other
+#| two and why its audit is a containment check rather than a tag check.
+#|
+#| Nor is there a host guard. C<pe-imports> reads the file rather than
+#| asking the machine, so a Windows bundle assembled from an archive on a
+#| Mac gets exactly the same walk, the same copies and the same audit as
+#| one built on Windows.
+#|
+#| A file that is not a PE is skipped, the same way the ELF pass skips a
+#| non-ELF and the audit skips both: there is nothing to walk.
+method !stage-pe-deps(IO::Path $lib, IO::Path $dir, IO::Path $from --> List) {
+    return () unless (binary-format($lib) // '') eq 'PE';
+    self!copy-pe-deps($lib, $dir, $from)
+}
+
+#| Copy a PE's non-system imports in beside it, recursively, out of
+#| C<$from>.
+#|
+#| C<$from> is the directory the staged library itself came from, and it
+#| is the only place searched. That is a contract with the source rather
+#| than a shortcut: a vcpkg port installs its whole runtime closure into
+#| one C<installed/E<lt>tripletE<gt>/bin>, so C<sqlcipher.dll>'s OpenSSL
+#| is the C<libcrypto-3-x64.dll> sitting beside it — and searching wider
+#| (C<PATH>, C<System32>) would pick up a same-named DLL from a different
+#| build of a different version, which is precisely the bug a bundle
+#| exists to avoid. An import that is not there is fatal and says both
+#| the name and the directory, because there is nothing honest to do with
+#| it.
+method !copy-pe-deps(IO::Path $file, IO::Path $dir, IO::Path $from,
+                     :%seen = {} --> List) {
+    my @added;
+    %seen{$file.basename.lc} = True;
+
+    for pe-imports($file).grep({ !pe-system-dll($_) }) -> $name {
+        my $src = find-beside($from, $name)
+            // die "ariza: {$file.basename} imports $name, which is not in"
+                 ~ " {$from.absolute}.\n"
+                 ~ "    That directory is where ariza looks for everything a"
+                 ~ " staged DLL needs, because the package that shipped the"
+                 ~ " DLL puts its whole runtime closure there. Point"
+                 ~ " {SQLCIPHER-DIR-ENV} at a directory holding"
+                 ~ " {$file.basename} and every DLL it imports, or — if"
+                 ~ " $name is part of Windows itself — add it to"
+                 ~ " App::Ariza::Native's PE-SYSTEM-DLLS.";
+
+        my $copy = $dir.add($name);
+        unless $copy.e {
+            copy-writable($src, $copy);
+            @added.push($copy);
+        }
+        # Keyed by name rather than by path, and folded, because Windows
+        # resolves imports that way: one file answers for every spelling.
+        @added.append: self!copy-pe-deps($copy, $dir, $from, :%seen)
+            unless %seen{$name.lc};
+    }
+
+    @added.List
+}
+
 #| Give a staged library its second name — C<libsqlcipher.dylib> beside
 #| C<libsqlcipher.0.dylib> — so both resolve to one loaded image.
 #|
@@ -1018,14 +1357,57 @@ method !find-under(IO::Path $dir, Str:D $name --> IO::Path) {
 
 #| Every dependency a PE audit can object to.
 #|
-#| Windows resolves DLLs by name from the loading module's directory and
-#| C<PATH>, with no C<rpath> equivalent recorded in the file, so there is
-#| nothing in a PE to audit the way C<otool -L> audits a Mach-O. What can
-#| be checked is that the payload is there and is not a stub, which is
-#| what the default inspector reports. Stated plainly rather than dressed
-#| up: it is a weaker check because the format gives less to check.
-our sub pe-strays(Str:D $report --> List) is export {
-    $report.lines.map(*.trim).grep(*.chars).unique.List
+#| The report is the same C<< name => path >> shape C<ldd> produces, one
+#| line per non-system import, with C<not found> for an import that is
+#| nowhere the loader would look. Any other non-empty line is a finding
+#| in its own words — that is how C<empty file> and C<not a PE file>
+#| reach the failure message.
+#|
+#| Every dependency must resolve to a path under one of C<:@inside> (the
+#| bundle), by the same separator-normalised comparison the ELF audit
+#| uses. With no C<:@inside> given, containment cannot be judged and only
+#| C<not found> is reported.
+our sub pe-strays(Str:D $report, :@inside = () --> List) is export {
+    my @strays;
+    for $report.lines.map(*.trim).grep(*.chars) -> $line {
+        unless $line.contains(' => ') {
+            @strays.push($line);
+            next;
+        }
+        my ($name, $path) = $line.split(' => ', 2).map(*.trim);
+        next unless $name.chars;
+        # The inspector has already dropped these; a hand-written report
+        # (a test, a future inspector) should not be judged differently.
+        next if pe-system-dll($name);
+        unless $path.chars && $path ne 'not found' {
+            @strays.push("$name => not found");
+            next;
+        }
+        next unless @inside;
+        @strays.push($line) unless path-inside($path, @inside);
+    }
+    @strays.unique.List
+}
+
+#| The report the PE audit judges: every non-system import of a staged
+#| DLL, resolved the way Windows resolves it for a bundled library —
+#| beside the file that imports it.
+#|
+#| Beside, and nowhere else, is the whole rule. The loader searches the
+#| loading module's own directory first, and everything ariza stages for
+#| Windows lands in one directory, so an import that is not there is one
+#| the user's C<PATH> would have to answer for — which is the failure
+#| this audit exists to catch.
+#|
+#| The path is resolved before it is reported, so a link pointing out of
+#| the bundle is judged by where it goes rather than by where it sits.
+my sub pe-report(IO::Path $file --> Str) {
+    pe-imports($file).grep({ !pe-system-dll($_) }).map(-> $name {
+        my $found = find-beside($file.parent, $name);
+        "$name => " ~ ($found.defined
+            ?? ((try { $found.resolve.absolute }) // $found.absolute)
+            !! 'not found')
+    }).join("\n")
 }
 
 #| Audit every native binary ariza put into the bundle.
@@ -1069,7 +1451,7 @@ method audit(
     my &strays = do given $family {
         when 'macos'   { &macho-strays }
         when 'linux'   { -> Str $r { elf-strays($r, :@inside) } }
-        when 'windows' { &pe-strays }
+        when 'windows' { -> Str $r { pe-strays($r, :@inside) } }
         default { die "ariza: no native audit knows how to check '$slug'" }
     };
     my &probe = &inspect // self!default-inspector($family, :$host-kernel, :&run);
@@ -1145,9 +1527,17 @@ method !default-inspector(Str:D $family, Str:D :$host-kernel!,
             # No `return` here: a pointy block is a Block, not a Routine,
             # and returning from one dies outside its dynamic scope.
             -> IO::Path $f {
-                $f.basename.lc.ends-with('.dll')
-                    ?? ($f.s > 0 ?? '' !! 'empty file')
-                    !! Str
+                if (binary-format($f) // '') eq 'PE' {
+                    pe-report($f)
+                }
+                # A file named like a DLL that is not one is a finding,
+                # not a skip: something put it there, and the loader will
+                # be asked for it by name.
+                elsif $f.basename.lc.ends-with('.dll') {
+                    $f.s > 0 ?? 'not a PE file, though it is named like one'
+                             !! 'empty file'
+                }
+                else { Str }
             }
         }
         default { die "ariza: no native audit knows how to check '$family'" }
@@ -1215,6 +1605,13 @@ say macho-strays(qq:to/OUT/);
     	/opt/homebrew/lib/libcrypto.3.dylib (compatibility version 3.0.0)
     OUT
 # (/opt/homebrew/lib/libcrypto.3.dylib)
+
+# Windows needs no tool: a PE's import table is read out of its bytes,
+# from any host.
+say pe-imports('sqlcipher.dll'.IO);
+# (libcrypto-3-x64.dll KERNEL32.dll api-ms-win-crt-heap-l1-1-0.dll)
+say pe-imports('sqlcipher.dll'.IO).grep({ !pe-system-dll($_) });
+# (libcrypto-3-x64.dll)
 
 =end code
 
@@ -1311,7 +1708,11 @@ C<apk add sqlcipher-libs>, and C<--sqlcipher-archive>.
 
 =item2 B<Windows> — a vcpkg tree under C<VCPKG_ROOT>, since there is no
 package manager here ariza can drive. Absent is a die naming
-C<SQLCIPHER_LIB_DIR> and C<--sqlcipher-archive>.
+C<SQLCIPHER_LIB_DIR> and C<--sqlcipher-archive>. Whichever directory
+answers, it is more than where the DLL is found: it is also the search
+space for everything that DLL imports (see below), because a vcpkg port
+installs its whole runtime closure into one
+C<installed/E<lt>tripletE<gt>/bin>.
 
 =head2 A system library only fits the system it came from
 
@@ -1428,6 +1829,70 @@ made by C<bundle-elf.sh> is) and refusing would take away the only
 cross-build route there is. C<ariza> having no C<patchelf> on a Linux
 host is fatal, and names the package to install.
 
+=head2 Making the staged library self-contained (Windows)
+
+Windows hides the problem worst of all, because it does not record it
+anywhere. A vcpkg C<sqlcipher.dll> imports C<libcrypto-3-x64.dll> by bare
+name — no path, no C<rpath>, no C<RUNPATH>, nothing a file-reading audit
+had anything to say about. Staging the DLL on its own therefore produced
+a bundle whose SQLCipher could not load B<at all>: not "loads the user's
+OpenSSL", which is the Unix failure, but C<LoadLibrary> failing during
+import resolution, which surfaces as
+
+=begin code :lang<console>
+
+DBDish::SQLCipher needs 'sqlcipher.dll', not found
+
+=end code
+
+— a message about the DLL that I<is> there, produced by the DLL that is
+not. Two earlier fixes for that symptom (putting the bundle's
+C<native/sqlcipher> on the smoke's C<PATH>, and naming C<zef.raku>
+rather than C<zef.bat>) were both real bugs and neither could have made
+it go away, because there was no OpenSSL in the bundle for any C<PATH>
+to point at.
+
+So Windows gets the same walk-and-copy the other two get, spelled the
+way PE spells it:
+
+=item1 B<Walk.> C<pe-imports> reads the import table out of the file:
+DOS header to C<PE\0\0>, the optional header (PE32 or PE32+), data
+directory 1, and each descriptor's name RVA mapped back through the
+section table. No tool is involved, because there is no tool to involve
+— C<dumpbin> ships with Visual Studio and C<objdump> with neither — and
+a dependency walk that finds nothing when its helper is absent produces
+exactly the bundle this pass exists to prevent.
+
+=item1 B<Copy in.> Every import that is not on C<PE-SYSTEM-DLLS> is
+copied in beside the library and recursed into. The skiplist is Windows'
+own DLLs, the API sets, and the Visual C++ redistributable; it is not
+guessed at, but measured — the core Win32 set plus exactly the names the
+119 DLLs of the notcurses Windows pack import and do not carry, which
+C<xt/03-pe-imports.rakutest> re-measures against the published pack.
+B<C<libcrypto> is not on it>, for the same reason it is not on the ELF
+one.
+
+=item1 B<Nothing else.> There is no third step. Windows resolves an
+import by name from the directory of the module doing the importing, so
+putting the DLLs in one directory I<is> the relocation story — no
+C<install_name_tool>, no C<patchelf>, nothing to re-sign.
+
+The search space for the copy is one directory: the one the staged
+library itself came from. That is a contract with the source rather than
+a shortcut. vcpkg installs a port's whole runtime closure into a single
+C<bin>, so C<sqlcipher.dll>'s OpenSSL is the C<libcrypto-3-x64.dll>
+sitting next to it — and searching wider (C<PATH>, C<System32>) would
+find a same-named DLL from a different build of a different version,
+which is the bug a bundle exists to avoid rather than a fallback worth
+having. An import that is not in that directory is fatal, and the death
+names the import, the directory, and the two things it could mean.
+
+Unlike the ELF pass, this one needs no host of its own. Reading a PE's
+imports needs no Windows, so a Windows bundle assembled from
+C<--sqlcipher-archive> on a Mac gets the same walk, the same copies and
+the same audit as one built on Windows. Windows is, as of this pass, the
+platform ariza cross-builds most completely.
+
 =head1 THE AUDIT
 
 C<audit> walks every file ariza put into the bundle's native
@@ -1493,12 +1958,34 @@ these two, are reachable from a test on a Mac.
 
 =head2 PE
 
-Windows resolves DLLs by name from the loading module's directory and
-C<PATH>, with no C<rpath> equivalent recorded in the file, so there is
-nothing in a PE to audit the way C<otool -L> audits a Mach-O. What is
-checked is that the payload is present and non-empty. This is stated
-plainly rather than dressed up: it is a weaker check because the format
-gives less to check, not because the platform matters less.
+Every non-system DLL a staged C<.dll> imports must be a file inside the
+bundle, and the audit resolves each one to find out.
+
+This used to be a presence check — "the payload is there and is not
+empty" — on the reasoning that a PE records no C<rpath> to inspect, so
+there was nothing to audit. That reasoning was wrong, and expensively:
+what a PE records is its B<import table>, which is the entire question.
+A bundle holding C<sqlcipher.dll> and nothing else passed the presence
+check with two files and no findings, and failed at C<LoadLibrary> on
+the first Windows machine that ran it. An audit that cannot see the hole
+its own staging leaves is worse than no audit, because it is quoted in
+the release notes.
+
+So the audit reads the same import table C<pe-imports> reads for
+staging, drops the C<PE-SYSTEM-DLLS> names, and resolves what is left
+against the directory the file sits in — which is how Windows itself
+resolves it for a bundled DLL, and everything ariza stages for Windows
+lands in one directory. C<not found> is a finding; so is a dependency
+that resolves outside C<:@inside> (the bundle), by the same
+separator-normalised containment check the ELF audit uses. A file named
+like a DLL that is not a PE, or is empty, is a finding in those words,
+and a PE the parser cannot read stops the audit rather than passing
+through it as "checked".
+
+It needs no Windows to do any of this: the file is read, not run. The
+Windows verdict is as strong from a Mac as it is on the machine the
+bundle is for — which is the opposite of the ELF story, and worth saying
+because the platforms are usually assumed to rank the other way round.
 
 =head2 The verdict functions are pure, and the tool call is a seam
 
@@ -1555,31 +2042,56 @@ the undefined C<Str> when they do not say so unambiguously. Exported.
 The naming and placement rules, exposed individually so the manifest and
 the launcher template agree with what was actually staged.
 
-=head2 macho-strays(Str --> List) / elf-strays(Str, :@inside --> List) / pe-strays(Str --> List)
+=head2 macho-strays(Str --> List) / elf-strays(Str, :@inside --> List) / pe-strays(Str, :@inside --> List)
 
 The pure verdict functions, exported. C<:@inside> is the list of
-directory prefixes an ELF's dependencies are allowed to resolve under —
-the bundle, spelled both as given and as resolved. With none, the
-containment half of the C<ldd> check has nothing to judge against and
-only C<not found> is reported.
+directory prefixes a dependency is allowed to resolve under — the
+bundle, spelled both as given and as resolved. With none, the
+containment half has nothing to judge against and only C<not found> is
+reported. ELF and PE share the comparison, which normalises separators
+on both sides: a resolved target is spelled in the host's separators
+(backslashes, on Windows) and C<:@inside>'s prefixes may not be.
 
 =head2 binary-format(IO() --> Str)
 
 C<'Mach-O'>, C<'ELF'>, C<'PE'> or the undefined C<Str>, by magic number.
 Exported.
 
-=head2 elf-system-lib(Str --> Bool) / elf-needed(Str --> List) / ldd-deps(Str --> List)
+=head2 pe-imports(IO() --> List)
 
-The ELF skiplist membership test, the C<DT_NEEDED> sonames in
-C<readelf -d> output, and the C<soname =E<gt> path> pairs in C<ldd>
-output (the undefined C<Str> for C<not found>). All pure, all exported.
+The DLLs a PE file imports, by name, in import-table order. Reads the
+bytes — DOS header, PE signature, COFF header, optional header (PE32 and
+PE32+ both), data directory 1, the import descriptors, and the section
+table that maps their RVAs back to file offsets — so it answers on any
+host, for any C<.dll> or C<.exe>, with no toolchain installed. Exported.
+
+Anything that does not parse is a die naming the file and what was wrong
+with it: an empty answer for an unreadable file would pass both callers
+(staging and the audit) silently, which is the failure mode the whole
+pass exists to remove. Delay-load imports (data directory 13) are not
+read; the Pod above says why.
+
+=head2 elf-system-lib(Str --> Bool) / pe-system-dll(Str --> Bool)
+
+The skiplist membership tests: whether a soname or an imported DLL name
+is one the platform provides and a bundle must therefore not carry.
+C<pe-system-dll> folds case, because the Windows loader does. Both take
+a name or a path and consider only the leaf. Exported.
+
+=head2 elf-needed(Str --> List) / ldd-deps(Str --> List)
+
+The C<DT_NEEDED> sonames in C<readelf -d> output, and the
+C<soname =E<gt> path> pairs in C<ldd> output (the undefined C<Str> for
+C<not found>). Both pure, both exported.
 
 =head1 SEE ALSO
 
 L<App::Ariza::Site> (which stages notcurses), L<App::Ariza::Launcher>
-(which names the Linux and Windows library paths at run time), and
+(which names the Linux and Windows library paths at run time),
 C<xxt/linux-selfcontain-proof.sh> (which proves the Linux half of this
-module in a container, negative controls included).
+module in a container, negative controls included), and
+C<xt/03-pe-imports.rakutest> (which runs the PE parser and the skiplist
+over the 119 DLLs of the published notcurses Windows pack).
 
 =head1 AUTHOR
 

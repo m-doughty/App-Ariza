@@ -6,7 +6,7 @@ use App::Ariza::Platform;
 use App::Ariza::Tools;
 use App::Ariza::Versions;
 
-plan 24;
+plan 28;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-native-{$*PID}-{(^1_000_000).pick}");
@@ -33,6 +33,86 @@ sub fake-elf(IO::Path $path, Str :$version = '4.14.0' --> IO::Path) {
     ensure-dir($path.parent);
     $path.spurt(buf8.new(0x7F, 0x45, 0x4C, 0x46)
                 ~ "fake payload\x[00]$version\x[00]trailing\x[00]".encode('latin-1'));
+    $path
+}
+
+#| A real, if minimal, PE file: DOS header, PE signature, COFF header,
+#| optional header (PE32+ by default, PE32 with C<:pe32>), one C<.rdata>
+#| section, and inside it an import descriptor array naming C<@imports>.
+#|
+#| Hand-packed rather than downloaded, because C<t/> has to pass in a
+#| tunnel — and because a fixture assembled from parts can be malformed
+#| on purpose, which no real DLL can. C<xt/03-pe-imports.rakutest> runs
+#| the same parser over the genuine article.
+#|
+#| The layout is the standard one: C<e_lfanew> at 0x3C points at 0x80,
+#| the section's bytes start at 0x400 and are mapped at RVA 0x1000, so
+#| every RVA in the import table has to travel through the section table
+#| to become a file offset — which is the part of the parser worth
+#| exercising.
+sub pe-bytes(@imports, Bool :$pe32 = False, Int :$ndirs = 16,
+             Int :$magic, Int :$sections = 1 --> Buf) {
+    my sub put16(@b, Int $at, Int $n) {
+        @b[$at] = $n +& 0xFF;  @b[$at + 1] = ($n +> 8) +& 0xFF;
+    }
+    my sub put32(@b, Int $at, Int $n) {
+        @b[$at]     = $n         +& 0xFF;  @b[$at + 1] = ($n +> 8)  +& 0xFF;
+        @b[$at + 2] = ($n +> 16) +& 0xFF;  @b[$at + 3] = ($n +> 24) +& 0xFF;
+    }
+
+    my $dir-at   = $pe32 ?? 96 !! 112;      # data directories, within the
+    my $count-at = $pe32 ?? 92 !! 108;      # optional header
+    my $opt-size = $dir-at + 8 * $ndirs;
+    my $pe-off   = 0x80;
+    my $coff     = $pe-off + 4;
+    my $opt      = $coff + 20;
+    my $sec-tab  = $opt + $opt-size;
+    my $raw      = 0x400;                   # section bytes start here
+    my $sec-rva  = 0x1000;                  # and are mapped here
+
+    # The section: one 20-byte descriptor per import, an all-zero one to
+    # end the array, then the NUL-terminated names they point at.
+    my $names-at = (@imports.elems + 1) * 20;
+    my @sec      = 0 xx $names-at;
+    my $cursor   = $names-at;
+    for @imports.kv -> $i, $name {
+        put32(@sec, $i * 20 + 12, $sec-rva + $cursor);   # Name RVA
+        put32(@sec, $i * 20 + 16, 0x3000 + $i);          # FirstThunk
+        @sec.push($_) for $name.encode('ascii').list;
+        @sec.push(0);
+        $cursor += $name.chars + 1;
+    }
+
+    my @b = 0 xx ($raw + @sec.elems);
+    @b[0] = 0x4D; @b[1] = 0x5A;                          # "MZ"
+    put32(@b, 0x3C, $pe-off);
+    @b[$pe-off] = 0x50; @b[$pe-off + 1] = 0x45;          # "PE\0\0"
+
+    put16(@b, $coff, 0x8664);                            # Machine
+    put16(@b, $coff + 2, $sections);
+    put16(@b, $coff + 16, $opt-size);
+    put16(@b, $opt, $magic // ($pe32 ?? 0x010B !! 0x020B));
+    put32(@b, $opt + $count-at, $ndirs);
+    if $ndirs >= 2 {
+        put32(@b, $opt + $dir-at + 8, $sec-rva);         # import table RVA
+        put32(@b, $opt + $dir-at + 12, $names-at);       # and its size
+    }
+
+    my $name = '.rdata';
+    @b[$sec-tab + $_] = $name.substr($_, 1).ord for ^$name.chars;
+    put32(@b, $sec-tab + 8,  @sec.elems);                # VirtualSize
+    put32(@b, $sec-tab + 12, $sec-rva);                  # VirtualAddress
+    put32(@b, $sec-tab + 16, @sec.elems);                # SizeOfRawData
+    put32(@b, $sec-tab + 20, $raw);                      # PointerToRawData
+
+    @b[$raw + $_] = @sec[$_] for ^@sec.elems;
+    buf8.new(@b)
+}
+
+#| The same, written to a file.
+sub fake-pe(IO::Path $path, @imports, |c --> IO::Path) {
+    ensure-dir($path.parent);
+    $path.spurt(pe-bytes(@imports, |c));
     $path
 }
 
@@ -953,23 +1033,243 @@ subtest 'the Linux audit, on Linux, asks patchelf and a clean-env ldd', {
     }, 'and cross-inspecting from a Mac runs neither tool';
 };
 
-subtest 'the Windows audit is a presence check, and says so', {
-    plan 3;
+subtest 'a PE\'s imports are read out of its bytes, on any host', {
+    plan 10;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    is-deeply pe-imports(fake-pe($dir.add('sqlcipher.dll'),
+            <libcrypto-3-x64.dll KERNEL32.dll libz.dll>)).List,
+        <libcrypto-3-x64.dll KERNEL32.dll libz.dll>,
+        'every name in the import table, in the order it lists them —'
+      ~ ' through the section table, since the descriptors point at RVAs';
+
+    # PE32 and PE32+ differ only in where the data directories start, and
+    # a 32-bit build of anything is a PE32.
+    is-deeply pe-imports(fake-pe($dir.add('thirtytwo.dll'),
+            <libcrypto-3.dll KERNEL32.dll>, :pe32)).List,
+        <libcrypto-3.dll KERNEL32.dll>, 'PE32 as well as PE32+';
+
+    is-deeply pe-imports(fake-pe($dir.add('twice.dll'),
+            <libz.dll libz.dll>)).List, ('libz.dll',),
+        'a DLL named by two descriptors is one dependency';
+
+    is-deeply pe-imports(fake-pe($dir.add('nothing.dll'), ())).List, (),
+        'a PE that imports nothing has nothing to report';
+    is-deeply pe-imports(fake-pe($dir.add('nodirs.dll'), ['libz.dll'],
+            :ndirs(1))).List, (),
+        'nor has one with no import entry in its data directories at all';
+
+    # Every malformed shape names the file, because the caller is either
+    # staging its dependencies or auditing them and a quiet "no imports"
+    # would pass both.
+    $dir.add('text.dll').spurt('this is not a PE file');
+    throws-like { pe-imports($dir.add('text.dll')) }, Exception,
+        message => /'text.dll' .* 'does not begin with "MZ"'/,
+        'a file that is not a PE is named, and so is what is wrong with it';
+
+    $dir.add('stub.dll').spurt('MZ' ~ "\0" x 200);
+    throws-like { pe-imports($dir.add('stub.dll')) }, Exception,
+        message => /'stub.dll' .* 'PE\\0\\0'/,
+        'as is a DOS stub with no PE header behind it';
+
+    my $whole = pe-bytes(['libz.dll']);
+    $dir.add('cut.dll').spurt($whole.subbuf(0, $whole.elems - 30));
+    throws-like { pe-imports($dir.add('cut.dll')) }, Exception,
+        message => /'cut.dll' .* 'import descriptor'/,
+        'and a truncated import table, rather than being read as "no more'
+      ~ ' imports"';
+
+    throws-like {
+        pe-imports(fake-pe($dir.add('alien.dll'), ['libz.dll'], :magic(0x0107)))
+    }, Exception, message => /'alien.dll' .* '0x0107' .* 'PE32+'/,
+        'an optional header that is neither PE32 nor PE32+ says which it'
+      ~ ' found and which two it wanted';
+
+    throws-like { pe-imports($dir.add('absent.dll')) }, Exception,
+        message => /'absent.dll' .* 'not a file'/,
+        'and a file that is not there is an error, not an empty answer —'
+      ~ ' unlike the version probe, nobody has a pin to fall back on';
+};
+
+subtest 'the PE skiplist keeps Windows out and OpenSSL in', {
+    plan 9;
+
+    ok pe-system-dll('KERNEL32.dll'), 'Windows\' own DLLs stay dynamic';
+    ok pe-system-dll('kernel32.dll'),
+        'matched the way the loader matches them, without regard to case';
+    ok pe-system-dll('api-ms-win-crt-runtime-l1-1-0.dll'),
+        'and the API sets, which are not files on disk at all';
+    ok pe-system-dll('VCRUNTIME140_1.dll'),
+        'as does the Visual C++ redistributable, which is a prerequisite';
+    ok pe-system-dll('MSVCP140.dll'), 'both halves of it';
+    ok pe-system-dll('gdi32.dll'),
+        'and the wider Win32 surface the notcurses pack actually imports';
+
+    # The same deliberate difference the ELF skiplist has: SQLCipher
+    # without its own OpenSSL is SQLCipher that opens the user's database
+    # with whatever their machine has, or not at all.
+    nok pe-system-dll('libcrypto-3-x64.dll'),
+        'OpenSSL is bundled, not borrowed';
+    nok pe-system-dll('zlib1.dll'), 'and anything else a DLL drags in';
+    nok pe-system-dll('libwinpthread-1.dll'),
+        'including the runtime a MinGW-built payload carries with it';
+};
+
+subtest 'pe-strays judges a resolved report, as the ELF audit does', {
+    plan 8;
+
+    my $inside = "libcrypto-3-x64.dll => /b/native/sqlcipher/libcrypto-3-x64.dll";
+    is-deeply pe-strays($inside, :inside(['/b'])).List, (),
+        'a dependency resolved inside the bundle is exactly right';
+
+    is-deeply pe-strays("libcrypto-3-x64.dll => C:\\Windows\\System32\\libcrypto-3-x64.dll",
+                        :inside(['C:/b'])).List,
+        ('libcrypto-3-x64.dll => C:\\Windows\\System32\\libcrypto-3-x64.dll',),
+        'and one resolved outside it is a finding, with the path it went to';
+
+    is-deeply pe-strays("libcrypto-3-x64.dll => not found", :inside(['/b'])).List,
+        ('libcrypto-3-x64.dll => not found',),
+        'a dependency that is nowhere the loader looks is a finding too';
+
+    # The Windows spelling of the same containment question the ELF audit
+    # asks: a native-separator path against a forward-slashed prefix.
+    is-deeply pe-strays("libcrypto-3-x64.dll => C:\\b\\native\\sqlcipher\\libcrypto-3-x64.dll",
+                        :inside(['C:/b'])).List, (),
+        'separators are normalised on both sides before the prefix check,'
+      ~ ' so a backslash path inside a forward-slashed bundle is contained';
+
+    is-deeply pe-strays("KERNEL32.dll => not found", :inside(['/b'])).List, (),
+        'a system DLL is not judged at all, wherever it did or did not resolve';
+
+    is-deeply pe-strays('empty file').List, ('empty file',),
+        'a line that is not a dependency is a finding in its own words';
+
+    is-deeply pe-strays("libz.dll => /elsewhere/libz.dll").List, (),
+        'with no :@inside there is nothing to judge containment against';
+    is-deeply pe-strays("libz.dll => not found").List,
+        ('libz.dll => not found',),
+        'and "not found" is still a finding, which needs no bundle to know';
+};
+
+subtest 'Windows staging copies in every DLL the library imports', {
+    plan 9;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # A vcpkg `installed/<triplet>/bin`: the port's whole runtime closure
+    # in one directory, which is the contract this pass relies on.
+    my $bin = $dir.add('vcpkg/installed/x64-windows/bin');
+    fake-pe($bin.add('sqlcipher.dll'),
+        <LIBCRYPTO-3-X64.DLL KERNEL32.dll api-ms-win-crt-heap-l1-1-0.dll>);
+    fake-pe($bin.add('libcrypto-3-x64.dll'), <zlib1.dll ADVAPI32.dll>);
+    fake-pe($bin.add('zlib1.dll'), ['KERNEL32.dll']);
+    fake-pe($bin.add('unrelated.dll'), ['KERNEL32.dll']);
+
+    my $bundle = ensure-dir($dir.add('bundle'));
+    my %staged;
+    # A hand-packed PE carries no version constant, so the advisory-pin
+    # warning fires; captured rather than left in the transcript.
+    notes-from({
+        %staged = App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+            :slug<windows-x86_64>, :versions(versions()),
+            # Deliberately a Mac: reading imports needs no Windows, so the
+            # Windows pass is the one that cross-builds completely.
+            :host-slug<macos-arm64>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR => $bin.absolute )));
+    });
+
+    my $dest = $bundle.add('native/sqlcipher');
+    ok $dest.add('LIBCRYPTO-3-X64.DLL').f,
+        'the OpenSSL the DLL imports is copied in beside it, found in the'
+      ~ ' source directory whatever case the import table spelled it in';
+    ok $dest.add('zlib1.dll').f,
+        'and the walk recurses, so its own imports come too';
+    nok $dest.add('KERNEL32.dll').e, 'while Windows\' own DLLs stay dynamic';
+    nok $dest.add('api-ms-win-crt-heap-l1-1-0.dll').e,
+        'as do the API sets, which are not files anywhere';
+    nok $dest.add('unrelated.dll').e,
+        'and a DLL nothing imports is left in the vcpkg tree it came from';
+
+    is-deeply %staged<staged>.map(*.basename.lc).sort.List,
+        <libcrypto-3-x64.dll sqlcipher.dll zlib1.dll>,
+        'the manifest hears about the library and both copies';
+
+    # Everything staged has to survive the audit that follows it.
+    is App::Ariza::Native.audit(:bundle-dir($bundle), :slug<windows-x86_64>,
+        :extra(%staged<staged>))<checked>, 3,
+        'and the audit finds every one of them self-contained';
+
+    # There is nothing honest to do with an import the source directory
+    # does not hold: it is not on the machine to copy.
+    fake-pe($dir.add('sparse/sqlcipher.dll'), ['libcrypto-3-x64.dll']);
+    throws-like {
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('bundle2')),
+            :slug<windows-x86_64>, :versions(versions()),
+            :host-slug<macos-arm64>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR => $dir.add('sparse').absolute )));
+    }, Exception,
+        message => /'imports libcrypto-3-x64.dll' .* 'sparse' .* 'PE-SYSTEM-DLLS'/,
+        'a missing import names itself, the directory searched, and the'
+      ~ ' one other thing it could have been';
+
+    # The fake libraries the rest of this file stages are text files.
+    # There is nothing in one to walk, and the audit skips it for the
+    # same reason.
+    lives-ok {
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('plain')),
+            :slug<windows-x86_64>, :versions(versions()),
+            :host-slug<macos-arm64>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR =>
+                fake-library($dir.add('plain-src/sqlcipher.dll')).parent.absolute )));
+    }, 'a staged file that is not a PE has no imports to walk';
+};
+
+subtest 'the Windows audit resolves imports, and is no longer a presence check', {
+    plan 7;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
     my $sql = ensure-dir($dir.add('native/sqlcipher'));
-    $sql.add('sqlcipher.dll').spurt('MZ...');
+    fake-pe($sql.add('sqlcipher.dll'), <libcrypto-3-x64.dll KERNEL32.dll>);
+    fake-pe($sql.add('libcrypto-3-x64.dll'), ['KERNEL32.dll']);
     $sql.add('notes.txt').spurt('not a dll');
 
     my %r = App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>);
-    is %r<checked>, 1, 'only the DLL is checked';
-    is %r<skipped>, 1, 'the text file is skipped';
+    is %r<checked>, 2, 'every PE in the bundle is checked';
+    is %r<skipped>, 1, 'and the text file beside them is skipped, not failed';
+    is-deeply %r<findings>.List, (),
+        'a DLL whose imports all sit beside it passes';
 
-    # There is no rpath in a PE to inspect, so the only thing a PE audit
-    # can catch is a payload that is not really there.
-    $sql.add('sqlcipher.dll').spurt('');
+    # The hole this closes: sqlcipher.dll alone in the bundle is a
+    # perfectly good PE, and fails at LoadLibrary on the user's machine
+    # because nothing in the bundle answers for its OpenSSL.
+    $sql.add('libcrypto-3-x64.dll').unlink;
     throws-like {
         App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)
-    }, Exception, message => /'empty file'/, 'an empty DLL is a finding';
+    }, Exception, message => /'sqlcipher.dll' .* 'libcrypto-3-x64.dll => not found'/,
+        'and one whose OpenSSL is not in the bundle fails, naming both';
+
+    # A DLL that is not a PE at all, which the old presence check could
+    # not tell from a real one.
+    $sql.add('libcrypto-3-x64.dll').spurt('definitely not a DLL');
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)
+    }, Exception, message => /'not a PE file'/,
+        'a file named like a DLL that is not one is a finding, not a skip';
+
+    $sql.add('libcrypto-3-x64.dll').spurt('');
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)
+    }, Exception, message => /'empty file'/,
+        'and an empty one still is, as it always was';
+
+    # A PE the parser cannot read stops the audit rather than passing it:
+    # the whole point is that nothing goes unchecked.
+    $sql.add('libcrypto-3-x64.dll').spurt('MZ' ~ "\0" x 200);
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)
+    }, Exception, message => /'cannot read the imports'/,
+        'a PE that cannot be parsed fails loudly rather than silently'
+      ~ ' counting as checked';
 };
