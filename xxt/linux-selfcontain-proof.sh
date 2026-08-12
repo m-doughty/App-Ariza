@@ -47,7 +47,9 @@
 #                          SQLCipher build and the installed Raku modules
 #                          (default: $TMPDIR/ariza-linux-proof-cache)
 #   ARIZA_PROOF_SQLCIPHER  auto | epel | source   (default: auto)
-#   ARIZA_PROOF_SQLCIPHER_VERSION   source-build tag   (default: 4.6.1)
+#   ARIZA_PROOF_SQLCIPHER_VERSION   source-build tag
+#                          (default: the `sqlcipher` pin in
+#                          resources/versions.toml)
 #
 # On an Apple-silicon host the x86_64 image runs under Rosetta, which is
 # fast enough that the whole run is dominated by downloads. There is no
@@ -65,7 +67,16 @@ image=${ARIZA_PROOF_IMAGE:-quay.io/pypa/manylinux_2_28_x86_64}
 platform=${ARIZA_PROOF_PLATFORM:-linux/amd64}
 cache=${ARIZA_PROOF_CACHE:-${TMPDIR:-/tmp}/ariza-linux-proof-cache}
 sqlcipher_from=${ARIZA_PROOF_SQLCIPHER:-auto}
-sqlcipher_version=${ARIZA_PROOF_SQLCIPHER_VERSION:-4.6.1}
+# The pin, not a hardcoded fallback: this proof exists to catch exactly the
+# kind of drift where the source build silently exercises an older
+# SQLCipher than the one ariza actually ships.
+sqlcipher_pin=$(sed -n 's/^sqlcipher = "\(.*\)"/\1/p' "$repo/resources/versions.toml" | head -1)
+[ -n "$sqlcipher_pin" ] || {
+    printf 'PROOF FAILED: could not read the sqlcipher pin from %s/resources/versions.toml\n' \
+        "$repo" >&2
+    exit 1
+}
+sqlcipher_version=${ARIZA_PROOF_SQLCIPHER_VERSION:-$sqlcipher_pin}
 keep=0
 
 while [ $# -gt 0 ]; do
@@ -242,7 +253,32 @@ step "sqlcipher"
 t0=$(date +%s)
 SQLCIPHER_PATH_TAKEN=none
 
-have_soname() { ldconfig -p | grep -q 'libsqlcipher\.so\.0 '; }
+# Where App::Ariza::Native's own !find-system-lib looks, in the same
+# order: ldconfig -p first, which is soname-keyed rather than
+# filename-keyed, then the standard library directories for a literal
+# libsqlcipher.so.0. The second source matters here specifically because
+# of a 4.14 quirk: --dll-basename/--soname=legacy (below) rename the FILE
+# to libsqlcipher.so.0 without touching the embedded DT_SONAME, which
+# still reads libsqlite3.so.0 -- the same soname the machine's real
+# system SQLite already owns -- so ldconfig's cache has no entry for our
+# library under either name at all, even though the file is right there.
+find-sqlcipher-lib() {
+    local hit d
+    hit=$(ldconfig -p | grep 'libsqlcipher\.so\.0 ' | head -1 | sed 's/.*=> //')
+    if [ -n "$hit" ] && [ -e "$hit" ]; then
+        printf '%s\n' "$hit"
+        return 0
+    fi
+    for d in /usr/lib/x86_64-linux-gnu /usr/lib64 /lib64 /usr/lib /lib /usr/local/lib; do
+        if [ -e "$d/libsqlcipher.so.0" ]; then
+            printf '%s\n' "$d/libsqlcipher.so.0"
+            return 0
+        fi
+    done
+    return 1
+}
+
+have_soname() { find-sqlcipher-lib >/dev/null; }
 
 if [ "$SQLCIPHER_FROM" = auto ] || [ "$SQLCIPHER_FROM" = epel ]; then
     echo "trying the distribution package (EPEL)…"
@@ -267,8 +303,17 @@ if [ "$SQLCIPHER_FROM" = auto ] || [ "$SQLCIPHER_FROM" = epel ]; then
 fi
 
 if [ "$SQLCIPHER_PATH_TAKEN" = none ] && [ "$SQLCIPHER_FROM" != epel ]; then
-    echo "building SQLCipher $SQLCIPHER_VERSION from source against system OpenSSL…"
-    dnf install -y tcl openssl-devel >/dev/null 2>&1 || fail "no toolchain for a source build"
+    echo "building SQLCipher $SQLCIPHER_VERSION from source against OpenSSL 3…"
+    # 4.14 links OpenSSL 3 (its codec calls EVP_MAC_*, missing from EL8's
+    # default OpenSSL 1.1), which EL8 parallel-ships under
+    # /usr/include/openssl3 and /usr/lib64/openssl3 rather than as the
+    # system OpenSSL. --with-tempstore is that flag's spelling under
+    # SQLCipher 4.14's autosetup-based configure -- the old --enable-*
+    # form is gone. --dll-basename=libsqlcipher --soname=legacy restore
+    # the libsqlcipher.so.0 layout have_soname() below looks for (the
+    # library's internal DT_SONAME still reads libsqlite3.so.0; harmless,
+    # since nothing dlopens it by soname).
+    dnf install -y tcl openssl3-devel >/dev/null 2>&1 || fail "no toolchain for a source build"
     src=$CACHE/sqlcipher-$SQLCIPHER_VERSION
     if [ ! -f "$src/.built" ]; then
         mkdir -p "$CACHE"
@@ -279,8 +324,10 @@ if [ "$SQLCIPHER_PATH_TAKEN" = none ] && [ "$SQLCIPHER_FROM" != epel ]; then
         rm -rf "$src"
         tar xzf "$tarball" -C "$CACHE"
         ( cd "$src" \
-          && ./configure --prefix=/usr/local --enable-tempstore=yes \
-                 CFLAGS="-DSQLITE_HAS_CODEC" LDFLAGS="-lcrypto" >/tmp/configure.log 2>&1 \
+          && ./configure --prefix=/usr/local --with-tempstore=yes \
+                 --dll-basename=libsqlcipher --soname=legacy \
+                 CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -I/usr/include/openssl3" \
+                 LDFLAGS="-L/usr/lib64/openssl3 -lcrypto" >/tmp/configure.log 2>&1 \
           && make -j"$(nproc)" >/tmp/make.log 2>&1 ) \
             || { tail -30 /tmp/configure.log /tmp/make.log; fail "SQLCipher did not build"; }
         touch "$src/.built"
@@ -288,6 +335,8 @@ if [ "$SQLCIPHER_PATH_TAKEN" = none ] && [ "$SQLCIPHER_FROM" != epel ]; then
         echo "(reusing the cached build)"
     fi
     ( cd "$src" && make install >/tmp/install.log 2>&1 ) || fail "make install failed"
+    # EL8's ldconfig does not search /usr/local/lib by default.
+    echo /usr/local/lib > /etc/ld.so.conf.d/local.conf
     ldconfig
     have_soname || fail "the source build produced no libsqlcipher.so.0"
     SQLCIPHER_PATH_TAKEN=source
@@ -298,7 +347,8 @@ if [ "$SQLCIPHER_PATH_TAKEN" = none ]; then
 fi
 echo "SQLCIPHER PATH TAKEN: $SQLCIPHER_PATH_TAKEN"
 ldconfig -p | grep -i sqlcipher | sed 's/^[[:space:]]*/    /'
-lib=$(ldconfig -p | grep 'libsqlcipher\.so\.0 ' | head -1 | sed 's/.*=> //')
+lib=$(find-sqlcipher-lib) \
+    || fail "libsqlcipher.so.0 vanished between the build and this check"
 echo "the library ariza will find, as the machine ships it:"
 readelf -d "$lib" | grep -E 'NEEDED|RPATH|RUNPATH|SONAME' | sed 's/^/    /'
 echo "    rpath: '$(patchelf --print-rpath "$lib")'"

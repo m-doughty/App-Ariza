@@ -343,12 +343,12 @@ Then, on a tag only:
 
   * **`publish`** collects every lane's artefact, flattens it, recomputes a combined `checksums.txt`, checks that against the `.sha256` sidecars `ariza bundle` wrote — a release whose digest refuses its own archive is worse than one with no digest — and cuts the GitHub release with a body saying what a bundle is, which machines each archive runs on, and how to verify a download.
 
-  * **`smoke-installer`** takes the archive that was **just published**, on a plain `ubuntu-latest` runner with nothing installed on it, installs it with the repository's own committed `install.sh`, and runs the installed launcher under `env -i`. It is the only job that exercises the artefact a user will actually receive, by the path they will actually take. Scaffolded for an app that declares `linux-x86_64-glibc` and has an `installer.repo`.
+  * **`smoke-installer-macos-arm64`**, **`smoke-installer-linux-x86_64-glibc`**, **`smoke-installer-windows-x86_64`** each take the archive that was **just published**, one per declared platform with a clean-machine smoke recipe, on a plain runner with nothing installed on it, and install it with the repository's own committed `install.sh` or `install.ps1`. Each then runs the installed launcher under a stripped environment — `env -i` on POSIX, a from-scratch `System.Diagnostics.Process` on Windows, which has no `env -i` — and these are the only jobs that exercise the artefact a user will actually receive, by the path they will actually take. macOS's is incidentally the only place `install.sh`'s BSD branches (`shasum -a 256`, bsdtar) ever run in CI. Scaffolded for an app with an `installer.repo`; a declared platform with a build lane but no smoke recipe yet gets no job here, and the workflow says so in a comment rather than leaving the gap silent.
 
 Dispatch before you tag
 -----------------------
 
-The workflow triggers on `workflow_dispatch` as well as on `push: tags: ['v*']`, and a dispatch run **stops after the build lanes**: `publish` and `smoke-installer` are both gated on `startsWith(github.ref, 'refs/tags/')`.
+The workflow triggers on `workflow_dispatch` as well as on `push: tags: ['v*']`, and a dispatch run **stops after the build lanes**: `publish` and every `smoke-installer-*` job are gated on `startsWith(github.ref, 'refs/tags/')`.
 
 That is the iteration loop, and the reason the dispatch trigger exists. A recipe that has gone stale — a renamed package, a runner image that moved on, a vcpkg port that is not there any more — costs a run and a push to a branch, rather than a burnt tag and a deleted release. The dispatch input `ref` takes a branch, so the lane being fixed does not have to be on the default branch to be tried.
 

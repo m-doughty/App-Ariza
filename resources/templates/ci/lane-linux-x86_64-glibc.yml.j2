@@ -17,12 +17,12 @@
         with:
           ref: {% raw %}${{ inputs.ref || github.ref }}{% endraw %}
 
-      # python3 reads the Rakudo release index below; tcl and openssl-devel
-      # build SQLCipher. The image already has ldd, readelf and patchelf,
-      # which ariza needs to make the staged library self-contained and to
-      # audit the result.
+      # python3 reads the Rakudo release index below; tcl and
+      # openssl3-devel build SQLCipher. The image already has ldd, readelf
+      # and patchelf, which ariza needs to make the staged library
+      # self-contained and to audit the result.
       - name: Install build dependencies
-        run: dnf install -y python3 tcl openssl-devel
+        run: dnf install -y python3 tcl openssl3-devel
 
       # Raku/setup-raku does not run in a container -- it installs into the
       # runner's tool cache, which is outside this filesystem -- so the
@@ -73,6 +73,17 @@
       # library into the bundle along with the libcrypto it needs, and
       # points both at $ORIGIN.
       #
+      # 4.14 links OpenSSL 3 (its codec calls EVP_MAC_*, missing from
+      # EL8's default OpenSSL 1.1), which EL8 parallel-ships under
+      # /usr/include/openssl3 and /usr/lib64/openssl3 rather than as the
+      # system OpenSSL. --with-tempstore is that flag's spelling under
+      # SQLCipher 4.14's autosetup-based configure -- the old --enable-*
+      # form is gone. --dll-basename=libsqlcipher --soname=legacy restore
+      # the libsqlcipher.so.0 layout every consumer here expects (the
+      # library's internal DT_SONAME still reads libsqlite3.so.0; harmless,
+      # since nothing dlopens it by soname). The ld.so.conf.d line exists
+      # because EL8's ldconfig does not search /usr/local/lib by default.
+      #
       # Not the distribution package: EPEL's is a 3.34.1-era build with a
       # renamed soname, years behind the pin. ariza can find it -- it looks
       # for libsqlcipher*.so* when the canonical name is absent -- but
@@ -87,10 +98,13 @@
           mkdir -p /tmp/sqlcipher-src
           tar xzf /tmp/sqlcipher.tar.gz -C /tmp/sqlcipher-src --strip-components=1
           cd /tmp/sqlcipher-src
-          ./configure --prefix=/usr/local --enable-tempstore=yes \
-            CFLAGS="-DSQLITE_HAS_CODEC" LDFLAGS="-lcrypto"
+          ./configure --prefix=/usr/local --with-tempstore=yes \
+            --dll-basename=libsqlcipher --soname=legacy \
+            CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -I/usr/include/openssl3" \
+            LDFLAGS="-L/usr/lib64/openssl3 -lcrypto"
           make -j"$(nproc)"
           make install
+          echo /usr/local/lib > /etc/ld.so.conf.d/local.conf
           ldconfig
           ldconfig -p | grep -i sqlcipher
 

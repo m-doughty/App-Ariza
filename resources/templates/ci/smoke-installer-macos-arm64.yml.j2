@@ -1,0 +1,46 @@
+  smoke-installer-macos-arm64:
+    name: smoke the published installer (macos-arm64)
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/')
+    # A plain runner, deliberately: no container, no toolchain, nothing
+    # this repository put there. Whatever the bundle needs, the bundle has
+    # to carry -- and this, together with its Linux and Windows siblings
+    # below, is the only coverage that tests that claim against the
+    # artefact a user will actually download.
+    #
+    # It is also the only machine in this workflow with a BSD userland, so
+    # it is the only place install.sh's BSD branches ever run: `shasum -a
+    # 256` where Linux has `sha256sum`, and bsdtar rather than GNU tar.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download the published macos-arm64 bundle
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          # The archive and its digest sidecar, so install.sh has
+          # something to verify against.
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern '{{ app_exec }}-*-macos-arm64.tar.gz*' --dir published
+          ls -l published
+
+      - name: Install it with this repository's own install.sh
+        run: |
+          set -euo pipefail
+          # The committed script, not a raw.githubusercontent URL: this has
+          # to work for the first release, before that URL serves anything,
+          # and it is the script this tag actually ships.
+          archive=$(ls published/*.tar.gz)
+          sh ./install.sh --url "$PWD/$archive"
+
+      - name: Run the installed launcher with a replaced environment
+        run: |
+          set -euo pipefail
+          # `env -i`: the launcher gets HOME, PATH and TERM and nothing
+          # else, so it cannot pass by borrowing something the runner image
+          # happens to have lying around.
+          env -i HOME="$HOME" PATH=/usr/bin:/bin TERM=xterm \
+            "$HOME/.local/bin/{{ app_exec }}" --version

@@ -28,6 +28,12 @@ our constant TAG-GLOB = 'v*';
 #   floor    — what a user reading the release notes needs to know about
 #              the machine this archive will run on, wrapped by hand
 #              because it is prose in a file nothing reflows
+#   smoke    — the clean-machine installer-smoke recipe for this platform,
+#              in the same C<{ template, job }> shape, or absent when no
+#              GitHub-hosted runner can prove this platform's installer
+#              end to end yet. Independent of the build lane above it: a
+#              platform ariza can bundle for is not automatically one it
+#              can smoke-test the installer on.
 #
 # Deliberately partial, and for the same reason App::Ariza::Rakudo's
 # platform map is: these are the slugs with both a GitHub-hosted runner
@@ -38,17 +44,29 @@ my constant %LANES =
         template => 'lane-macos-arm64.yml.j2',
         job      => 'bundle-macos-arm64',
         floor    => ('Apple silicon, macOS 11 (Big Sur) or newer.',),
+        smoke    => {
+            template => 'smoke-installer-macos-arm64.yml.j2',
+            job      => 'smoke-installer-macos-arm64',
+        },
     },
     'linux-x86_64-glibc' => {
         template => 'lane-linux-x86_64-glibc.yml.j2',
         job      => 'bundle-linux-x86_64-glibc',
         floor    => ('x86_64, glibc 2.28 or newer: RHEL 8+, Ubuntu 18.10+,',
                      'Debian 10+. Not Alpine or any other musl distribution.'),
+        smoke    => {
+            template => 'smoke-installer-linux-x86_64-glibc.yml.j2',
+            job      => 'smoke-installer-linux-x86_64-glibc',
+        },
     },
     'windows-x86_64' => {
         template => 'lane-windows-x86_64.yml.j2',
         job      => 'bundle-windows-x86_64',
         floor    => ('x86_64, Windows 10 or newer.',),
+        smoke    => {
+            template => 'smoke-installer-windows-x86_64.yml.j2',
+            job      => 'smoke-installer-windows-x86_64',
+        },
     },
 ;
 
@@ -193,14 +211,30 @@ method context(
         slugs       => @lanes.map(*.<slug>).List,
         job_names   => @lanes.map(*.<job>).List,
         floors      => @lanes.map({ %( slug => .<slug>, note => .<floor>.List ) }).List,
-
-        # The installer smoke installs a published Linux archive with the
-        # app's own committed install.sh, so it needs both to exist.
-        smoke_installer => $linux && $config.installer-repo.defined,
     ;
 
     %ctx<lane_jobs> = @lanes
         .map({ self.render(:template(.<template>), |%ctx) })
+        .join("\n").chomp;
+
+    # One clean-runner installer smoke per declared platform that has one
+    # (see %LANES's `smoke` key) — each installs the archive B<just
+    # published>, with the app's own committed installer, and runs the
+    # result under a stripped environment. Gated on installer.repo the same
+    # way the build lanes are gated on bundle.platforms: no repo, nothing
+    # published, nothing to smoke.
+    my @smoke-lanes    = $config.installer-repo.defined
+        ?? @lanes.grep(*.<smoke>.defined)
+        !! ();
+    my @no-smoke-lanes = $config.installer-repo.defined
+        ?? @lanes.grep({ !.<smoke>.defined })
+        !! ();
+
+    %ctx<smoke_installer>     = ?@smoke-lanes;
+    %ctx<smoke_job_names>     = @smoke-lanes.map(*.<smoke><job>).List;
+    %ctx<no_smoke_platforms>  = @no-smoke-lanes.map(*.<slug>).List;
+    %ctx<smoke_jobs> = @smoke-lanes
+        .map({ self.render(:template(.<smoke><template>), |%ctx) })
         .join("\n").chomp;
 
     %ctx
@@ -342,20 +376,27 @@ ariza wrote, and creates the GitHub release with a body that says what a
 bundle is, which machines each archive runs on, and how to verify a
 download.
 
-=item1 B<C<smoke-installer>> — on a plain C<ubuntu-latest> runner with
-nothing installed on it, downloads the archive that was B<just
-published>, installs it with the repository's own committed
-C<install.sh>, and runs the installed launcher under C<env -i>. It is
-the only job that tests the artefact a user will actually receive,
-through the path they will actually take. Scaffolded only for an app
-that declares C<linux-x86_64-glibc> and has an C<installer.repo> to
-publish to.
+=item1 B<C<smoke-installer-macos-arm64>>, B<C<smoke-installer-linux-x86_64-glibc>>,
+B<C<smoke-installer-windows-x86_64>> — one per declared platform with a
+clean-machine smoke recipe (C<%LANES>'s C<smoke> key), each on a plain
+runner with nothing installed on it: it downloads the archive that was
+B<just published>, installs it with the repository's own committed
+C<install.sh> or C<install.ps1>, and runs the installed launcher under a
+stripped environment (C<env -i> on POSIX; a from-scratch
+C<System.Diagnostics.Process> on Windows, which has no C<env -i>). These
+are the only jobs that test the artefact a user will actually receive,
+through the path they will actually take — macOS's incidentally being the
+only place C<install.sh>'s BSD branches (C<shasum -a 256>, bsdtar) ever
+run in CI. Scaffolded only for an app with an C<installer.repo> to
+publish to; a declared platform with a build lane but no smoke recipe yet
+renders no job for it, and a comment in the workflow says so instead of
+leaving the gap silent.
 
 =head2 Dispatch before you tag
 
 The workflow triggers on C<workflow_dispatch> as well as on
 C<push: tags: ['v*']>, and the dispatch run stops after the build lanes:
-C<publish> and C<smoke-installer> are both gated on
+C<publish> and every C<smoke-installer-*> job are gated on
 C<startsWith(github.ref, 'refs/tags/')>.
 
 That is the iteration loop, and it is the reason the dispatch trigger

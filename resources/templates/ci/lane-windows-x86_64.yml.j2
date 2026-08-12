@@ -1,12 +1,16 @@
   bundle-windows-x86_64:
     name: bundle windows-x86_64
     runs-on: windows-latest
-    defaults:
-      run:
-        # bash, so the build and smoke steps below are the same three
-        # lines they are on the other two lanes. Git Bash ships with the
-        # runner image; the one step that wants PowerShell says so.
-        shell: bash
+    # No `defaults: run: shell: bash` here, on purpose: zef -- both the one
+    # installing ariza below and the one ariza's own site-install runs
+    # inside `ariza bundle` -- resolves `tar` off whatever shell launched
+    # it. Under bash that is Git Bash's MSYS tar, which treats a leading
+    # `C:` in a path as a remote hostname and aborts extracting into any
+    # mixed-separator temp path zef hands it. The runner's default pwsh
+    # instead finds Windows' own bsdtar, which has no such reading of `C:`.
+    # zef's child processes inherit whatever shell ran the step, so pwsh
+    # has to be load-bearing for every step that might invoke it, not just
+    # the ones below that already needed PowerShell for path handling.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -74,15 +78,19 @@
           "SQLCIPHER_LIB_DIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build the bundle
-        run: ariza bundle --app=. --platform=windows-x86_64 --out-dir=dist-out
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ariza bundle --app=. --platform=windows-x86_64 --out-dir=dist-out
+          if ($LASTEXITCODE -ne 0) { throw "ariza bundle failed (exit $LASTEXITCODE)" }
 
       # Unpacks the archive somewhere new, with a replaced environment,
       # and runs {{ app_name }}'s own bundle.smoke commands against it.
       - name: Smoke the bundle
         run: |
-          set -euo pipefail
-          archive=$(ls dist-out/*.tar.gz)
+          $ErrorActionPreference = 'Stop'
+          $archive = (Get-ChildItem dist-out\*.tar.gz | Select-Object -First 1).FullName
           ariza smoke --archive="$archive"
+          if ($LASTEXITCODE -ne 0) { throw "ariza smoke failed (exit $LASTEXITCODE)" }
 
       - name: Upload
         uses: actions/upload-artifact@v6

@@ -576,19 +576,26 @@ refuses its own archive is worse than one with no digest — and cuts the
 GitHub release with a body saying what a bundle is, which machines each
 archive runs on, and how to verify a download.
 
-=item1 B<C<smoke-installer>> takes the archive that was B<just
-published>, on a plain C<ubuntu-latest> runner with nothing installed on
-it, installs it with the repository's own committed C<install.sh>, and
-runs the installed launcher under C<env -i>. It is the only job that
-exercises the artefact a user will actually receive, by the path they
-will actually take. Scaffolded for an app that declares
-C<linux-x86_64-glibc> and has an C<installer.repo>.
+=item1 B<C<smoke-installer-macos-arm64>>, B<C<smoke-installer-linux-x86_64-glibc>>,
+B<C<smoke-installer-windows-x86_64>> each take the archive that was
+B<just published>, one per declared platform with a clean-machine smoke
+recipe, on a plain runner with nothing installed on it, and install it
+with the repository's own committed C<install.sh> or C<install.ps1>. Each
+then runs the installed launcher under a stripped environment — C<env
+-i> on POSIX, a from-scratch C<System.Diagnostics.Process> on Windows,
+which has no C<env -i> — and these are the only jobs that exercise the
+artefact a user will actually receive, by the path they will actually
+take. macOS's is incidentally the only place C<install.sh>'s BSD branches
+(C<shasum -a 256>, bsdtar) ever run in CI. Scaffolded for an app with an
+C<installer.repo>; a declared platform with a build lane but no smoke
+recipe yet gets no job here, and the workflow says so in a comment rather
+than leaving the gap silent.
 
 =head2 Dispatch before you tag
 
 The workflow triggers on C<workflow_dispatch> as well as on
 C<push: tags: ['v*']>, and a dispatch run B<stops after the build
-lanes>: C<publish> and C<smoke-installer> are both gated on
+lanes>: C<publish> and every C<smoke-installer-*> job are gated on
 C<startsWith(github.ref, 'refs/tags/')>.
 
 That is the iteration loop, and the reason the dispatch trigger exists.

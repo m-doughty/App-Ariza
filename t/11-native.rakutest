@@ -375,6 +375,14 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
     # machine, but a libsqlcipher-<version>.so.0 ldconfig already knows
     # about — the exact bug this module used to fail on every RHEL-family
     # host over.
+    #
+    # :search sandboxes the standard-directory fallback the same way the
+    # subtest above does: !find-system-lib's :glob pass reads @dirs off
+    # the real filesystem regardless of the :run mock, and every call
+    # below exercises that pass. Without this, whatever the real machine
+    # actually has installed under /usr/local/lib -- xxt/'s own proof
+    # script builds a real SQLCipher there -- can out-rank these fixtures
+    # in the newest-wins comparison and silently answer for them instead.
     my $renamed = fake-library($dir.add('usr/lib64/libsqlcipher-3.34.1.so.0'));
     my $ldconfig = qq:to/OUT/;
         \t1 libs found in cache `/etc/ld.so.cache'
@@ -384,7 +392,8 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
 
     my %got = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
         :host-slug<linux-x86_64-glibc>, :env(%()),
-        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))));
+        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))),
+        :search([$dir.add('nowhere').absolute]));
 
     is %got<kind>, 'library',
         'the renamed soname is taken in place of the canonical one';
@@ -407,7 +416,8 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
         OUT
     my %exact = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
         :host-slug<linux-x86_64-glibc>, :env(%()),
-        :run(fake-run(%( 'ldconfig -p' => (0, $both, '') ))));
+        :run(fake-run(%( 'ldconfig -p' => (0, $both, '') ))),
+        :search([$dir.add('nowhere').absolute]));
     is %exact<path>.absolute, $canonical.resolve.absolute,
         'the exact canonical name is preferred over any versioned one';
     nok %exact<origin>.contains('staged as'),
@@ -423,7 +433,8 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
         OUT
     my %newest = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
         :host-slug<linux-x86_64-glibc>, :env(%()),
-        :run(fake-run(%( 'ldconfig -p' => (0, $versioned, '') ))));
+        :run(fake-run(%( 'ldconfig -p' => (0, $versioned, '') ))),
+        :search([$dir.add('nowhere').absolute]));
     is %newest<path>.absolute, $renamed.resolve.absolute,
         'and among several versioned candidates the newest wins, numerically';
 
@@ -434,7 +445,8 @@ subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
     App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
         :slug<linux-x86_64-glibc>, :versions(versions()),
         :host-slug<linux-x86_64-glibc>, :host-kernel<linux>, :env(%()),
-        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))));
+        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))),
+        :search([$dir.add('nowhere').absolute]));
     ok $bundle.add('native/sqlcipher/libsqlcipher.so.0').f,
         'stage-sqlcipher writes the copy under the canonical name, not the'
       ~ ' EPEL one it was found as';

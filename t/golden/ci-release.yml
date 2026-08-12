@@ -112,12 +112,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # python3 reads the Rakudo release index below; tcl and openssl-devel
-      # build SQLCipher. The image already has ldd, readelf and patchelf,
-      # which ariza needs to make the staged library self-contained and to
-      # audit the result.
+      # python3 reads the Rakudo release index below; tcl and
+      # openssl3-devel build SQLCipher. The image already has ldd, readelf
+      # and patchelf, which ariza needs to make the staged library
+      # self-contained and to audit the result.
       - name: Install build dependencies
-        run: dnf install -y python3 tcl openssl-devel
+        run: dnf install -y python3 tcl openssl3-devel
 
       # Raku/setup-raku does not run in a container -- it installs into the
       # runner's tool cache, which is outside this filesystem -- so the
@@ -169,6 +169,17 @@ jobs:
       # library into the bundle along with the libcrypto it needs, and
       # points both at $ORIGIN.
       #
+      # 4.14 links OpenSSL 3 (its codec calls EVP_MAC_*, missing from
+      # EL8's default OpenSSL 1.1), which EL8 parallel-ships under
+      # /usr/include/openssl3 and /usr/lib64/openssl3 rather than as the
+      # system OpenSSL. --with-tempstore is that flag's spelling under
+      # SQLCipher 4.14's autosetup-based configure -- the old --enable-*
+      # form is gone. --dll-basename=libsqlcipher --soname=legacy restore
+      # the libsqlcipher.so.0 layout every consumer here expects (the
+      # library's internal DT_SONAME still reads libsqlite3.so.0; harmless,
+      # since nothing dlopens it by soname). The ld.so.conf.d line exists
+      # because EL8's ldconfig does not search /usr/local/lib by default.
+      #
       # Not the distribution package: EPEL's is a 3.34.1-era build with a
       # renamed soname, years behind the pin. ariza can find it -- it looks
       # for libsqlcipher*.so* when the canonical name is absent -- but
@@ -183,10 +194,13 @@ jobs:
           mkdir -p /tmp/sqlcipher-src
           tar xzf /tmp/sqlcipher.tar.gz -C /tmp/sqlcipher-src --strip-components=1
           cd /tmp/sqlcipher-src
-          ./configure --prefix=/usr/local --enable-tempstore=yes \
-            CFLAGS="-DSQLITE_HAS_CODEC" LDFLAGS="-lcrypto"
+          ./configure --prefix=/usr/local --with-tempstore=yes \
+            --dll-basename=libsqlcipher --soname=legacy \
+            CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -I/usr/include/openssl3" \
+            LDFLAGS="-L/usr/lib64/openssl3 -lcrypto"
           make -j"$(nproc)"
           make install
+          echo /usr/local/lib > /etc/ld.so.conf.d/local.conf
           ldconfig
           ldconfig -p | grep -i sqlcipher
 
@@ -213,12 +227,16 @@ jobs:
   bundle-windows-x86_64:
     name: bundle windows-x86_64
     runs-on: windows-latest
-    defaults:
-      run:
-        # bash, so the build and smoke steps below are the same three
-        # lines they are on the other two lanes. Git Bash ships with the
-        # runner image; the one step that wants PowerShell says so.
-        shell: bash
+    # No `defaults: run: shell: bash` here, on purpose: zef -- both the one
+    # installing ariza below and the one ariza's own site-install runs
+    # inside `ariza bundle` -- resolves `tar` off whatever shell launched
+    # it. Under bash that is Git Bash's MSYS tar, which treats a leading
+    # `C:` in a path as a remote hostname and aborts extracting into any
+    # mixed-separator temp path zef hands it. The runner's default pwsh
+    # instead finds Windows' own bsdtar, which has no such reading of `C:`.
+    # zef's child processes inherit whatever shell ran the step, so pwsh
+    # has to be load-bearing for every step that might invoke it, not just
+    # the ones below that already needed PowerShell for path handling.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -287,15 +305,19 @@ jobs:
           "SQLCIPHER_LIB_DIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build the bundle
-        run: ariza bundle --app=. --platform=windows-x86_64 --out-dir=dist-out
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ariza bundle --app=. --platform=windows-x86_64 --out-dir=dist-out
+          if ($LASTEXITCODE -ne 0) { throw "ariza bundle failed (exit $LASTEXITCODE)" }
 
       # Unpacks the archive somewhere new, with a replaced environment,
       # and runs App::Moneymoor's own bundle.smoke commands against it.
       - name: Smoke the bundle
         run: |
-          set -euo pipefail
-          archive=$(ls dist-out/*.tar.gz)
+          $ErrorActionPreference = 'Stop'
+          $archive = (Get-ChildItem dist-out\*.tar.gz | Select-Object -First 1).FullName
           ariza smoke --archive="$archive"
+          if ($LASTEXITCODE -ne 0) { throw "ariza smoke failed (exit $LASTEXITCODE)" }
 
       - name: Upload
         uses: actions/upload-artifact@v6
@@ -405,14 +427,62 @@ jobs:
           draft: false
           prerelease: false
 
-  smoke-installer:
-    name: smoke the published installer
+  smoke-installer-macos-arm64:
+    name: smoke the published installer (macos-arm64)
     needs: publish
     if: startsWith(github.ref, 'refs/tags/')
     # A plain runner, deliberately: no container, no toolchain, nothing
     # this repository put there. Whatever the bundle needs, the bundle has
-    # to carry -- and this is the only job that tests that claim against
-    # the artefact a user will actually download.
+    # to carry -- and this, together with its Linux and Windows siblings
+    # below, is the only coverage that tests that claim against the
+    # artefact a user will actually download.
+    #
+    # It is also the only machine in this workflow with a BSD userland, so
+    # it is the only place install.sh's BSD branches ever run: `shasum -a
+    # 256` where Linux has `sha256sum`, and bsdtar rather than GNU tar.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download the published macos-arm64 bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          # The archive and its digest sidecar, so install.sh has
+          # something to verify against.
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'moneymoor-*-macos-arm64.tar.gz*' --dir published
+          ls -l published
+
+      - name: Install it with this repository's own install.sh
+        run: |
+          set -euo pipefail
+          # The committed script, not a raw.githubusercontent URL: this has
+          # to work for the first release, before that URL serves anything,
+          # and it is the script this tag actually ships.
+          archive=$(ls published/*.tar.gz)
+          sh ./install.sh --url "$PWD/$archive"
+
+      - name: Run the installed launcher with a replaced environment
+        run: |
+          set -euo pipefail
+          # `env -i`: the launcher gets HOME, PATH and TERM and nothing
+          # else, so it cannot pass by borrowing something the runner image
+          # happens to have lying around.
+          env -i HOME="$HOME" PATH=/usr/bin:/bin TERM=xterm \
+            "$HOME/.local/bin/moneymoor" --version
+
+  smoke-installer-linux-x86_64-glibc:
+    name: smoke the published installer (linux-x86_64-glibc)
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/')
+    # A plain runner, deliberately: no container, no toolchain, nothing
+    # this repository put there. Whatever the bundle needs, the bundle has
+    # to carry -- and this, together with its macOS and Windows siblings
+    # below, is the only coverage that tests that claim against the
+    # artefact a user will actually download.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -446,3 +516,81 @@ jobs:
           # happens to have lying around.
           env -i HOME="$HOME" PATH=/usr/bin:/bin TERM=xterm \
             "$HOME/.local/bin/moneymoor" --version
+
+  smoke-installer-windows-x86_64:
+    name: smoke the published installer (windows-x86_64)
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/')
+    # A plain runner, deliberately: no vcpkg, no setup-raku, nothing this
+    # repository put there. Whatever the bundle needs, the bundle has to
+    # carry -- and this, together with its macOS and Linux siblings above,
+    # is the only coverage that tests that claim against the artefact a
+    # user will actually download.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download the published windows-x86_64 bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path published -Force | Out-Null
+          # ariza packages every platform's bundle as .tar.gz, Windows
+          # included -- there is no `.zip` lane to fall back to -- so this
+          # is the archive and its digest sidecar, the same pattern the
+          # macOS and Linux jobs use above.
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern 'moneymoor-*-windows-x86_64.*' --dir published
+          if ($LASTEXITCODE -ne 0) { throw "gh release download failed (exit $LASTEXITCODE)" }
+          Get-ChildItem published
+
+      - name: Install it with this repository's own install.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The committed script, not a raw.githubusercontent URL: this has
+          # to work for the first release, before that URL serves anything,
+          # and it is the script this tag actually ships.
+          $archives = @(Get-ChildItem published\*.tar.gz)
+          if ($archives.Count -ne 1) {
+              throw "expected exactly one .tar.gz in published/, found $($archives.Count)"
+          }
+          pwsh -File .\install.ps1 -Url $archives[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed (exit $LASTEXITCODE)" }
+
+      - name: Run the installed launcher with a minimal environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Join-Path $env:LOCALAPPDATA 'Moneymoor\current\bin'
+          $exe = Join-Path $bin 'moneymoor.cmd'
+          if (-not (Test-Path -LiteralPath $exe)) {
+              throw "install.ps1 did not leave $exe behind"
+          }
+
+          # PowerShell has no `env -i`: a fresh process is built by hand
+          # instead, with its environment cleared and PATH trimmed to the
+          # system directory plus the install's own bin, so the bundle
+          # cannot pass by borrowing a toolchain this runner happens to
+          # have lying around. `pwsh` is resolved before the environment
+          # is touched, because the child cannot find it once PATH is gone.
+          $pwsh = (Get-Command pwsh).Source
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $pwsh
+          $psi.Arguments = "-NoProfile -NonInteractive -Command & '$exe' --version"
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.EnvironmentVariables.Clear()
+          $psi.EnvironmentVariables['PATH'] = "$env:SystemRoot\System32;$bin"
+          $psi.EnvironmentVariables['USERPROFILE'] = $env:USERPROFILE
+          $psi.EnvironmentVariables['LOCALAPPDATA'] = $env:LOCALAPPDATA
+          $psi.EnvironmentVariables['TEMP'] = $env:TEMP
+
+          $proc = [System.Diagnostics.Process]::Start($psi)
+          $out = $proc.StandardOutput.ReadToEnd()
+          $err = $proc.StandardError.ReadToEnd()
+          $proc.WaitForExit()
+          Write-Host $out
+          if ($err) { Write-Host $err }
+          if ($proc.ExitCode -ne 0) {
+              throw "$exe --version exited $($proc.ExitCode)"
+          }

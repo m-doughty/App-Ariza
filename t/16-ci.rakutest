@@ -7,7 +7,7 @@ use App::Ariza::Resources;
 use App::Ariza::Tools;
 use App::Ariza::Versions;
 
-plan 10;
+plan 11;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-ci-{$*PID}-{(^1_000_000).pick}");
@@ -133,7 +133,7 @@ subtest 'an app gets one build lane per platform it declares', {
 };
 
 subtest 'the context carries the app and the pins, not the machine', {
-    plan 9;
+    plan 11;
 
     is %CTX<app_name>, 'App::Moneymoor', 'the dist name';
     is %CTX<app_exec>, 'moneymoor', 'the launcher name';
@@ -147,7 +147,13 @@ subtest 'the context carries the app and the pins, not the machine', {
          'bundle-windows-x86_64'),
         'the jobs publish will have to wait for';
     ok %CTX<smoke_installer>,
-        'an app with a Linux bundle and a repo gets the installer smoke';
+        'an app with a repo gets the installer smoke';
+    is %CTX<smoke_job_names>.List,
+        ('smoke-installer-macos-arm64', 'smoke-installer-linux-x86_64-glibc',
+         'smoke-installer-windows-x86_64'),
+        'one clean-runner smoke per declared platform, in manifest order';
+    is %CTX<no_smoke_platforms>.List, (),
+        'and every platform ariza can scaffold a lane for also gets one';
 
     # A workflow is read by strangers on GitHub; nothing about the
     # machine that generated it may survive into one.
@@ -189,7 +195,7 @@ subtest 'the rendered workflows match their golden files', {
 };
 
 subtest 'release.yml is a workflow GitHub will accept', {
-    plan 12;
+    plan 15;
 
     ok $RELEASE.contains("\nname: release\n"), 'it is called release';
     ok $RELEASE.contains("\non:\n"), 'it has triggers';
@@ -215,8 +221,14 @@ subtest 'release.yml is a workflow GitHub will accept', {
     is +$RELEASE.comb(/ ^^ '  bundle-' \N+ ':' $$ /), 3,
         'three build jobs';
     ok $RELEASE.contains("  publish:\n"), 'a publish job';
-    ok $RELEASE.contains("  smoke-installer:\n"),
-        'and a job that installs what was published';
+    is +$RELEASE.comb(/ ^^ '  smoke-installer-' \N+ ':' $$ /), 3,
+        'and one clean-runner installer smoke per declared platform';
+    ok $RELEASE.contains("  smoke-installer-macos-arm64:\n"),
+        'the macOS one, which is the only BSD-userland coverage install.sh gets';
+    ok $RELEASE.contains("  smoke-installer-linux-x86_64-glibc:\n"),
+        'the Linux one';
+    ok $RELEASE.contains("  smoke-installer-windows-x86_64:\n"),
+        'and the Windows one, which is install.ps1\'s only clean-machine coverage';
 };
 
 subtest 'nothing is published until a tag says so', {
@@ -227,11 +239,11 @@ subtest 'nothing is published until a tag says so', {
     is @needs, %CTX<job_names>.List,
         'publish waits for every build lane, by name';
 
-    is +$RELEASE.comb(/ ^^ '    if: startsWith(github.ref, ' \' 'refs/tags/' \' ')' $$ /), 2,
-        'and both publish and the installer smoke are tag-gated';
+    is +$RELEASE.comb(/ ^^ '    if: startsWith(github.ref, ' \' 'refs/tags/' \' ')' $$ /), 4,
+        'and publish and every installer smoke are tag-gated';
 
-    ok $RELEASE.contains('    needs: publish'),
-        'the installer smoke runs after the release exists';
+    is +$RELEASE.comb(/ ^^ '    needs: publish' $$ /), 3,
+        'every installer smoke runs after the release exists';
 
     # A dispatch run must be free to fail: that is the whole point of
     # having one.
@@ -245,6 +257,60 @@ subtest 'nothing is published until a tag says so', {
         'and the digests are checked before they are published';
 };
 
+subtest 'installer smoke is scoped to the platforms actually declared', {
+    plan 8;
+
+    my $linux-only = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["linux-x86_64-glibc"]
+    [installer]
+    repo = "m-doughty/A"
+    TOML
+    my $linux-release = render('release.yml.j2', $linux-only);
+
+    is +$linux-release.comb(/ ^^ '  smoke-installer-' \N+ ':' $$ /), 1,
+        'a one-platform app gets exactly one clean-runner installer smoke';
+    ok $linux-release.contains('  smoke-installer-linux-x86_64-glibc:'),
+        'the one it declared';
+    nok $linux-release.contains('smoke-installer-macos-arm64'),
+        'with no trace of a platform it did not build';
+    nok $linux-release.contains('smoke-installer-windows-x86_64'),
+        'not even a comment naming it, since a build lane exists for macOS'
+      ~ ' and Windows too and each has smoke coverage of its own';
+
+    # No installer.repo at all: the whole feature is off, exactly as it is
+    # for an app with only one declared platform and a repo.
+    my $one = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64"]
+    TOML
+    my $one-release = render('release.yml.j2', $one);
+    nok $one-release.contains('smoke-installer-'),
+        'and no installer.repo means no installer smoke at all';
+
+    # Every platform ariza can build a lane for also has a smoke recipe
+    # today, so the "no clean runner yet" comment never actually renders --
+    # this just pins that it stays silent rather than appearing for no
+    # reason.
+    nok $RELEASE.contains('No clean-runner installer smoke'),
+        'and the release notes say nothing about missing smoke coverage'
+      ~ ' when every declared platform has it';
+
+    is App::Ariza::CI.context(:config($linux-only))<smoke_job_names>.List,
+        ('smoke-installer-linux-x86_64-glibc',),
+        'the context carries just that one job id';
+    is App::Ariza::CI.context(:config($linux-only))<no_smoke_platforms>.List,
+        (), 'and no platform is reported as missing smoke coverage';
+};
+
 subtest 'each lane installs what ariza needs on that platform', {
     plan 11;
 
@@ -254,7 +320,7 @@ subtest 'each lane installs what ariza needs on that platform', {
 
     ok $RELEASE.contains('    container: quay.io/pypa/manylinux_2_28_x86_64'),
         'the Linux lane builds in manylinux_2_28';
-    ok $RELEASE.contains('dnf install -y python3 tcl openssl-devel'),
+    ok $RELEASE.contains('dnf install -y python3 tcl openssl3-devel'),
         'with the packages a SQLCipher source build needs';
     ok $RELEASE.contains('https://rakudo.org/dl/rakudo'),
         'and installs Rakudo from the release index by hand,';
