@@ -40,9 +40,22 @@ method child-env(IO() $bundle-dir --> Hash) {
 }
 
 #| Every distribution installed in a bundle's site repository, as
-#| C<{ name, version, auth, provides }> hashes sorted by name.
+#| C<{ name, version, auth, license, authors, provides, depends }> hashes
+#| sorted by name.
 method installed-dists(IO() $bundle-dir --> List) {
-    my $dist-dir = self.site-dir($bundle-dir).add('dist');
+    self.dists-in(self.site-dir($bundle-dir))
+}
+
+#| The same, for any C<CompUnit::Repository::Installation> directory —
+#| the bundle's own C<site>, or the one inside the vendored runtime,
+#| which is where the C<zef> that came down with Rakudo lives.
+#|
+#| C<license> and C<authors> are carried through verbatim from each
+#| distribution's own metadata, undefined where it declares none:
+#| deciding what an absent licence field means is
+#| L<App::Ariza::Licensing>'s business, not this module's.
+method dists-in(IO() $site-dir --> List) {
+    my $dist-dir = $site-dir.add('dist');
     return () unless $dist-dir.d;
     $dist-dir.dir.grep(*.f).map({
         my $meta = try { from-json(.slurp) };
@@ -51,6 +64,9 @@ method installed-dists(IO() $bundle-dir --> List) {
             name     => $meta<name>,
             version  => $meta<ver> // $meta<version>,
             auth     => $meta<auth>,
+            license  => $meta<license>,
+            authors  => (($meta<authors> // ()).list.grep(Str).List
+                      || ($meta<author>.defined ?? ($meta<author>,) !! ()).List),
             provides => ($meta<provides> // {}).keys.sort.List,
             depends  => ($meta<depends> // ()).list.grep(Str).List,
         )
@@ -536,10 +552,22 @@ C<JSON::Fast> into one on C<JSON>.
 
 =head2 installed-dists(IO() $bundle-dir --> List)
 
-C<{ name, version, auth, provides, depends }> for every distribution in
-the site repository, sorted by name. Read from the repository's own C<dist/>
-metadata, so it describes what is B<in the bundle> rather than what the
-app asked for.
+C<{ name, version, auth, license, authors, provides, depends }> for every
+distribution in the site repository, sorted by name. Read from the
+repository's own C<dist/> metadata, so it describes what is B<in the
+bundle> rather than what the app asked for.
+
+=head2 dists-in(IO() $site-dir --> List)
+
+The same, for any installation repository directory. A bundle has two:
+its own C<site>, and the one inside the vendored runtime — which is
+where the C<zef> that came down with Rakudo lives, and which is
+therefore redistributed like everything else.
+L<App::Ariza::Licensing> walks both.
+
+C<license> and C<authors> come straight out of each distribution's
+metadata and are undefined where it declares none. What an absent
+licence field I<means> is decided in one place, and it is not this one.
 
 =head2 child-env(IO() $bundle-dir --> Hash) / site-dir / native-dir
 

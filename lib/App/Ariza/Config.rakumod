@@ -12,6 +12,10 @@ has      $.bundle-native = ();
 has      $.bundle-smoke;
 has Str  $.installer-repo;
 has Str  $.ci-ariza-source;
+has Bool $.licensing-strict = False;
+has      $.licensing-app = {};
+has      $.licensing-third-party = ();
+has      $.licensing-dists = ();
 has      $.warnings = ();
 has IO::Path $.path;
 
@@ -154,6 +158,96 @@ my sub parse-ci($value, %attrs, @warnings) {
     }
 }
 
+# The fields of a licensing row, which is the same shape everywhere:
+# App::Ariza::Licensing's rows, a native pack's third-party.json
+# components, and the three places an app can write one here. Keeping
+# the vocabulary identical is what lets an app describe a bundled font
+# in the same words the notcurses pack describes FFmpeg in.
+my constant ROW-STRINGS =
+    <id name version spdx-license conveyed-under copyright project-url
+     source notes>;
+my constant ROW-LISTS = <license-files files>;
+
+# What each of the three tables accepts. `licensing.app` has no `id`
+# (there is only one application) and no `files` (the bundle is the
+# file); a `licensing.dists` override describes a distribution ariza
+# already found, so it names it and corrects it rather than inventing
+# provenance for it.
+my constant APP-KEYS =
+    <name version spdx-license conveyed-under copyright project-url source
+     notes license-files>;
+my constant THIRD-PARTY-KEYS = (|ROW-STRINGS, |ROW-LISTS);
+my constant DIST-KEYS =
+    <name version spdx-license conveyed-under copyright project-url notes
+     license-files>;
+
+my sub parse-row(Str:D $key, $value, @warnings, :@allow!, :@require = () --> Hash) {
+    my %obj = as-hash($key, $value);
+    my %row;
+    for %obj.kv -> $k, $v {
+        next if $k.starts-with('//');
+        my $dotted = $key ~ '.' ~ $k;
+        unless @allow.first($k) {
+            @warnings.push("unknown key '$dotted' in ariza.toml (ignored)");
+            next;
+        }
+        %row{$k} = ROW-LISTS.first($k)
+            ?? as-str-list($dotted, $v)
+            !! as-str($dotted, $v);
+    }
+    for @require -> $required {
+        die "ariza: {$key}.{$required} is required"
+            unless %row{$required}.defined && %row{$required}.chars;
+    }
+    %row
+}
+
+my sub parse-rows(Str:D $key, $value, @warnings, :@allow!, :@require = () --> List) {
+    die-with-key($key, 'an array of tables')
+        unless $value.defined && $value ~~ Positional;
+    # An explicit loop, not `.map(...).List`: the map is lazy, so a row
+    # missing a required key would not be complained about until
+    # something happened to consume the result — which is outside
+    # whatever the caller wrapped this in, and a long way from the file
+    # that is wrong.
+    my @rows;
+    @rows.push(parse-row($key, $_, @warnings, :@allow, :@require))
+        for $value.list;
+    @rows.List
+}
+
+my sub parse-licensing($value, %attrs, @warnings) {
+    my %obj = as-hash('licensing', $value);
+    for %obj.kv -> $key, $v {
+        next if $key.starts-with('//');
+        given $key {
+            when 'strict' {
+                die-with-key('licensing.strict', 'true or false')
+                    unless $v.defined && $v ~~ Bool;
+                %attrs<licensing-strict> = $v;
+            }
+            when 'app' {
+                %attrs<licensing-app> =
+                    parse-row('licensing.app', $v, @warnings, :allow(APP-KEYS));
+            }
+            when 'third-party' {
+                %attrs<licensing-third-party> =
+                    parse-rows('licensing.third-party', $v, @warnings,
+                               :allow(THIRD-PARTY-KEYS),
+                               :require(<name spdx-license>));
+            }
+            when 'dists' {
+                %attrs<licensing-dists> =
+                    parse-rows('licensing.dists', $v, @warnings,
+                               :allow(DIST-KEYS), :require(('name',)));
+            }
+            default {
+                @warnings.push("unknown key 'licensing.$key' in ariza.toml (ignored)");
+            }
+        }
+    }
+}
+
 #| Load `ariza.toml` from an app's repository. `$dir` is the repository
 #| root; the filename is fixed.
 method load(App::Ariza::Config:U: IO() $dir = $*CWD --> App::Ariza::Config) {
@@ -193,6 +287,7 @@ method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
             when 'bundle'    { parse-bundle($value, %attrs, @warnings); }
             when 'installer' { parse-installer($value, %attrs, @warnings); }
             when 'ci'        { parse-ci($value, %attrs, @warnings); }
+            when 'licensing' { parse-licensing($value, %attrs, @warnings); }
             default {
                 @warnings.push("unknown key '$key' in ariza.toml (ignored)");
             }
@@ -280,6 +375,8 @@ say $cfg.bundle-native;       # (notcurses sqlcipher)
 say $cfg.installer-repo;      # m-doughty/App-Moneymoor
 say $cfg.ci-ariza-source;     # fez  (or a URL zef can install from)
 say $cfg.smoke-command;       # moneymoor --version
+say $cfg.licensing-strict;    # False
+say $cfg.licensing-third-party;   # ({name => Inter, spdx-license => OFL-1.1})
 
 # Every smoke command as argv, with paths substituted in:
 .say for $cfg.smoke-commands(:exec($launcher), :raku($raku), :tmp($scratch));
@@ -316,6 +413,9 @@ repo = "m-doughty/App-Moneymoor"   # where the releases live
 
 [ci]
 ariza-source = "fez"         # how the scaffolded workflows install ariza
+
+[licensing]
+strict = false               # an unattributed native pack fails the build
 
 =end code
 
@@ -449,6 +549,97 @@ install> accepts is legitimate, and enumerating those here would date
 badly — so only an B<empty> value is an error, because it renders a
 workflow step that installs nothing and succeeds.
 
+=head2 [licensing]
+
+Everything about what a bundle redistributes is read out of the bundle
+itself — a native pack's own licensing kit, each installed
+distribution's C<META6.json> C<license>, ariza's record of the vendored
+runtime. This table is for the two things that are not readable from
+anywhere: how strict to be about a payload nobody attributed, and what
+the B<app> ships that ariza cannot see.
+
+Every key is optional, and an app that writes none of it still gets a
+complete C<THIRD-PARTY.md>.
+
+=begin code :lang<toml>
+
+[licensing]
+# A native pack with no licensing manifest is a warning and a visible
+# "unattributed" row by default. `true` makes it a failed build.
+strict = true
+
+# The application's own row. Every field defaults from the app's
+# META6.json (and its LICENSE file), so most apps need none of this.
+[licensing.app]
+copyright = "Copyright 2026 A Person"
+project-url = "https://example.org/moneymoor"
+notes = "The bundled build enables the encrypted-store feature."
+
+# Anything the app ships that ariza cannot see: fonts, datasets,
+# artwork, a vendored C library of its own.
+[[licensing.third-party]]
+name = "Inter"
+version = "4.0"
+spdx-license = "OFL-1.1"                   # a text ariza ships
+copyright = "Copyright 2016 The Inter Project Authors"
+project-url = "https://rsms.me/inter/"
+files = ["resources/fonts/Inter-*.ttf"]
+
+[[licensing.third-party]]
+name = "The cover artwork"
+spdx-license = "CC-BY-4.0"                 # one it does not: name a file
+license-files = ["licenses/CC-BY-4.0.txt"] # path in THIS repository
+files = ["resources/art/*.png"]
+
+# A distribution in the closure whose own metadata is wrong or absent.
+[[licensing.dists]]
+name = "Some::Ancient::Module"
+spdx-license = "Artistic-2.0"
+notes = "Its META6 has no license field; confirmed from its LICENSE."
+
+=end code
+
+The three row tables share one vocabulary — C<id>, C<name>, C<version>,
+C<spdx-license>, C<conveyed-under>, C<copyright>, C<project-url>,
+C<source>, C<notes>, C<license-files>, C<files> — and it is deliberately
+the same vocabulary a native pack's C<third-party.json> uses, so an app
+describes a bundled font in the words a pack describes FFmpeg in.
+C<licensing.app> takes neither C<id> (there is one application) nor
+C<files> (the bundle is the file); C<licensing.dists> corrects a
+distribution ariza already found, so it takes neither C<id>, C<source>
+nor C<files>.
+
+C<license-files> entries are paths B<inside the app's repository>, never
+absolute: a licence text belongs to the repository that declares it, and
+an absolute path in a committed config file is a path that exists on one
+machine. Where a row omits them, ariza uses the text it ships for the
+row's SPDX identifier — it ships C<Artistic-2.0>, C<MIT>, C<Apache-2.0>,
+C<BSD-2-Clause>, C<BSD-3-Clause>, C<LGPL-2.1>, C<LGPL-3.0>, C<GPL-2.0>,
+C<GPL-3.0>, C<AGPL-3.0>, C<Zlib>, C<ISC>, C<X11>, C<OFL-1.1>,
+C<Unlicense> and a public-domain statement — and an identifier it has no
+text for is a hard error naming this key as the fix.
+
+=head3 NOASSERTION
+
+C<spdx-license = "NOASSERTION"> is SPDX's own spelling for "somebody
+looked and could not determine the licensing", and it is accepted in a
+C<[[licensing.dists]]> or C<[[licensing.third-party]]> row — after
+looking, as a declaration on the record. No licence text is looked up
+for it, since there is none, and the generated document says in words
+that licensing was not asserted and points at the component's own
+repository.
+
+It is available B<nowhere else>. A distribution whose own metadata says
+C<NOASSERTION> fails like any other missing licence (nobody has looked
+yet), C<[licensing.app]> may not say it about the application itself
+(there is nobody to look on its behalf), and C<licensing.strict> refuses
+a bundle that contains one — strict means every component names a
+licence, and "we could not find one" is not a name.
+
+C<name> and C<spdx-license> are required in a C<[[licensing.third-party]]>
+row, C<name> in a C<[[licensing.dists]]> one; anything else is optional.
+See L<App::Ariza::Licensing> for what is done with them.
+
 =head1 UNKNOWN KEYS WARN; WRONG TYPES DIE
 
 The house rule, shared with L<App::Ariza::Versions> and
@@ -531,6 +722,14 @@ C<%vars>. A surviving C<{...}> dies naming the known placeholders.
 The B<first> smoke command as one display string with C<{exec}>
 expanded, or the undefined C<Str> when none is configured. For showing a
 human what will run — C<smoke-commands> is for running it.
+
+=head2 licensing-strict(--> Bool) / licensing-app(--> Hash) / licensing-third-party(--> List) / licensing-dists(--> List)
+
+The C<[licensing]> table: whether an unattributed native pack fails the
+build, the app's own row, the rows it declared for what ariza cannot
+see, and the corrections it declared for distributions whose metadata is
+wrong. All four are empty-but-defined for a config that omits the
+table, so a caller never has to test for it.
 
 =head2 warnings(--> List) / path(--> IO::Path)
 

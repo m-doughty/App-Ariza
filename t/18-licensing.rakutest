@@ -1,0 +1,756 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Config;
+use App::Ariza::Licensing;
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+
+plan 16;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-licensing-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| An app checkout: META6.json, ariza.toml, and (optionally) a LICENSE.
+sub fake-app(
+    IO::Path $dir,
+    Str :$licensing = '',
+    Str :$license = 'Artistic-2.0',
+    Bool :$license-file = True,
+    --> IO::Path
+) {
+    ensure-dir($dir);
+    my %meta =
+        name => 'App::Moneymoor', version => '0.2.0',
+        authors => ['A Person'],
+        source-url => 'https://example.invalid/moneymoor.git',
+    ;
+    %meta<license> = $license if $license.defined;
+    $dir.add('META6.json').spurt(to-json(%meta));
+    $dir.add('LICENSE').spurt("The application's own licence text.\n")
+        if $license-file;
+    $dir.add('ariza.toml').spurt(
+        "[app]\nname = \"App::Moneymoor\"\nexec = \"moneymoor\"\n"
+      ~ "display = \"Moneymoor\"\n" ~ $licensing);
+    $dir
+}
+
+#| One installed distribution in a repository inside the bundle.
+sub fake-dist(IO() $repo, *%meta) {
+    ensure-dir($repo.add('dist'))
+        .add(%meta<name>.subst('::', '-', :g))
+        .spurt(to-json(%meta.Hash));
+}
+
+#| The smallest bundle the collectors can be pointed at: one site
+#| repository holding the app, and nothing else.
+sub fake-bundle(IO::Path $dir --> IO::Path) {
+    my $bundle = ensure-dir($dir.add('bundle'));
+    fake-dist($bundle.add('site'), :name<App::Moneymoor>, :ver<0.2.0>,
+              :auth<zef:apogee>, :license<Artistic-2.0>);
+    $bundle
+}
+
+sub write-licensing(IO::Path $bundle, IO::Path $app, *%extra --> Hash) {
+    App::Ariza::Licensing.write(
+        :bundle-dir($bundle), :config(App::Ariza::Config.load($app)),
+        :app-dir($app), :app-version<0.2.0>, :app-display<Moneymoor>,
+        :platform<macos-arm64>,
+        :placeholders(%(
+            'rakudo-version'    => '2026.07',
+            'rakudo-tag'        => '2026.07-01',
+            'rakudo-url'        => 'https://rakudo.org/dl/rakudo/x.tar.gz',
+            'sqlcipher-version' => '4.14.0',
+            'sqlcipher-source'  => 'homebrew keg: /opt/x/lib/libsqlcipher.0.dylib',
+            'runner-tag'        => 'runner-v1',
+            'runner-url'        => 'https://example.invalid/runner.exe',
+            'app-exec'          => 'moneymoor',
+            'ariza-version'     => '0.1.0',
+        )),
+        |%extra)
+}
+
+#| A pack kit, generated in the shape the upstream emitter produces.
+sub fake-md-kit(IO() $dir, :@components!, :@texts = <MIT.txt>) {
+    ensure-dir($dir);
+    my @lines =
+        '# Third-party components in this package', '',
+        'Platform: `macos`', '',
+        '## Summary', '',
+        '| Component | Version | Licence (SPDX) | Source |',
+        '|---|---|---|---|',
+    ;
+    for @components -> %c {
+        @lines.push("| {%c<name>} | {%c<version>} | `{%c<spdx>}` | [tarball]({%c<url>}) |");
+    }
+    @lines.push('', '## Details');
+    for @components -> %c {
+        @lines.append('', "### {%c<name>} — {%c<version>}", '',
+            "* Licence: `{%c<spdx>}`",
+            "* Licence text: `LICENSES/{%c<text>}`",
+            "* {%c<copyright>}",
+            "* Upstream: <{%c<url>}>");
+    }
+    $dir.add('THIRD-PARTY.md').spurt(@lines.join("\n") ~ "\n");
+    my $licenses = ensure-dir($dir.add('LICENSES'));
+    $licenses.add($_).spurt("Text of $_\n") for @texts;
+    $dir
+}
+
+subtest 'an SPDX expression is read as the identifiers in it', {
+    plan 7;
+    is spdx-ids('MIT').List, ('MIT',), 'one identifier is itself';
+    is spdx-ids('LGPL-2.1-or-later').List, ('LGPL-2.1',),
+        '`-or-later` names the same text as the licence it qualifies';
+    is spdx-ids('GPL-2.0+').List, ('GPL-2.0',), 'and so does the older `+`';
+    is spdx-ids('GPL-3.0-only').List, ('GPL-3.0',), 'as does `-only`';
+    is spdx-ids('MIT AND BSD-2-Clause AND ISC').List,
+        ('MIT', 'BSD-2-Clause', 'ISC'),
+        'AND means every one of them travels with the binary';
+    is spdx-ids('LGPL-3.0-or-later OR GPL-2.0-or-later').List,
+        ('LGPL-3.0', 'GPL-2.0'),
+        'and OR means the recipient chooses, so both texts ship';
+    is spdx-ids('GPL-3.0-or-later WITH GCC-exception-3.1').List,
+        ('GPL-3.0', 'GCC-exception-3.1'),
+        'an exception is a text of its own';
+};
+
+subtest 'the runtime data file is complete, and every text it cites ships', {
+    plan 7;
+    my @c = App::Ariza::Licensing.runtime-components;
+
+    ok @c >= 15, 'the vendored runtime and MoarVM\'s own 3rdparty are all in it'
+        or diag "components: {@c.map(*.<id>).join(', ')}";
+
+    my %by = @c.map({ .<id> => $_ }).Hash;
+    is %by<rakudo><spdx-license>, 'Artistic-2.0', 'Rakudo is Artistic-2.0';
+    ok %by<nqp>.defined && %by<moarvm>.defined,
+        'and so are the two things inside its archive that are not it';
+
+    # The libraries MoarVM vendors are the reason this file exists: they
+    # arrive as compiled bytes inside a binary release with no manifest,
+    # so nothing in the bundle can be asked about them.
+    my @vendored = @c.map(*.<id>).grep(*.starts-with('moarvm-'));
+    ok @vendored >= 10,
+        'the C libraries compiled into MoarVM are enumerated, not summarised'
+        or diag "vendored: {@vendored.join(', ')}";
+
+    # A row citing a text ariza does not ship would fail at the end of
+    # every build, and the shipped data file is not allowed to be the
+    # thing that does that.
+    my @shipped = resource-list('licenses').map({ .subst('licenses/', '') });
+    is @shipped.List,
+        ('AGPL-3.0.txt', 'Apache-2.0.txt', 'Artistic-2.0.txt',
+         'BSD-2-Clause.txt', 'BSD-3-Clause.txt', 'GPL-2.0.txt', 'GPL-3.0.txt',
+         'ISC.txt', 'LGPL-2.1.txt', 'LGPL-3.0.txt',
+         'LicenseRef-public-domain.txt', 'MIT.txt', 'OFL-1.1.txt',
+         'Unlicense.txt', 'X11.txt', 'Zlib.txt'),
+        'the shipped licence texts are exactly this set — adding or losing'
+      ~ ' one is a decision, not a side effect';
+    my @missing = @c.map({ .<license-files>.list }).flat.unique.sort
+                    .grep({ !@shipped.first($_) });
+    is @missing.List, (), 'every licence text the data file names is shipped';
+
+    # A `condition` ariza cannot decide would silently drop a row, and a
+    # dropped row is a notice not given.
+    my @conditions = @c.map({ .<condition> }).grep(*.defined).unique.sort;
+    is @conditions.List, ('runner', 'sqlcipher'),
+        'and the only conditional rows are the two facts a build knows';
+};
+
+subtest 'runtime rows are substituted, conditional, and can name what they cover', {
+    plan 6;
+    my %p = 'rakudo-version' => '2026.07', 'rakudo-tag' => '2026.07-01',
+            'rakudo-url' => 'https://example.invalid/r.tar.gz',
+            'sqlcipher-version' => '4.14.0', 'sqlcipher-source' => 'a keg',
+            'runner-tag' => 'runner-v1', 'runner-url' => 'https://example.invalid/x.exe',
+            'app-exec' => 'moneymoor', 'ariza-version' => '0.1.0';
+
+    my @plain = App::Ariza::Licensing.runtime-rows(:placeholders(%p));
+    my %by = @plain.map({ .<id> => $_ }).Hash;
+    is %by<rakudo><version>, '2026.07',
+        'the pinned runtime version is substituted in';
+    nok %by<sqlcipher>.defined,
+        'a bundle without SQLCipher does not claim to carry it';
+    nok %by<ariza-runner>.defined, 'nor a runner it never staged';
+
+    my @with = App::Ariza::Licensing.runtime-rows(
+        :placeholders(%p), :conditions(<sqlcipher runner>),
+        :files(%( sqlcipher => <libsqlcipher.0.dylib libcrypto.3.dylib> )));
+    my %on = @with.map({ .<id> => $_ }).Hash;
+    is %on<sqlcipher><version>, '4.14.0', 'a staged SQLCipher gets its row';
+    is %on<sqlcipher><files>.List, ('libsqlcipher.0.dylib', 'libcrypto.3.dylib'),
+        'naming the files that were actually staged, not a guess';
+    ok %on<ariza-runner><name>.contains('moneymoor.exe'),
+        'and the runner row is named after the executable it became';
+};
+
+subtest 'a data file ariza cannot trust stops the build', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my sub data(%d --> IO::Path) {
+        my $p = $dir.add("d{(^1_000_000).pick}.json");
+        $p.spurt(to-json(%d));
+        $p
+    }
+    my %ok-component =
+        id => 'x', name => 'X', version => '1', kind => 'runtime',
+        'spdx-license' => 'MIT', 'license-files' => ['MIT.txt'],
+        copyright => 'Copyright someone', 'project-url' => 'https://example.invalid/',
+        source => 'somewhere',
+    ;
+
+    throws-like { App::Ariza::Licensing.runtime-components(:path($dir.add('nope.json'))) },
+        Exception, 'a missing data file is not an empty one';
+
+    throws-like {
+        App::Ariza::Licensing.runtime-components(
+            :path(data(%( 'schema-version' => 2, components => [] ))))
+    }, Exception, message => /'schema-version 2'/,
+        'a schema this ariza does not read is named rather than guessed at';
+
+    throws-like {
+        App::Ariza::Licensing.runtime-components(:path(data(%(
+            'schema-version' => 1,
+            components => [%(|%ok-component, kind => 'thing'),]))))
+    }, Exception, message => /'kind'/, 'an unknown kind is an error';
+
+    throws-like {
+        App::Ariza::Licensing.runtime-components(:path(data(%(
+            'schema-version' => 1,
+            components => [%(|%ok-component, condition => 'phase-of-the-moon'),]))))
+    }, Exception, message => /'phase-of-the-moon'/,
+        'and so is a condition ariza cannot decide — the alternative is a'
+      ~ ' row silently dropped';
+
+    # A placeholder nothing supplies would publish a row with a hole in
+    # it, which does not fail, it says something wrong.
+    throws-like {
+        App::Ariza::Licensing.runtime-rows(:path(data(%(
+            'schema-version' => 1,
+            components => [%(|%ok-component, version => '{who-knows}'),]))))
+    }, Exception, message => /'unknown placeholder'/,
+        'an unknown placeholder is an error, not an empty string';
+};
+
+subtest 'a native pack manifest is the source of truth for that pack', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = ensure-dir($dir.add('bundle'));
+    my $kit = ensure-dir($bundle.add('native/Some-Pack/build-7/lib'));
+
+    $kit.add('third-party.json').spurt(to-json(%(
+        'schema-version' => 1,
+        components => [
+            %( id => 'thing', name => 'libthing', version => '2.1',
+               'spdx-license' => 'LGPL-2.1-or-later',
+               'license-files' => ['LGPL-2.1.txt'],
+               copyright => 'Copyright 2026 The libthing authors',
+               'project-url' => 'https://example.invalid/libthing',
+               source => %( kind => 'tarball', url => 'https://example.invalid/t.tar.gz',
+                            sha256 => 'abc' ),
+               binaries => %( macos => %( patterns => ['libthing.*.dylib'] ),
+                              windows => %( patterns => ['thing.dll'] ) ) ),
+            %( id => 'windows-only', name => 'libwin', version => '1.0',
+               'spdx-license' => 'MIT', 'license-files' => ['MIT.txt'],
+               copyright => 'Copyright 2026 someone',
+               'project-url' => 'https://example.invalid/libwin',
+               source => %( kind => 'package-manager' ),
+               binaries => %( macos => %( patterns => [] ),
+                              windows => %( patterns => ['win.dll'] ) ) ),
+        ],
+    )));
+    ensure-dir($kit.add('LICENSES')).add('LGPL-2.1.txt').spurt("LGPL text\n");
+
+    my %macos = App::Ariza::Licensing.pack-rows(:bundle-dir($bundle), :family<macos>);
+    my @rows = %macos<rows>.list;
+
+    is +@rows, 1, 'a component that ships nothing on this platform is not listed';
+    is @rows[0]<name>, 'libthing', 'the one that does is';
+    is @rows[0]<spdx>, 'LGPL-2.1-or-later',
+        'with the licence the pack itself declares';
+    is @rows[0]<license-files>.List, ('LGPL-2.1.txt',),
+        'and the texts it says travel with it';
+    ok @rows[0]<provenance>.contains('third-party.json'),
+        'the row says the manifest is where that came from';
+    ok %macos<texts>.list.first({ .basename eq 'LICENSES' }).defined,
+        'and the pack\'s own licence texts are collected for merging';
+};
+
+subtest 'a pack with only its generated document is read from the document', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = ensure-dir($dir.add('bundle'));
+
+    # The kit every pack ships today: THIRD-PARTY.md and LICENSES/, with
+    # no machine-readable manifest beside them. Prose is not the source
+    # of truth, but a bundle that ignored it would under-report a real,
+    # complete notice sitting inside itself.
+    fake-md-kit($bundle.add('native/Some-Pack/build-7/lib'), :components(
+        %( name => 'libthing', version => '2.1', spdx => 'LGPL-2.1-or-later',
+           text => 'LGPL-2.1.txt', url => 'https://example.invalid/libthing',
+           copyright => 'Copyright 2026 The libthing authors' ),
+        %( name => 'libother', version => '9', spdx => 'MIT',
+           text => 'MIT.txt', url => 'https://example.invalid/libother',
+           copyright => 'Copyright 2026 Someone Else' ),
+    ), :texts(<LGPL-2.1.txt MIT.txt>));
+
+    my @rows = App::Ariza::Licensing.pack-rows(
+        :bundle-dir($bundle), :family<macos>)<rows>.list;
+
+    is +@rows, 2, 'every component in the Summary table becomes a row';
+    is @rows[0]<name>, 'libthing', 'named as the document names it';
+    is @rows[0]<spdx>, 'LGPL-2.1-or-later', 'with its licence';
+    is @rows[0]<copyright>, 'Copyright 2026 The libthing authors',
+        'and the copyright notice out of the Details section';
+    is @rows[0]<license-files>.List, ('LGPL-2.1.txt',),
+        'citing the texts that section names, not ones inferred from the id';
+    ok @rows[0]<provenance>.contains('THIRD-PARTY.md'),
+        'the row says the document is where that came from, not a manifest';
+
+    # A component whose name is a prefix of another's must not pick up
+    # the other's copyright -- and must not pick a different one on the
+    # next run, which unsorted hash keys would have done.
+    my @prefixed = App::Ariza::Licensing.md-components(q:to/MD/);
+        ## Summary
+
+        | Component | Version | Licence (SPDX) | Source |
+        |---|---|---|---|
+        | notcurses | 3.0 | `Apache-2.0` | [tarball](https://example.invalid/n) |
+
+        ## Details
+
+        ### notcurses-core — 3.0
+
+        * Copyright 2026 Somebody Else
+
+        ### notcurses — 3.0
+
+        * Copyright 2026 The Right Person
+        MD
+    is @prefixed[0]<copyright>, 'Copyright 2026 The Right Person',
+        'a heading is matched on the whole name, not on a prefix of it';
+
+    # The fallback's whole safety story: a table whose header is not the
+    # generated one is not this parser's table, and producing nothing is
+    # the only safe answer.
+    is App::Ariza::Licensing.md-components(
+        "## Summary\n\n| Thing | Who |\n|---|---|\n| a | b |\n").List, (),
+        'a document in some other shape produces no rows at all';
+};
+
+subtest 'a pack nobody attributed is visible, and strict makes it fatal', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = ensure-dir($dir.add('bundle'));
+    ensure-dir($bundle.add('native/mystery')).add('libwhatever.dylib').spurt('x');
+
+    my @warnings;
+    my @rows = App::Ariza::Licensing.pack-rows(
+        :bundle-dir($bundle), :family<macos>, :@warnings)<rows>.list;
+
+    is +@rows, 1, 'the pack is listed rather than dropped';
+    is @rows[0]<spdx>, '', 'with no licence, because ariza does not know one';
+    ok @rows[0]<notes>.contains('third-party.json'),
+        'and a note saying what would fix it';
+    ok @warnings.first({ .contains('mystery') }).defined,
+        'the build says so out loud as well';
+
+    throws-like {
+        App::Ariza::Licensing.pack-rows(:bundle-dir($bundle), :family<macos>,
+                                        :strict)
+    }, Exception, message => /'licensing.strict'/,
+        'and an app that will not ship one says so in its config';
+
+    # A directory ariza staged itself is accounted for by the runtime
+    # data, so reporting it as unattributed would be a false alarm.
+    ensure-dir($bundle.add('native/sqlcipher')).add('libsqlcipher.so.0').spurt('x');
+    my @claimed = App::Ariza::Licensing.pack-rows(:bundle-dir($bundle),
+        :family<linux>, :claimed(App::Ariza::Licensing.runtime-claims(
+            :conditions(('sqlcipher',)))))<rows>.list;
+    is @claimed.map(*.<name>).List, ('mystery',),
+        'the SQLCipher ariza staged is not reported as a pack nobody claimed';
+};
+
+subtest 'the Raku closure fails closed', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $app = fake-app($dir.add('app'));
+    my $bundle = fake-bundle($dir);
+    fake-dist($bundle.add('site'), :name<JSON::Fast>, :ver<0.19>,
+              :auth<cpan:TIMOTIMO>, :license<Artistic-2.0>,
+              :authors(['Timo Paulssen']));
+    fake-dist($bundle.add('rakudo/share/perl6/site'), :name<zef>, :ver<1.1.3>,
+              :auth<zef:ugexe>, :license<Artistic-2.0>, :authors(['Nick Logan']));
+
+    my @rows = write-licensing($bundle, $app)<rows>.list
+                   .grep({ .<kind> eq 'module' });
+    is @rows.map(*.<name>).List, ('JSON::Fast', 'zef'),
+        'both of a bundle\'s repositories are walked — zef ships inside the'
+      ~ ' runtime archive and is redistributed like anything else';
+    is @rows.first({ .<name> eq 'zef' })<license-files>.List,
+        ('Artistic-2.0.txt',),
+        'and each one cites the text for the licence its metadata declares';
+
+    # The app is the application row, not one of its own dependencies.
+    nok write-licensing($bundle, $app)<rows>.first({ .<id> eq 'dist/App::Moneymoor' }),
+        'the app itself is not listed twice';
+
+    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
+    fake-dist($bundle.add('site'), :name<Vague::Module>, :ver<1.0>, :auth<zef:x>,
+              :license('Same as Perl 6'));
+    throws-like { write-licensing($bundle, $app) }, Exception,
+        message => /'Silent::Module declares no licence' .* 'Vague::Module'
+                    .* 'no licence text for'/,
+        'a distribution with no usable licence fails the build — and every'
+      ~ ' offender is named at once, so a closure with three of them costs'
+      ~ ' one build rather than three';
+
+    # The fix an app can apply without waiting for an upstream release.
+    my $fixed = fake-app($dir.add('app-fixed'), :licensing(q:to/TOML/));
+
+        [[licensing.dists]]
+        name = "Silent::Module"
+        spdx-license = "Artistic-2.0"
+        notes = "Its META6 has no license field; taken from its LICENSE file."
+
+        [[licensing.dists]]
+        name = "Vague::Module"
+        spdx-license = "Artistic-2.0"
+        TOML
+    my @after = write-licensing($bundle, $fixed)<rows>.list
+                    .grep({ .<name> eq 'Silent::Module' });
+    ok @after[0]<provenance>.contains('licensing.dists'),
+        'an app-level override fixes it, and says that it did';
+};
+
+subtest 'the app declares its own row, and what ariza cannot see', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $app = fake-app($dir.add('app'));
+    my $bundle = fake-bundle($dir);
+    my %row = write-licensing($bundle, $app)<rows>.first({ .<kind> eq 'application' });
+
+    is %row<name>, 'App::Moneymoor', 'the application row is the dist name';
+    is %row<spdx>, 'Artistic-2.0', 'its licence comes from its own META6';
+    is %row<license-files>.List, ('App-Moneymoor.txt',),
+        'and its text is the LICENSE file in its repository, not a template';
+    is %row<copyright>, 'Authors: A Person',
+        'META6 has authors and no copyright, so that is what is said';
+
+    my $declared = fake-app($dir.add('app2'), :licensing(q:to/TOML/));
+
+        [licensing.app]
+        copyright = "Copyright 2026 A Person"
+        notes = "Built with the encrypted store enabled."
+
+        [[licensing.third-party]]
+        name = "The cover artwork"
+        version = "1.0"
+        spdx-license = "CC-BY-4.0"
+        copyright = "Copyright 2026 An Illustrator"
+        license-files = ["licenses/CC-BY-4.0.txt"]
+        files = ["resources/art/*.png"]
+        TOML
+    ensure-dir($declared.add('licenses')).add('CC-BY-4.0.txt')
+        .spurt("Creative Commons Attribution 4.0 text\n");
+
+    my @rows = write-licensing($bundle, $declared)<rows>.list;
+    my %own  = @rows.first({ .<kind> eq 'application' });
+    is %own<copyright>, 'Copyright 2026 A Person',
+        'what the app says about itself wins over what is derived';
+    my %art = @rows.first({ .<name> eq 'The cover artwork' });
+    is %art<license-files>.List, ('CC-BY-4.0.txt',),
+        'a licence ariza ships no text for travels from the app\'s repository';
+    ok $bundle.add('LICENSES/CC-BY-4.0.txt').f,
+        'and lands in the bundle beside the rest';
+
+    # An absolute path in a committed config file is a path that exists
+    # on one machine.
+    my $bad = fake-app($dir.add('app3'), :licensing(q:to/TOML/));
+
+        [[licensing.third-party]]
+        name = "Thing"
+        spdx-license = "MIT"
+        license-files = ["/etc/hosts"]
+        TOML
+    throws-like { write-licensing($bundle, $bad) }, Exception,
+        message => /'absolute'/,
+        'a license-files entry outside the app\'s repository is refused';
+};
+
+subtest 'every citation resolves, and a text nobody ships is an error', {
+    plan 7;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+    my $app = fake-app($dir.add('app'));
+
+    # A pack citing a text it does not carry and ariza does not ship.
+    my $kit = ensure-dir($bundle.add('native/Some-Pack/lib'));
+    $kit.add('third-party.json').spurt(to-json(%(
+        'schema-version' => 1,
+        components => [%( id => 'thing', name => 'libthing', version => '1',
+            'spdx-license' => 'Beerware', 'license-files' => ['Beerware.txt'],
+            copyright => 'Copyright 2026 nobody',
+            'project-url' => 'https://example.invalid/',
+            source => %( kind => 'in-tree', url => 'https://example.invalid/' ) ),],
+    )));
+
+    throws-like { write-licensing($bundle, $app) }, Exception,
+        message => /'Beerware.txt'/,
+        'a cited licence text that is nowhere is a hard error, not a dangling link';
+
+    # The same pack, carrying the text: nothing to complain about.
+    ensure-dir($kit.add('LICENSES')).add('Beerware.txt').spurt("Beer text\n");
+    my %l = write-licensing($bundle, $app);
+    ok $bundle.add('LICENSES/Beerware.txt').f,
+        'a pack that carries its own text has it merged in';
+
+    # Two sources, same name, different bytes: the difference is said out
+    # loud rather than resolved by whichever directory was read first,
+    # and the copy nearest the software wins. ariza's texts are SPDX
+    # templates -- `<year> <owner>` where a real notice carries a name --
+    # so a pack's own copy is the notice that actually travels with its
+    # binaries, and the template is only what to fall back to.
+    ensure-dir($kit.add('LICENSES')).add('MIT.txt').spurt("The pack's MIT text\n");
+    my %again = write-licensing($bundle, $app);
+    ok %again<warnings>.first({ .contains('MIT.txt') }).defined,
+        'a licence text two sources disagree about warns';
+    ok %again<warnings>.first({ .contains("ariza's own text") }).defined,
+        'naming the copy that is not used, which is the generic one';
+    is $bundle.add('LICENSES/MIT.txt').slurp, "The pack's MIT text\n",
+        'and the pack\'s own copy is the one that ships';
+
+    # And the app beats the pack, which is the case that decided the
+    # order: an OFL font's text carries a Reserved Font Name, so the
+    # file an app names is a different document from the template rather
+    # than a formatting variant of it.
+    my $own = fake-app($dir.add('own'), :licensing(q:to/TOML/));
+
+        [[licensing.third-party]]
+        name = "A vendored library"
+        spdx-license = "MIT"
+        license-files = ["licenses/MIT.txt"]
+        TOML
+    ensure-dir($own.add('licenses')).add('MIT.txt').spurt("The app's MIT text\n");
+    write-licensing($bundle, $own);
+    is $bundle.add('LICENSES/MIT.txt').slurp, "The app's MIT text\n",
+        'a text the app named beats both the pack\'s and ariza\'s';
+
+    # A text left over from a previous build is as misleading as a
+    # missing one: it says the bundle contains something it does not.
+    $bundle.add('LICENSES/Stale-1.0.txt').spurt("left over\n");
+    write-licensing($bundle, $app);
+    nok $bundle.add('LICENSES/Stale-1.0.txt').e,
+        'and a text no row cites is removed rather than left to mislead';
+};
+
+subtest 'the merged document is what the bundle root gets', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+    my $app = fake-app($dir.add('app'));
+    ensure-dir($bundle.add('native/mystery')).add('lib.dylib').spurt('x');
+
+    my %l = write-licensing($bundle, $app);
+    my $text = $bundle.add('THIRD-PARTY.md').slurp;
+
+    ok $bundle.add('THIRD-PARTY.md').f, 'THIRD-PARTY.md is written at the root';
+    ok $bundle.add('LICENSES').d, 'with LICENSES/ beside it';
+    ok $text.contains('| App::Moneymoor | 0.2.0 | `Artistic-2.0` |'),
+        'the application is the first row';
+    ok $text.contains('could not be attributed'),
+        'an unattributed component is called out at the top, not buried';
+
+    # Deterministic: the same bundle rendered twice is the same bytes.
+    # Anything else makes the document undiffable and the golden below
+    # meaningless.
+    write-licensing($bundle, $app);
+    is $bundle.add('THIRD-PARTY.md').slurp, $text,
+        'and a rebuild of the same inputs produces byte-identical output';
+
+    # Nothing in it is a timestamp or a path from this machine.
+    nok $text.contains($dir.absolute),
+        'nothing in it names the machine it was built on';
+};
+
+subtest 'the emitted document matches its golden', {
+    plan 1;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+    my $app = fake-app($dir.add('app'));
+    fake-dist($bundle.add('rakudo/share/perl6/site'), :name<zef>, :ver<1.1.3>,
+              :auth<zef:ugexe>, :license<Artistic-2.0>, :authors(['Nick Logan']));
+
+    write-licensing($bundle, $app, :conditions(('sqlcipher',)),
+                    :files(%( sqlcipher => ('libsqlcipher.0.dylib',) )));
+
+    # The golden covers the shipped runtime data file as well as the
+    # rendering, so a change to what ariza claims about Rakudo, MoarVM or
+    # MoarVM's vendored C libraries shows up in review as a diff rather
+    # than as nothing at all.
+    my $golden = $*PROGRAM.parent.add('golden').add('third-party.md');
+    is $bundle.add('THIRD-PARTY.md').slurp, $golden.slurp,
+        'the merged document is byte for byte the golden';
+};
+
+subtest 'the summary is what a release gate downstream reads', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+    my $app = fake-app($dir.add('app'));
+    fake-md-kit($bundle.add('native/Some-Pack/lib'), :components(
+        %( name => 'libthing', version => '2.1', spdx => 'LGPL-2.1-or-later',
+           text => 'LGPL-2.1.txt', url => 'https://example.invalid/libthing',
+           copyright => 'Copyright 2026 The libthing authors' ),
+    ), :texts(('LGPL-2.1.txt',)));
+
+    my %s = write-licensing($bundle, $app)<summary>;
+
+    ok %s<rows> > 15, 'the row count is the whole inventory';
+    is %s<unknown>, 0, 'with the number nobody could attribute beside it';
+    ok %s<spdx-ids>.first('LGPL-2.1').defined,
+        'and the set of identifiers the bundle is conveyed under —'
+      ~ ' a copyleft one in a pack is exactly what a gate exists to catch';
+    is %s<spdx-ids>.List, %s<spdx-ids>.sort.List,
+        'sorted, so two builds of the same bundle compare equal';
+    is %s<document>, 'THIRD-PARTY.md',
+        'naming the document it summarises, for tooling that wants to read it';
+};
+
+subtest 'two rows cannot claim the same identity', {
+    plan 2;
+    my @rows =
+        %( id => 'x', name => 'A', kind => 'native', provenance => 'one',
+           version => '', spdx => '', conveyed => '', copyright => '',
+           url => '', source => '', notes => '', license-files => (), files => () ),
+        %( id => 'x', name => 'B', kind => 'native', provenance => 'two',
+           version => '', spdx => '', conveyed => '', copyright => '',
+           url => '', source => '', notes => '', license-files => (), files => () ),
+    ;
+    throws-like { App::Ariza::Licensing.merge(@rows) }, Exception,
+        message => /"share the id 'x'"/,
+        'because one of them is describing something else';
+
+    my @ordered = App::Ariza::Licensing.merge((
+        %( |@rows[1], id => 'b', kind => 'module' ),
+        %( |@rows[0], id => 'a', kind => 'application' ),
+    ));
+    is @ordered.map(*.<id>).List, ('a', 'b'),
+        'and the order is by kind, never by the order they arrived in';
+};
+
+subtest 'NOASSERTION is a declaration an app makes, never a gap ariza fills', {
+    plan 11;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
+
+    # It cannot be reached implicitly. A distribution that says nothing
+    # fails exactly as before -- somebody has to look first, and then say
+    # so on the record.
+    throws-like { write-licensing($bundle, fake-app($dir.add('a1'))) },
+        Exception, message => /'Silent::Module declares no licence'/,
+        'a dist with no licence still dies rather than becoming NOASSERTION';
+
+    # Nor by a distribution asserting it about itself: that is the same
+    # "nobody looked" with different spelling.
+    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>,
+              :auth<zef:x>, :license<NOASSERTION>);
+    throws-like { write-licensing($bundle, fake-app($dir.add('a2'))) },
+        Exception, message => /'declares NOASSERTION in its own'/,
+        'and neither does a dist whose own metadata declines to say';
+
+    my $app = fake-app($dir.add('app'), :licensing(q:to/TOML/));
+
+        [[licensing.dists]]
+        name = "Silent::Module"
+        spdx-license = "NOASSERTION"
+        project-url = "https://example.invalid/silent"
+        notes = "No LICENSE file, no statement in its README or on raku.land."
+
+        [[licensing.third-party]]
+        name = "Some Sound Effects"
+        spdx-license = "NOASSERTION"
+        files = ["resources/audio/*.wav"]
+        TOML
+
+    my %l = write-licensing($bundle, $app);
+    my %row = %l<rows>.first({ .<name> eq 'Silent::Module' });
+    is %row<spdx>, 'NOASSERTION', 'an explicit override row carries it';
+    is %row<license-files>.List, (),
+        'and cites no licence text, because there is no licence to cite';
+    ok %row<notes>.contains('Licensing not asserted'),
+        'the row says so in words rather than leaving a bare token';
+    ok %row<notes>.contains('https://example.invalid/silent'),
+        'and points at the component\'s own repository';
+    ok %row<notes>.contains('raku.land'),
+        'keeping what the app said about how it looked';
+
+    is %l<summary><noassertion>, 2,
+        'the manifest counts them, so a gate downstream has a number';
+    nok %l<summary><spdx-ids>.first('NOASSERTION').defined,
+        'and never lists NOASSERTION as a licence the bundle is conveyed under';
+
+    my $text = $bundle.add('THIRD-PARTY.md').slurp;
+    ok $text.contains('declared `NOASSERTION`'),
+        'the document calls them out at the top, beside the unattributed';
+
+    # Strict is the statement that this bundle ships nothing it cannot
+    # name, and "we could not find out" is not a name.
+    my $strict = fake-app($dir.add('strict'), :licensing(q:to/TOML/));
+
+        [licensing]
+        strict = true
+
+        [[licensing.dists]]
+        name = "Silent::Module"
+        spdx-license = "NOASSERTION"
+        TOML
+    throws-like { write-licensing($bundle, $strict) }, Exception,
+        message => /'licensing.strict is on'/,
+        'and licensing.strict refuses them, as it refuses an unattributed pack';
+};
+
+subtest 'an application may not decline to state its own licence', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $bundle = fake-bundle($dir);
+
+    # NOASSERTION means "somebody looked at a third party's work and
+    # could not find out". There is nobody to look for the licence of the
+    # thing being built here.
+    my $app = fake-app($dir.add('app'), :license('NOASSERTION'),
+                       :!license-file);
+    throws-like { write-licensing($bundle, $app) }, Exception,
+        message => /'declares NOASSERTION as its own'/,
+        'its META6 saying so is an error';
+
+    my $declared = fake-app($dir.add('app2'), :licensing(q:to/TOML/));
+
+        [licensing.app]
+        spdx-license = "NOASSERTION"
+        TOML
+    throws-like { write-licensing($bundle, $declared) }, Exception,
+        message => /'declares NOASSERTION as its own'/,
+        'and so is [licensing.app] saying so';
+};

@@ -1,0 +1,31 @@
+# ariza runner prebuilt checksums.
+#
+# The compiled Windows launcher a bundle ships as bin/<exec>.exe. It is
+# built from runner/ by .github/workflows/runner-release.yml and
+# published to the App-Ariza release named by resources/RUNNER_VERSION;
+# `ariza bundle` downloads the artefact for the target architecture and
+# refuses it unless it hashes to what is recorded here.
+#
+# DO NOT hand-edit entries. After a runner release is published, copy
+# the checksums.txt it produced into this file:
+#
+#     gh release download "$(cat resources/RUNNER_VERSION)" \
+#         --pattern checksums.txt --output /tmp/runner.txt
+#     cp /tmp/runner.txt resources/runner-checksums.txt
+#
+# Format: one entry per line
+#     <sha256-hex>  <artefact-filename>
+#
+# Blank lines and lines starting with '#' are ignored. Anything else has
+# to be an entry: a line this file cannot parse fails the bundle build
+# rather than being skipped, because a skipped pin is an unverified
+# download.
+#
+# While this file lists NO artefacts -- which is its state until the
+# first runner release is cut -- a Windows bundle is built without the
+# executable and ships the .cmd and .ps1 launchers alone, exactly as it
+# did before the runner existed. The build says so, loudly, once. Once
+# any pin is recorded the ladder inverts: a missing entry, a failed
+# download or a hash mismatch fails the build, because from that point
+# on a bundle without a verified runner is a regression rather than a
+# stage of bootstrapping.

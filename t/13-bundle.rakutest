@@ -39,6 +39,9 @@ my constant MANIFEST = {
         rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
         sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
         notcurses => { tag => 'binaries-notcurses-3.0.17-r9' },
+        runner => { tag => 'runner-v1', artifact => 'ariza-runner-windows-x86_64.exe',
+                    sha256 => 'f' x 64, url => 'https://example.invalid/r.exe',
+                    path => 'bin/moneymoor.exe' },
     },
 };
 
@@ -118,7 +121,7 @@ subtest 'an app with no declared platforms constrains nothing', {
 };
 
 subtest 'VERSION is one screen a human can quote in a bug report', {
-    plan 7;
+    plan 8;
     my $text = App::Ariza::Bundle.version-file(MANIFEST);
     my @lines = $text.lines;
 
@@ -129,6 +132,8 @@ subtest 'VERSION is one screen a human can quote in a bug report', {
     ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
     ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r9'/),
         'the notcurses build, by the tag it was actually staged under';
+    ok @lines.first(/^ 'runner' \s+ 'runner-v1'/),
+        'the compiled Windows launcher, by the release it was pinned from';
     ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
     ok $text.contains('Run bin/moneymoor'),
         'ending with the one thing the reader has to do';
@@ -162,39 +167,38 @@ subtest 'the manifest records the SQLCipher that was staged, not the pin', {
     is %unknown<pinned>, '4.14.0', 'the pin is still recorded as the expectation';
 };
 
-subtest 'the licence inventory is read off the bundle, not written down', {
-    plan 5;
+subtest 'the manifest can account for the runner it downloaded', {
+    plan 6;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
-    my $lib = ensure-dir($dir.add('lib'));
-    for <libnotcurses.3.dylib libnotcurses-core.3.dylib
-         libnotcurses_native_shim.dylib libnotcurses_native_shim.dylib.srchash
-         libavcodec.62.dylib libswscale.9.dylib libx264.165.dylib
-         libcrypto.3.dylib libthing-nobody-knows.1.dylib> -> $name {
-        $lib.add($name).spurt('x');
-    }
+    my $exe = ensure-dir($dir.add('bin')).add('moneymoor.exe');
+    $exe.spurt('MZ');
 
-    my @rows = App::Ariza::Bundle.native-inventory($lib);
-    my %by = @rows.map({ .<project> => $_ }).Hash;
+    # The one binary in a bundle that is not somebody else's software is
+    # still a downloaded one, and everything else downloaded is recorded
+    # with the URL it came from and the digest it was checked against.
+    # Without this entry the file a Windows user actually runs is the
+    # only thing in the bundle a reader cannot trace back to a release.
+    my %c = App::Ariza::Bundle.runner-component(%(
+        path     => $exe,
+        artifact => 'ariza-runner-windows-x86_64.exe',
+        tag      => 'runner-v1',
+        url      => 'https://example.invalid/download/runner-v1/ariza-runner-windows-x86_64.exe',
+        sha256   => 'f' x 64,
+    ), $dir);
 
-    ok %by<FFmpeg><files>.contains('libavcodec.62.dylib')
-        && %by<FFmpeg><files>.contains('libswscale.9.dylib'),
-        'libav* and libsw* are grouped as one FFmpeg row';
+    is %c<artifact>, 'ariza-runner-windows-x86_64.exe', 'the published artefact';
+    is %c<tag>, 'runner-v1', 'the release it came from';
+    is %c<sha256>, 'f' x 64, 'the digest it was verified against';
+    ok %c<url>.ends-with('ariza-runner-windows-x86_64.exe'),
+        'the URL a reader can fetch it from themselves';
+    is %c<path>, 'bin/moneymoor.exe',
+        'and where it went, bundle-relative and forward-slashed';
 
-    # The pack's FFmpeg is built with x264/x265, which makes it a GPL
-    # build rather than the LGPL one FFmpeg ships by default. Someone
-    # redistributing this needs to see that.
-    ok %by<x264><license>.contains('GPL-2.0'), 'x264 is named as GPL';
-    ok %by<FFmpeg><license>.contains('GPL-2.0'), 'and so is the FFmpeg built with it';
-
-    # Order matters in the prefix table: the shim starts with the same
-    # eleven characters as notcurses itself.
-    ok %by{'Notcurses-Native (this project)'}<files>.contains('_native_shim'),
-        'the shim is attributed separately from notcurses';
-
-    # A library nobody classified is worse than useless if it is silently
-    # dropped: it is a redistributed binary with no attribution at all.
-    ok %by{'(unclassified)'}<files>.contains('libthing-nobody-knows'),
-        'an unrecognised library is listed as unclassified rather than omitted';
+    # A platform with no runner, or a Windows build made before the
+    # first release was pinned: `stage` returns an empty hash, and the
+    # manifest simply has no runner entry rather than an empty one.
+    is App::Ariza::Bundle.runner-component(%(), $dir)<path>, '',
+        'nothing staged reports nothing rather than a half-filled row';
 };

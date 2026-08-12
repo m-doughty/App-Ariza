@@ -1,0 +1,282 @@
+# Build the compiled Windows launcher a bundle ships as bin/<exec>.exe,
+# and publish it as a pinnable release artefact.
+#
+# The source is runner/ in this repository. It is built once per runner
+# release rather than during `ariza bundle`, because compiling it at
+# bundle time would put a C toolchain in the bundling path — on every
+# machine, for every cross-build — to produce a file that is identical
+# for every app. So: two lanes, MSYS2 UCRT64 for x86_64 and CLANGARM64
+# for aarch64, the same toolchains that build the notcurses packs a
+# bundle already carries.
+#
+# Triggers, and what each one is for:
+#
+#   * pull_request touching runner/ — build both lanes and run the
+#     portable core's tests. Nothing is published.
+#   * workflow_dispatch — the same, on demand, while iterating on the
+#     recipe. Still nothing is published: "validate the build" and
+#     "overwrite the artefacts every ariza release verifies against" are
+#     one click apart, and a dispatch while resources/RUNNER_VERSION
+#     still names the live tag would clobber it.
+#   * push of a `runner-v*` tag — build, test, and publish, after
+#     checking the pushed tag against resources/RUNNER_VERSION. That
+#     file is the single source of truth for which tag a release
+#     produces, exactly as BINARY_TAG is in Notcurses-Native.
+#
+# After a release: copy the published checksums.txt into
+# resources/runner-checksums.txt and commit it. Until that file lists an
+# artefact, `ariza bundle` builds Windows bundles without the executable
+# and says so; once it does, a failed download or a digest mismatch
+# fails the build. App::Ariza::Runner documents that ladder.
+
+name: runner-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'runner-v*'
+  pull_request:
+    paths:
+      - 'runner/**'
+      - 'resources/RUNNER_VERSION'
+      - '.github/workflows/runner-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: runner-windows-${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+    # ARM Windows runners emulate the msys2 runtime, so everything that
+    # is not the compiler itself crawls. This is generous for a project
+    # of four C files and still fails a wedged runner in a useful
+    # timeframe rather than eating GitHub's 6h default.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs-on: windows-2022
+            msystem: UCRT64
+            pkg-prefix: mingw-w64-ucrt-x86_64
+            # ctest runs on one lane. The suite is the portable core,
+            # which is architecture-independent by construction, and the
+            # x86_64 lane is the one that is not emulated.
+            run-tests: true
+          - arch: aarch64
+            runs-on: windows-11-arm
+            msystem: CLANGARM64
+            pkg-prefix: mingw-w64-clang-aarch64
+            run-tests: false
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          path-type: inherit
+          # Deliberately no `update: true`: that runs `pacman -Syuu`,
+          # which shifts installed package versions on nearly every run
+          # and invalidates the cache setup-msys2 keys on installed
+          # package state.
+          cache: true
+          install: >-
+            ${{ matrix.pkg-prefix }}-toolchain
+            ${{ matrix.pkg-prefix }}-cmake
+            ${{ matrix.pkg-prefix }}-ninja
+
+      - name: Configure + build
+        run: |
+          set -euxo pipefail
+          # Paths stay POSIX: msys2-runtime converts them when a native
+          # program — cmake, ninja, the compiler — is spawned, and
+          # feeding those tools Windows-form paths breaks the other
+          # direction.
+          cmake -B build -S runner -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIZA_RUNNER_WERROR=ON \
+            -DARIZA_RUNNER_OUTPUT_NAME=ariza-runner-windows-${{ matrix.arch }}
+          cmake --build build
+
+      - name: Test the portable core
+        if: matrix.run-tests
+        run: ctest --test-dir build --output-on-failure
+
+      # Release gate: the executable a bundle carries must run on a
+      # machine that has never heard of MSYS2.
+      #
+      # -static is asked for in runner/CMakeLists.txt, but a compiler
+      # flag is a hope and the import table is the fact. An unnoticed
+      # libgcc_s_seh-1.dll here would work on this runner, work on every
+      # developer machine with a toolchain, and fail on a clean install
+      # — the same shape of bug as the vcruntime140.dll one that
+      # ariza's own PE audit exists to catch.
+      - name: Assert the runner is self-contained
+        run: |
+          set -euo pipefail
+          exe="build/ariza-runner-windows-${{ matrix.arch }}.exe"
+          if [[ ! -f "$exe" ]]; then
+            echo "::error::$exe was not produced"
+            ls -la build
+            exit 1
+          fi
+          # PE magic, so a truncated or misnamed file is caught here
+          # rather than by a user.
+          if [[ "$(head -c 2 "$exe")" != "MZ" ]]; then
+            echo "::error::$exe is not a PE executable"
+            exit 1
+          fi
+
+          fail=0
+          objdump -p "$exe" | awk '/DLL Name:/{print tolower($3)}' \
+            | sort -u > imports.txt
+          echo "--- imports ---"
+          cat imports.txt
+          while IFS= read -r dll; do
+            [[ -z "$dll" ]] && continue
+            case "$dll" in
+              # Windows' own: the same names App::Ariza::Native's PE
+              # audit treats as system DLLs, minus the Visual C++
+              # redistributable family (vcruntime*, msvcp*, concrt*,
+              # vcomp*) — which that audit refuses for the reason these
+              # lanes are UCRT64 and CLANGARM64 and not anything MSVC:
+              # it is not part of Windows and a clean install has none.
+              kernel32.dll|kernelbase.dll|ntdll.dll|user32.dll|\
+              advapi32.dll|shell32.dll|shlwapi.dll|ole32.dll|\
+              oleaut32.dll|rpcrt4.dll|version.dll|userenv.dll|\
+              ws2_32.dll|bcrypt.dll|crypt32.dll|secur32.dll|\
+              msvcrt.dll|ucrtbase.dll|api-ms-win-*|ext-ms-*)
+                echo "ok: $dll" ;;
+              *)
+                echo "::error::the runner imports $dll, which is not part of Windows"
+                fail=1 ;;
+            esac
+          done < imports.txt
+          if (( fail != 0 )); then
+            echo
+            echo "❌ This executable is copied into every Windows bundle and"
+            echo "   run on machines with no toolchain. Link it statically"
+            echo "   rather than shipping the DLL beside it."
+            exit 1
+          fi
+          echo "✅ imports nothing but Windows' own DLLs."
+          ls -la "$exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ariza-runner-windows-${{ matrix.arch }}
+          path: build/ariza-runner-windows-${{ matrix.arch }}.exe
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Tag-triggered runs only. A dispatch builds and tests both lanes
+    # and stops there, which is the same contract Notcurses-Native's
+    # binary releases use and for the same reason: the assets published
+    # here are what every ariza bundle checksum-verifies against, and
+    # replacing them under a tag that is already live breaks builds that
+    # were reproducible a minute earlier.
+    if: startsWith(github.ref, 'refs/tags/runner-v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded/
+
+      - name: Collect, checksum, and check the tag
+        id: prep
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          find downloaded -type f -name 'ariza-runner-windows-*.exe' \
+            -exec cp {} release/ \;
+
+          # Both lanes, or this is not a release. A half-published tag
+          # would leave `ariza bundle` failing closed for one
+          # architecture with a pin file that says it should work.
+          for arch in x86_64 aarch64; do
+            if [[ ! -f "release/ariza-runner-windows-$arch.exe" ]]; then
+              echo "::error::no artefact for $arch"
+              ls -la release
+              exit 1
+            fi
+          done
+
+          cd release
+          sha256sum * | sort > ../checksums.txt
+          cd ..
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+          file_tag=$(tr -d '[:space:]' < resources/RUNNER_VERSION)
+          if [[ -z "$file_tag" ]]; then
+            echo "❌ resources/RUNNER_VERSION is empty."
+            exit 1
+          fi
+          pushed=${GITHUB_REF#refs/tags/}
+          if [[ "$pushed" != "$file_tag" ]]; then
+            echo "❌ Pushed tag '$pushed' doesn't match resources/RUNNER_VERSION '$file_tag'."
+            echo "   That file is what ariza builds its download URL from, so a"
+            echo "   release published under any other tag is one no bundle"
+            echo "   would ever fetch."
+            exit 1
+          fi
+          echo "tag=$file_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: ${{ steps.prep.outputs.tag }}
+          files: |
+            release/*
+            checksums.txt
+          body: |
+            The compiled launcher ariza stages into a Windows bundle as
+            `bin/<exec>.exe`.
+
+            It reads `bin/<exec>.ariza` beside itself, applies that
+            file's environment directives, and starts the bundle's own
+            `raku.exe` on the app's script with the caller's arguments
+            passed through **byte for byte** — no `cmd.exe` anywhere in
+            the launch. That is what keeps `^`, `%VAR%`, `!x!` and
+            quote-heavy arguments intact (a batch trampoline re-parses
+            `%*` and cannot not damage them), and what keeps a bundle
+            usable where script-execution policy refuses to run a `.cmd`
+            or a `.ps1` at all.
+
+            Built from `runner/` in this repository:
+            `ariza-runner-windows-x86_64.exe` in MSYS2 UCRT64 and
+            `ariza-runner-windows-aarch64.exe` in MSYS2 CLANGARM64,
+            statically linked and asserted to import nothing but
+            Windows' own DLLs.
+
+            These binaries are **not code-signed**, so SmartScreen will
+            warn on first run of a bundle that carries one. The `.cmd`
+            and `.ps1` launchers ship alongside and remain supported.
+
+            ## Verifying
+
+            ```
+            sha256sum -c checksums.txt
+            ```
+
+            ## After release
+
+            Copy `checksums.txt` into `resources/runner-checksums.txt`
+            and commit it. Until then `ariza bundle` builds Windows
+            bundles without the executable, loudly; afterwards a failed
+            download or a digest mismatch fails the build.
+          draft: false
+          prerelease: false

@@ -7,7 +7,7 @@ use App::Ariza::Platform;
 use App::Ariza::Smoke;
 use App::Ariza::Tools;
 
-plan 8;
+plan 10;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-smoke-{$*PID}-{(^1_000_000).pick}");
@@ -29,9 +29,15 @@ sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
 #| A bundle with the shape of a real one and none of the weight: a
 #| launcher, an "interpreter", an installed script, a warm precomp store
 #| and a manifest. Everything Smoke inspects, nothing it does not.
-sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists --> IO::Path) {
-    my $root = ensure-dir($where.add('moneymoor-0.2.0-' ~ current-slug()));
-    my $win  = $*DISTRO.is-win;
+#|
+#| C<:$platform> forces the manifest's platform, which is how the
+#| Windows-only checks are exercised from a machine that is not Windows:
+#| every one of them reads the manifest rather than the host, and a file
+#| called C<raku.exe> is a file whatever created it.
+sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
+                :$platform = current-slug(), :$runner --> IO::Path) {
+    my $root = ensure-dir($where.add("moneymoor-0.2.0-$platform"));
+    my $win  = $platform.starts-with('windows');
 
     # Non-interpolating heredocs: these are shell scripts, and `${VAR}`
     # and `{...}` both mean something to qq.
@@ -53,12 +59,29 @@ sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists --> IO::Pat
         SH
     $raku.chmod(0o755);
 
+    # The compiled Windows launcher and the sidecar it reads. A stand-in
+    # for both, since what is under test here is that Smoke finds them,
+    # runs the one and requires the other — the executable's own
+    # behaviour is the runner suite's business.
+    if $runner {
+        my $exe = $root.add('bin').add('moneymoor.exe');
+        $exe.spurt(q:to/SH/);
+            #!/bin/sh
+            printf 'runner ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
+            SH
+        $exe.chmod(0o755);
+        $root.add('bin').add('moneymoor.ariza').spurt(
+            "target site\\bin\\moneymoor.raku\r\n"
+          ~ "app-exec moneymoor\r\napp-display Moneymoor\r\n")
+            unless $runner eq 'no-sidecar';
+    }
+
     ensure-dir($root.add('site/bin')).add('moneymoor.raku').spurt('sub MAIN(*@, *%) { }');
     ensure-dir($root.add('site/precomp/ABC')).add('DEF').spurt('bytecode');
 
     $root.add('ariza-manifest.json').spurt(to-json({
         'ariza-manifest' => 1,
-        platform => current-slug(),
+        platform => $platform,
         app => { name => 'App::Moneymoor', exec => 'moneymoor',
                  display => 'Moneymoor', version => '0.2.0' },
         launcher => { target => 'site/bin/moneymoor.raku', scripts => ['bin/moneymoor'] },
@@ -260,6 +283,91 @@ subtest 'the manifest has to be the right shape, not merely parseable', {
         :work-dir($dir), :!verbose);
     ok %good<checks>.first({ .<name> eq 'manifest' && .<ok> }),
         'while a well-formed one passes and says how many distributions it has';
+};
+
+subtest 'the compiled Windows launcher is checked when it is there', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # Driven from the manifest's platform rather than the host's, so
+    # this runs on the machines a Windows bundle is built on as much as
+    # on Windows itself.
+    my %with = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir, :smoke([]),
+                                  :platform<windows-x86_64>, :runner))),
+        :work-dir($dir), :!verbose);
+    my %by = checks-by-name(%with);
+    ok %by<runner><ok>, 'the executable and its sidecar are both there';
+    ok %by<runner><detail>.contains('moneymoor.ariza'),
+        'and the check names the sidecar, which is the half nobody looks for';
+
+    # An executable with no configuration to read cannot start anything,
+    # so this one is a failure rather than an absence.
+    my %broken = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('broken'), :smoke([]),
+                                  :platform<windows-x86_64>,
+                                  :runner<no-sidecar>))),
+        :work-dir($dir), :!verbose);
+    nok checks-by-name(%broken)<runner><ok>,
+        'a runner with no sidecar beside it fails';
+
+    # No executable at all is the bootstrap state: a bundle built before
+    # the first runner release was pinned launches from its .cmd and is
+    # not broken.
+    my %without = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('scripts-only'), :smoke([]),
+                                  :platform<windows-x86_64>))),
+        :work-dir($dir), :!verbose);
+    my %none = checks-by-name(%without);
+    ok %none<runner><ok>, 'a bundle with no executable passes';
+    ok %none<runner><detail>.contains('bin/moneymoor.cmd'),
+        'saying what it launches from instead';
+
+    # And a POSIX bundle is never asked about a thing it cannot have.
+    my %posix = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('posix'), :smoke([]),
+                                  :platform<linux-x86_64-glibc>))),
+        :work-dir($dir), :!verbose);
+    nok checks-by-name(%posix)<runner>:exists,
+        'while a POSIX bundle has no such check at all';
+};
+
+subtest 'a {exec} command is run through the executable as well as the script', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    if !runnable-fixtures() {
+        skip 'the two entry points have to actually run for this to mean'
+           ~ ' anything, which needs a POSIX shell to fake them', 5;
+    }
+    else {
+        my %r = App::Ariza::Smoke.smoke(
+            :archive(pack(fake-bundle($dir,
+                :smoke([['{exec}', '--version']]),
+                :platform<windows-x86_64>, :runner))),
+            :work-dir($dir), :!verbose);
+        my %by = checks-by-name(%r);
+
+        ok %by{'smoke[0]'}<ok>, 'the .cmd launcher runs';
+        ok %by{'smoke[0]'}<output>.contains('launcher ok'), 'and it is the .cmd';
+
+        # In addition, never instead: the script and the executable set
+        # the same environment by entirely different means, so one
+        # passing says nothing about the other.
+        ok %by{'smoke[0].exe'}<ok>, 'and so does the compiled launcher';
+        ok %by{'smoke[0].exe'}<output>.contains('runner ok'),
+            'as itself, not as the script under another name';
+
+        my %scripts-only = App::Ariza::Smoke.smoke(
+            :archive(pack(fake-bundle($dir.add('scripts-only'),
+                :smoke([['{exec}', '--version']]),
+                :platform<windows-x86_64>))),
+            :work-dir($dir), :!verbose);
+        nok checks-by-name(%scripts-only){'smoke[0].exe'}:exists,
+            'a bundle without one is not asked to run it';
+    }
 };
 
 subtest 'the structural checks need nothing to be runnable', {

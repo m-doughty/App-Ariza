@@ -175,6 +175,26 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
             !! "missing bin/{$launcher.basename}",
     });
 
+    # The compiled Windows launcher, when the bundle carries one. Its
+    # absence is not a failure — a bundle built before the first runner
+    # release was pinned ships the scripts alone, and that is a
+    # deliberate state rather than a broken one — but a runner without
+    # its sidecar is a bundle that cannot start, so the two are checked
+    # together and reported as one.
+    if $win {
+        my $runner  = $root.add('bin').add("$exec.exe");
+        my $sidecar = $root.add('bin').add("$exec.ariza");
+        @checks.push({
+            name => 'runner',
+            ok => (!$runner.f || $sidecar.f),
+            detail => $runner.f
+                ?? ($sidecar.f
+                    ?? "bin/$exec.exe with bin/$exec.ariza beside it"
+                    !! "bin/$exec.exe has no bin/$exec.ariza to read")
+                !! "no bin/$exec.exe — this bundle launches from bin/$exec.cmd",
+        });
+    }
+
     my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
     @checks.push({
         name => 'runtime',
@@ -247,6 +267,12 @@ method !command-checks(IO::Path $root, %manifest, Bool $verbose --> List) {
     my $win  = (%manifest<platform> // '').starts-with('windows');
     my $tmp  = ensure-dir($root.parent.add('scratch'));
 
+    # The compiled launcher, where the bundle has one. Every {exec}
+    # command is run a second time through it — in addition to the .cmd,
+    # never instead of it — because the two are separate implementations
+    # of one contract and a bundle ships both.
+    my $runner = $win ?? $root.add('bin').add("$exec.exe") !! IO::Path;
+
     my %vars =
         exec   => $root.add('bin').add($exec ~ ($win ?? '.cmd' !! '')).absolute,
         raku   => $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku').absolute,
@@ -283,20 +309,39 @@ method !command-checks(IO::Path $root, %manifest, Bool $verbose --> List) {
         # launcher rather than the bundle.
         my %env = @raw.head eq '{raku}' ?? %runtime !! %base;
 
-        note "ariza: running {@raw.head} …" if $verbose;
-        my ($code, $out, $err) = try-run(@argv, :%env);
-        my $summary = ($out.trim || $err.trim).lines.grep(*.trim).head // '';
-        @checks.push({
-            name   => "smoke[$i]",
-            ok     => $code == 0,
-            detail => $code == 0
-                ?? "{@raw.head} → exit 0" ~ ($summary ?? ": $summary" !! '')
-                !! "{@raw.join(' ').substr(0, 60)} → exit $code\n"
-                 ~ ($err.trim || $out.trim).lines.head(8).map({ "        $_" }).join("\n"),
-            output => $out,
-        });
+        @checks.push(self!run-check("smoke[$i]", @raw, @argv, %env, $verbose));
+
+        # The same command again through bin/<exec>.exe. The scripts and
+        # the executable set the same environment by two entirely
+        # different routes — batch `set` against SetEnvironmentVariableW,
+        # `%*` against a verbatim command-line tail — so proving one says
+        # nothing about the other, and the executable is the one a user
+        # will actually run.
+        next unless $runner.defined && $runner.f && @raw.head eq '{exec}';
+        my @exe-argv = @argv;
+        @exe-argv[0] = $runner.absolute;
+        @checks.push(self!run-check("smoke[$i].exe", @raw, @exe-argv,
+                                    %env, $verbose));
     }
     @checks.List
+}
+
+#| Run one resolved smoke command and report it. C<@raw> is the
+#| unexpanded argv, which is what a reader recognises; C<@argv> is what
+#| is actually run.
+method !run-check(Str $name, @raw, @argv, %env, Bool $verbose --> Hash) {
+    note "ariza: running $name ({@raw.head}) …" if $verbose;
+    my ($code, $out, $err) = try-run(@argv, :%env);
+    my $summary = ($out.trim || $err.trim).lines.grep(*.trim).head // '';
+    %(
+        name   => $name,
+        ok     => $code == 0,
+        detail => $code == 0
+            ?? "{@raw.head} → exit 0" ~ ($summary ?? ": $summary" !! '')
+            !! "{@raw.join(' ').substr(0, 60)} → exit $code\n"
+             ~ ($err.trim || $out.trim).lines.head(8).map({ "        $_" }).join("\n"),
+        output => $out,
+    )
 }
 
 method !count-files(IO::Path $dir --> Int) {
@@ -411,6 +456,11 @@ whose body starts with a C<.method> call is parsed as a I<Block>, and a
 Block of pairs serialises as an array of one-key objects — producing a
 manifest that parses, reads plausibly, and lists nothing at all.
 =item1 B<launcher> — C<< bin/<exec> >> exists and is executable.
+=item1 B<runner> — Windows only: C<< bin/<exec>.exe >> and its
+C<< bin/<exec>.ariza >> sidecar. Their B<absence> passes and says so —
+a bundle built before the first runner release was pinned launches from
+its C<.cmd> and is not broken — but an executable with no sidecar to
+read is a bundle that cannot start, so the pair is checked together.
 =item1 B<runtime> — the bundled interpreter is there.
 =item1 B<target> — the script the launcher execs is there.
 =item1 B<precomp> — the precompilation store shipped warm. An empty one
@@ -420,6 +470,13 @@ launch slow, forever, on a read-only bundle.
 B<unpacked> tree rather than the build directory, because that is the
 tree a user has.
 =item1 B<smoke[n]> — each declared command, in order.
+=item1 B<smoke[n].exe> — on Windows, each C<{exec}> command again
+through C<< bin/<exec>.exe >>, when the bundle carries one. In addition
+to the C<.cmd> run, never instead of it: the script and the executable
+implement one contract by two completely different routes — batch
+C<set> against C<SetEnvironmentVariableW>, C<%*> against a verbatim
+command-line tail — so a passing script says nothing at all about the
+executable, and the executable is the one a user will actually run.
 
 Every check runs; nothing short-circuits. "The launcher failed" and "the
 launcher failed I<and> the audit found a stray library" are different

@@ -126,12 +126,15 @@ ariza: built moneymoor-0.2.0-macos-arm64
   uncompressed  165.2 MiB
   sha256        6f0c…
   launcher      bin/moneymoor
+  licensing     41 components (THIRD-PARTY.md)
   smoke it      ariza smoke --archive=dist/moneymoor-0.2.0-macos-arm64.tar.gz
 ```
 
 The archive holds exactly one top-level directory, named after the bundle, so unpacking it anywhere is predictable and never scatters files into the current directory. The `.sha256` sidecar is written in the digest-then-filename shape `shasum -c` and `sha256sum -c` read, so verifying a download is one command with no arguments to remember.
 
 Building a slug the app does not list in `bundle.platforms` is an error rather than a warning: producing an artefact named after a platform the author never claimed is a promise ariza has no business making on their behalf.
+
+A **Windows** build additionally downloads the compiled launcher for the target architecture — from the App-Ariza release named by `resources/RUNNER_VERSION`, verified against `resources/runner-checksums.txt`, cached under `$XDG_CACHE_HOME/ariza/runner` — and stages it as `bin/<exec>.exe `. While that pin file is still empty the bundle is built without it and the build says so; once it is not, a failed download or a digest mismatch fails the build. **The Windows runner**, below, is the whole story.
 
 ariza smoke
 -----------
@@ -236,13 +239,27 @@ moneymoor-0.2.0-macos-arm64/
   native/                  notcurses and friends
   VERSION                  app version and component pins, one screen
   ariza-manifest.json      the same, machine-readable, plus every sha256
-  LICENSES/                app + Rakudo licence text, and COMPONENTS.md
+  THIRD-PARTY.md           every component, its licence, and where that
+                           fact came from
+  LICENSES/                the text of every licence the above cites
 
 moneymoor-0.2.0-macos-arm64.tar.gz          50 MiB (165 MiB unpacked)
 moneymoor-0.2.0-macos-arm64.tar.gz.sha256
 ```
 
-  * **The launcher**, `bin/<exec> ` — it resolves its own physical path (through a `readlink` loop, not `readlink -f`, which is a GNU extension), takes the directory above it as the bundle root, points `RAKULIB` and `NOTCURSES_NATIVE_DATA_DIR` at the bundle, adds SQLCipher's location on the platforms that need it, and execs the bundled interpreter. Everything is quoted, so a path with spaces works. On Windows there are two, `<exec>.cmd ` and `<exec>.ps1 `.
+On Windows, `bin/` holds four files instead of one:
+
+```console
+moneymoor-0.2.0-windows-x86_64/
+  bin/moneymoor.exe        the launcher — this is the one to run
+  bin/moneymoor.ariza      what it reads: the target, and this bundle's
+                           environment as ordered directives
+  bin/moneymoor.cmd        the same launch as a batch file
+  bin/moneymoor.ps1        and as PowerShell
+  …
+```
+
+  * **The launcher**, `bin/<exec> ` — it resolves its own physical path (through a `readlink` loop, not `readlink -f`, which is a GNU extension), takes the directory above it as the bundle root, points `RAKULIB` and `NOTCURSES_NATIVE_DATA_DIR` at the bundle, adds SQLCipher's location on the platforms that need it, and execs the bundled interpreter. Everything is quoted, so a path with spaces works. On Windows it is `<exec>.exe ` — see **The Windows runner** below — with `<exec>.cmd ` and `<exec>.ps1 ` shipped beside it.
 
   * **`rakudo/`** — the official runtime archive from `rakudo.org`, pinned by `[rakudo]` in `versions.toml`. On macOS the staged SQLCipher lives in `rakudo/lib`, which is already on the loader's path.
 
@@ -254,9 +271,55 @@ moneymoor-0.2.0-macos-arm64.tar.gz.sha256
 
   * **`ariza-manifest.json`** — the same facts plus the ones only a machine cares about: every source URL, every SHA-256, every Raku distribution installed with its version and author, and the smoke commands, which is what lets `ariza smoke` check an archive it knows nothing else about.
 
-  * **`LICENSES/`** — the app's own `LICENSE` and Rakudo's, copied verbatim, plus a generated `COMPONENTS.md` whose native inventory is read off the staged libraries rather than written by hand. It notes explicitly that the notcurses pack's FFmpeg is a GPL build (`libx264`, `libx265`) rather than the LGPL one FFmpeg ships by default, because that has redistribution consequences.
+  * **`THIRD-PARTY.md`** and **`LICENSES/`** — what the bundle redistributes and under what terms, with the text of every licence it cites. Both are generated from what is actually in the bundle rather than written by hand; **Licensing**, below, is the whole story.
 
 Nothing is installed and nothing is written outside the directory, bar a one-line first-run marker under `XDG_STATE_HOME` that suppresses the "first launch takes a few seconds" notice on later runs.
+
+THE WINDOWS RUNNER
+==================
+
+`bin/<exec>.exe ` is a small C program — ariza's own, in this repository's `runner/` directory — that does the whole launch with **no `cmd.exe` involved**. It is the documented Windows entry point; the `.cmd` and `.ps1` launchers still ship, do the same job, and are the transparent alternative for anyone who would rather read their launcher than trust it.
+
+Three things it fixes, in the order you are likely to hit them:
+
+  * **Argument fidelity.** A batch launcher ends in `%*`, and `%*` is not what the user typed — it is what the user typed after `cmd.exe` has had a second go at it. `^` is an escape character, `%VAR%` and `!x!` are expansions, and a quoted argument gets re-split. The executable never parses the tail at all: it finds where its own argv[0] ends and copies every byte after it into the child's command line unchanged, so the app's `@*ARGS` is what the shell produced.
+
+  * **Script-execution policy.** AppLocker and Software Restriction Policies have a script rule that blocks `.cmd` and `.ps1` files however they are invoked, and a locked-down `ExecutionPolicy` stops the PowerShell twin on its own. Those environments run executables. A bundle that could not be launched in one was a bundle unusable at half the places these apps are wanted.
+
+  * **Spawnability and pinning.** Something that wants to start the app — a shortcut, a task, another program — can `CreateProcess` an `.exe` directly; a `.cmd` needs an interpreter in front of it. And because the executable is a fixed artefact rather than a rendered script, it is published once per release, pinned by SHA-256, and staged into a bundle only if the bytes match.
+
+What it reads is `bin/<exec>.ariza `, a plain UTF-8 file beside it:
+
+```text
+target site\bin\moneymoor.raku
+app-exec moneymoor
+app-display Moneymoor
+set RAKULIB=inst#{root}\site
+unset PERL6LIB
+set NOTCURSES_NATIVE_DATA_DIR={root}\native
+prepend-path {root}\native\sqlcipher
+set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
+```
+
+`{root}` is the bundle root, worked out at run time from the executable's own location, so nothing absolute is baked in and the bundle stays movable. The `set`, `unset` and `prepend-path` directives are applied top to bottom, and **the runner has no idea what any of them mean** — every fact about Rakudo's repository, notcurses' data directory or a bundled DLL lives in ariza's renderer, exactly as it does in the `.cmd` template. A bundle that grows a native dependency grows a line in this file rather than needing a new executable.
+
+Pinning, and the two states of the pin file
+-------------------------------------------
+
+The runner is built by ariza's own `runner-release.yml` workflow, in MSYS2 UCRT64 (x86_64) and CLANGARM64 (aarch64), published to the release named by `resources/RUNNER_VERSION`, and pinned by digest in `resources/runner-checksums.txt`. `ariza bundle` downloads the artefact for the target architecture, verifies it, and stages it.
+
+That pin file has exactly two states:
+
+  * **Empty** — a Windows bundle is built **without** the executable and says so once, loudly. The bundle launches from its `.cmd`, which is what ariza produced before the runner existed.
+
+  * **Any pin recorded** — a missing entry, a failed download or a digest mismatch **fails the build**. From that point on a bundle without a verified runner is a regression rather than a stage of bootstrapping.
+
+There is no third state, no `--no-runner` and no `--skip-verify`: an unverified executable staged into a bundle is not a degraded build, it is a different piece of software.
+
+It is not signed
+----------------
+
+Not yet. Windows SmartScreen will show its "unrecognised app" prompt the first time a user runs a bundle's `.exe`, and the honest answer is that signing needs a certificate and a signing story that ariza does not have today. `sha256sum -c` against the published `checksums.txt` is what there is, and the `.cmd` launcher is the way past a SmartScreen prompt someone would rather not click through.
 
 THE PER-APP MANIFEST: ariza.toml
 ================================
@@ -279,6 +342,21 @@ repo = "m-doughty/App-Moneymoor"   # owner/name the releases live under
 
 [ci]
 ariza-source = "fez"               # how the workflows install ariza itself
+
+[licensing]
+strict = false                     # an unattributed native pack fails the build
+
+[licensing.app]                    # defaults from the app's own META6
+copyright = "Copyright 2026 A Person"
+
+[[licensing.third-party]]          # anything ariza cannot see for itself
+name = "Some Artwork"
+spdx-license = "CC-BY-4.0"
+license-files = ["licenses/CC-BY-4.0.txt"]
+
+[[licensing.dists]]                # a dependency whose own metadata is wrong
+name = "Some::Ancient::Module"
+spdx-license = "Artistic-2.0"
 ```
 
   * **`app.display`** is required rather than derived because the correct capitalisation of a product name is not something a tool should guess at.
@@ -290,6 +368,8 @@ ariza-source = "fez"               # how the workflows install ariza itself
   * **`installer.repo`** is the GitHub `owner/name` the installers download releases from. Optional in the schema — an app published nowhere has no repository to name — and required by `ariza installers`, which says so rather than rendering a script that 404s. Its shape is closed: a full URL or a bare name is an error, not a warning.
 
   * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. Whichever is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
+
+  * **`[licensing]`** is optional in every part. An app that writes none of it still gets a complete `THIRD-PARTY.md`, because everything in that document is read out of the bundle rather than declared. The table is for the two things that cannot be: how strict to be about a payload nobody attributed, and what the app itself ships that ariza cannot see. See **Licensing**, below.
 
 Smoke commands
 --------------
@@ -392,6 +472,107 @@ Two overrides beat the package managers, in this order:
 Both are how a cross-build works, and they are the only way to be honest about one: a library installed on this machine is built **for** this machine, so ariza refuses to take one when the platform being built is not the platform it is building on. Missing entirely, on any platform, is a death naming the package to install **and** the override to pass — never a silent bundle without a database.
 
 Whatever is staged is then made self-contained: every library it names outside the bundle is copied in beside it and rewritten to load from there (`install_name_tool` on macOS, `patchelf --set-rpath '$ORIGIN'` on Linux, one directory on Windows, which is how PE resolves imports anyway), and the audit refuses to ship the bundle if anything still points off the machine. `docs/design.md` has the per-format detail, including why a Linux bundle has to be built on Linux and a Windows one does not have to be built on Windows.
+
+LICENSING
+=========
+
+A bundle is a binary redistribution of other people's software: a vendored Rakudo, the C libraries compiled into its MoarVM, every Raku distribution in the closure, a native pack or two, SQLCipher where an app asks for it, and — on Windows — a compiled launcher. Every build writes two files that say so.
+
+```console
+moneymoor-0.2.0-macos-arm64/
+  THIRD-PARTY.md      one row per component: what, which version, which
+                      licence, whose copyright, and where that came from
+  LICENSES/           the full text of every licence those rows cite
+```
+
+Nothing in it is written down in ariza
+--------------------------------------
+
+ariza bundles **anybody's** application, so it holds no table of who wrote what. Every row comes from one of four sources, and each row says which one it came from:
+
+  * **A native pack's own licensing kit.** A pack that ships a `third-party.json` is read from it, component by component, filtered to the platform being built. A pack that ships only the generated `THIRD-PARTY.md` is read from that instead — the same rows, out of a document rather than a manifest.
+
+  * **ariza's own `resources/runtime-third-party.json`.** The vendored Rakudo, NQP and MoarVM, the C libraries MoarVM vendors under its `3rdparty/` (libuv, dyncall, DynASM, LibTomMath, cmp, libatomic_ops, mimalloc, rapidhash, zmij and the rest), SQLCipher and the Windows runner. These arrive as compiled bytes inside archives with no manifest, so there is nothing in the bundle to ask; this file is the answer, and it is data rather than code precisely so that bumping the Rakudo pin to a release whose MoarVM vendors one more library is a row here rather than a patch.
+
+  * **Each installed distribution's `META6.json`.** The `license` field, read out of the bundle's own site repository **and** the one inside the vendored runtime — which is where the `zef` that came down with Rakudo lives, and which is redistributed like everything else.
+
+  * **The app's `ariza.toml`.** Its own row, and rows for whatever it ships that ariza cannot see: a font, a dataset, artwork, a vendored library of its own.
+
+What fails, and what merely warns
+---------------------------------
+
+The rule is that silence is never an option, and the difference between a warning and a failure is whether ariza has anything true to say instead.
+
+  * A native pack with **no licensing kit at all** becomes a visible row saying exactly that, plus a warning on the build. It is not dropped: a redistributed binary nobody attributed is the thing the document exists to make visible. `licensing.strict = true` makes it a failed build, for a project that will not ship one.
+
+  * A distribution with **no `license` field**, or with one ariza has no licence text for, **fails the build** — naming **every** such distribution in the closure at once, with both fixes: the field itself, or a `[[licensing.dists]]` row. There is no "unknown" row for a Raku module: the field exists and filling it in is a one-line change. In a real closure this does fire — the ecosystem has distributions with no `license` field, and a handful that say `NOASSERTION` — so expect to write a few `[[licensing.dists]]` rows the first time, once.
+
+  * A **cited licence text that is nowhere to be found** fails the build naming the identifier and how to supply one. ariza ships the texts for `Artistic-2.0`, `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `LGPL-2.1`, `LGPL-3.0`, `GPL-2.0`, `GPL-3.0`, `AGPL-3.0`, `Zlib`, `ISC`, `X11`, `OFL-1.1` and `Unlicense`, plus a public-domain statement — sixteen in all, and the set is a decision rather than a side effect, so a test enumerates it. Anything else comes from a pack's own `LICENSES/` or from a `license-files` entry naming a file in the app's repository.
+
+  * `NOASSERTION` is a **declaration**, not a gap. It is SPDX's spelling for "somebody looked and could not determine the licensing", and an app may write it in a `[[licensing.dists]]` or `[[licensing.third-party]]` row once it has looked. No licence text is looked up (there is none); the row is rendered distinctly, with a sentence saying licensing was not asserted and pointing at the component's own repository; and `ariza-manifest.json` counts those rows apart from the identifier set, so a gate never mistakes one for a permissive licence. It cannot be reached any other way: a distribution whose own metadata says `NOASSERTION` fails like any other missing licence, an application may not say it about itself, and `licensing.strict` refuses a bundle containing one.
+
+  * Two sources offering **the same licence text with different bytes** warn, naming both, and the higher-priority copy ships — **the app's first, then a native pack's, then ariza's own** — so the bundle does not depend on which directory was read first. Nearest to the software wins because ariza's texts are SPDX *templates*, carrying `<year> <owner> ` where a real notice carries a name: an OFL font's text with its Reserved Font Name filled in, or a pack's own copy shipped beside its binaries, is the document that should travel. The template is the fallback for a licence nobody supplied, not a replacement for one somebody did.
+
+What an app can declare
+-----------------------
+
+```toml
+[licensing]
+strict = true
+
+[licensing.app]
+# Every field defaults from the app's META6.json and its LICENSE file,
+# so most apps write none of this.
+copyright   = "Copyright 2026 A Person"
+project-url = "https://example.org/moneymoor"
+
+[[licensing.third-party]]
+name          = "Inter"
+version       = "4.0"
+spdx-license  = "OFL-1.1"                  # a text ariza ships, so no
+copyright     = "Copyright 2016 The Inter Project Authors"
+files         = ["resources/fonts/Inter-*.ttf"]
+
+[[licensing.third-party]]
+name          = "The cover artwork"
+spdx-license  = "CC-BY-4.0"                # one it does not, so name a
+license-files = ["licenses/CC-BY-4.0.txt"] # path in THIS repository
+files         = ["resources/art/*.png"]
+
+[[licensing.dists]]
+name         = "Some::Ancient::Module"
+spdx-license = "Artistic-2.0"
+notes        = "Its META6 has no license field; taken from its LICENSE."
+
+[[licensing.dists]]
+name         = "Some::Abandoned::Module"
+spdx-license = "NOASSERTION"      # only after looking, and say where
+project-url  = "https://github.com/someone/Some-Abandoned-Module"
+notes        = "No LICENSE file, nothing in the README or on raku.land."
+```
+
+The three tables share one vocabulary — `id`, `name`, `version`, `spdx-license`, `conveyed-under`, `copyright`, `project-url`, `source`, `notes`, `license-files`, `files` — and it is deliberately the vocabulary a native pack's `third-party.json` already uses, so an app describes a bundled font in the words a pack describes FFmpeg in.
+
+The summary, for a gate downstream
+----------------------------------
+
+`ariza-manifest.json` carries the same conclusion in machine-readable form:
+
+```json
+"licensing": {
+  "rows": 41,
+  "unknown": 0,
+  "noassertion": 0,
+  "spdx-ids": ["Apache-2.0", "Artistic-2.0", "BSD-2-Clause", "ISC",
+               "LGPL-2.1", "MIT", "Unlicense", "X11"],
+  "document": "THIRD-PARTY.md",
+  "licenses": "LICENSES"
+}
+```
+
+That is what a release pipeline can gate on without parsing prose: `unknown` above zero means something in the bundle is unattributed, `noassertion` above zero means something in it was looked at and could not be determined, and the identifier set — which never includes `NOASSERTION` — is where a copyleft component that arrived inside a native pack becomes visible to a policy that cares about one.
+
+The document itself is **deterministic**: rows are ordered by kind, then by name, then by id, and nothing in it is a timestamp or a path from the build machine. Two builds of the same inputs produce byte-identical output, so it can be diffed across releases.
 
 THE GENERATED INSTALLERS
 ========================
@@ -505,7 +686,7 @@ Read by ariza while it builds:
 
   * **`VCPKG_ROOT`** — Windows: a vcpkg tree whose `installed/<triplet>/bin ` is searched.
 
-  * **`XDG_CACHE_HOME`** — where the downloaded Rakudo runtime is cached, under `ariza/rakudo`. Defaults to `~/.cache`.
+  * **`XDG_CACHE_HOME`** — where the downloaded Rakudo runtime and the Windows runner are cached, under `ariza/rakudo` and `ariza/runner`. Defaults to `~/.cache`.
 
 Set by the bundle's launcher, for the app it starts:
 
@@ -517,7 +698,7 @@ Set by the bundle's launcher, for the app it starts:
 
   * **`DBIISH_SQLCIPHER_LIB`** — the staged SQLCipher library, by absolute path, on the platforms that need it.
 
-  * **`XDG_STATE_HOME`** — read, not set: where the one-line first-run marker lives. Defaults to `~/.local/state`.
+  * **`XDG_STATE_HOME`** — read, not set: where the one-line first-run marker lives. Defaults to `~/.local/state`. Windows uses `%LOCALAPPDATA%\<exec>\ ` instead, falling back to `%TEMP%`.
 
 Read by the generated installers:
 
@@ -551,6 +732,10 @@ MODULES
   * `App::Ariza::Native` — staging SQLCipher, and the self-containment audit.
 
   * `App::Ariza::Launcher` — the one script a user runs.
+
+  * `App::Ariza::Runner` — the compiled Windows launcher: which artefact a platform gets, and the verification it has to pass.
+
+  * `App::Ariza::Licensing` — what a bundle redistributes, and under what terms.
 
   * `App::Ariza::Installer` — the four scripts that put a bundle on someone's machine, and take it off again.
 
@@ -588,9 +773,18 @@ TESTING
 $ prove6 -Ilib t/
 ```
 
-Fourteen files, none of which needs a network, a package manager or a built bundle: renderers are checked against byte-for-byte goldens in `t/golden/`, and everything that shells out takes a `:&run` seam, so the macOS, Linux and Windows branches of each are covered from any one of them.
+Sixteen files, none of which needs a network, a package manager or a built bundle: renderers are checked against byte-for-byte goldens in `t/golden/` — including the merged `THIRD-PARTY.md`, so a change to what ariza claims about Rakudo or MoarVM's vendored C libraries shows up in review as a diff — and everything that shells out takes a `:&run` seam, as does every download, so the macOS, Linux and Windows branches of each are covered from any one of them.
 
-`xt/` holds the checks that need something external — the live rakudo.org release index, a real PE binary, and an end-to-end installer run against a real archive (`ARIZA_E2E_ARCHIVE`). `xxt/` holds `linux-selfcontain-proof.sh`, which runs a whole bundle build inside a `manylinux` container, re-checks the result independently in shell, and asserts that three planted defects each make the audit fail.
+The Windows runner's own suite is C `ctest`, and runs anywhere:
+
+```console
+$ cmake -B build -S runner && cmake --build build
+$ ctest --test-dir build --output-on-failure
+```
+
+The win32 shell is compiled out off Windows; what those tests cover is the portable core, which is where the rules that are easy to get wrong live — the argv[0] boundary, the quoting, the sidecar grammar. One of them parses `t/golden/launcher-windows-x86_64.ariza` with the real parser, so the file ariza renders and the program that reads it are checked against each other rather than against two copies of an idea.
+
+`xt/` holds the checks that need something external — the live rakudo.org release index, a real PE binary, an end-to-end installer run against a real archive (`ARIZA_E2E_ARCHIVE`), and one that installs ariza into a throwaway repository to ask the **installed** copy where its own data files are, since `zef` stages every resource under a content-hashed name and a checkout cannot tell the difference. `xxt/` holds `linux-selfcontain-proof.sh`, which runs a whole bundle build inside a `manylinux` container, re-checks the result independently in shell, and asserts that three planted defects each make the audit fail.
 
 SEE ALSO
 ========

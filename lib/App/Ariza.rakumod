@@ -7,6 +7,7 @@ use App::Ariza::Native;
 use App::Ariza::Platform;
 use App::Ariza::Rakudo;
 use App::Ariza::Resources;
+use App::Ariza::Runner;
 use App::Ariza::Site;
 use App::Ariza::Smoke;
 use App::Ariza::Tools;
@@ -60,6 +61,11 @@ method cmd-bundle(
     say "  sha256        {%b<sha256>}";
     for %b<launchers>.list -> $l {
         say "  launcher      {$l.relative(%b<dir>)}";
+    }
+    with %b<licensing><summary> -> %l {
+        say "  licensing     {%l<rows>} components"
+          ~ (%l<unknown> ?? ", {%l<unknown>} UNATTRIBUTED" !! '')
+          ~ " ({%l<document>})";
     }
     say "  smoke it      ariza smoke --archive={%b<archive>}";
     %b
@@ -179,7 +185,9 @@ site/                      every Raku module, with warm bytecode
 native/                    notcurses and friends
 VERSION                    app version and component pins, one screen
 ariza-manifest.json        the same, machine-readable, plus every sha256
-LICENSES/                  app + Rakudo licence text, and COMPONENTS.md
+THIRD-PARTY.md             every component, its licence, and where that
+                           fact came from
+LICENSES/                  the text of every licence the above cites
 
 =end code
 
@@ -224,6 +232,17 @@ anything that would load from outside it.
 
 =item1 B<L<App::Ariza::Launcher>> — writes the one script a user runs.
 
+=item1 B<L<App::Ariza::Runner>> — the compiled launcher a Windows
+bundle starts from: which artefact a platform gets, where it is
+published, and the digest it has to match before it goes anywhere near a
+bundle.
+
+=item1 B<L<App::Ariza::Licensing>> — reads a finished bundle and says
+what it redistributes: every native pack's own licensing kit, ariza's
+maintained record of the vendored runtime, every installed
+distribution's C<license>, and the app's own declarations, merged into
+C<THIRD-PARTY.md> and C<LICENSES/>.
+
 =item1 B<L<App::Ariza::Installer>> — writes the four scripts that put a
 bundle on someone's machine, and take it off again.
 
@@ -232,7 +251,7 @@ of the above once per platform, on machines that are actually those
 platforms, and publish the result.
 
 =item1 B<L<App::Ariza::Bundle>> — the orchestrator, and the author of
-C<VERSION>, C<ariza-manifest.json> and C<LICENSES/>.
+C<VERSION> and C<ariza-manifest.json>.
 
 =item1 B<L<App::Ariza::Smoke>> — unpacks a finished archive somewhere
 new, with a replaced environment, and checks it.
@@ -290,7 +309,7 @@ string (C<'dev'> if the metadata has none).
 
 L<App::Ariza::Bundle>, L<App::Ariza::Smoke>, L<App::Ariza::Rakudo>,
 L<App::Ariza::Site>, L<App::Ariza::Native>, L<App::Ariza::Launcher>,
-L<App::Ariza::Installer>, L<App::Ariza::CI>,
+L<App::Ariza::Runner>, L<App::Ariza::Installer>, L<App::Ariza::CI>,
 L<App::Ariza::Platform>, L<App::Ariza::Versions>,
 L<App::Ariza::Config>, L<App::Ariza::Resources>,
 L<App::Ariza::Tools>

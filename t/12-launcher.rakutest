@@ -7,7 +7,7 @@ use App::Ariza::Native;
 use App::Ariza::Resources;
 use App::Ariza::Tools;
 
-plan 7;
+plan 8;
 
 my constant SLUGS = 'macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64';
 
@@ -54,8 +54,8 @@ subtest 'each platform family gets the scripts it can run', {
     is App::Ariza::Launcher.scripts-for('linux-x86_64-glibc').map(*.<template>).List,
         ('launcher-posix.sh.j2',), 'Linux gets the same template';
     is App::Ariza::Launcher.scripts-for('windows-x86_64').map(*.<suffix>).List,
-        ('.ps1', '.cmd'),
-        'Windows gets both twins — PowerShell and a batch file for cmd.exe';
+        ('.ps1', '.cmd', '.ariza'),
+        'Windows gets both script twins and the compiled launcher\'s sidecar';
     is App::Ariza::Launcher.scripts-for('macos-arm64')[0]<mode>, 0o755,
         'and the POSIX one is executable';
 
@@ -182,10 +182,11 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
 
-    my @written = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+    my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
         :slug<macos-arm64>, :target<site/bin/moneymoor.raku>,
         :app-version<0.2.0>,
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
+    my @written = %w<written>.list;
 
     is +@written, 1, 'one launcher for macOS';
     # `.relative` speaks the native separator, so Windows says
@@ -215,14 +216,19 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
         skip 'no sh on this machine to syntax-check with', 1;
     }
 
-    my @win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>);
-    is @win.map(*.basename).List, ('moneymoor.ps1', 'moneymoor.cmd'),
-        'and Windows gets both twins';
+    # `:stage-runner` stands in for App::Ariza::Runner, which is the one
+    # thing in `write` that would otherwise reach the network. Its
+    # behaviour has its own file; what is asserted here is the wiring.
+    my %win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>,
+        :stage-runner(-> |c { %() }));
+    is %win<written>.map(*.basename).List,
+        ('moneymoor.ps1', 'moneymoor.cmd', 'moneymoor.ariza'),
+        'and Windows gets both twins plus the runner\'s sidecar';
 };
 
 subtest 'Windows output is CRLF', {
-    plan 3;
+    plan 4;
     my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>,
                                           |ctx('windows-x86_64'));
     # cmd.exe mis-parses an LF-only batch file in ways that look nothing
@@ -230,7 +236,101 @@ subtest 'Windows output is CRLF', {
     ok $cmd.contains("\r\n"), 'the batch file has CRLF line endings';
     nok $cmd.subst("\r\n", '', :g).contains("\n"), 'and no bare LF anywhere';
 
+    # The sidecar is read by a C program that handles either, so this is
+    # consistency rather than necessity — one file in bin/ disagreeing
+    # with the others about line endings is a difference nobody should
+    # have to think about.
+    my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+                                           |ctx('windows-x86_64'));
+    nok $side.subst("\r\n", '', :g).contains("\n"),
+        'and the runner\'s sidecar agrees with them';
+
     my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
                                          |ctx('macos-arm64'));
     nok $sh.contains("\r"), 'while the POSIX script has none';
+};
+
+#| The directive lines of a rendered sidecar, in order, with comments
+#| and blanks dropped — the same reading runner/src/config.c does.
+sub directives(Str $text --> List) {
+    $text.subst("\r\n", "\n", :g).lines
+         .map(*.trim)
+         .grep({ .chars && !.starts-with('#') })
+         .List
+}
+
+subtest 'the sidecar tells the compiled launcher what it cannot know', {
+    plan 9;
+    my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+                                           |ctx('windows-x86_64'));
+
+    # The whole file, in order, because order is the contract: the
+    # runner applies these top to bottom and knows nothing about what
+    # any of them mean. This is the same environment the .cmd launcher
+    # sets, expressed as instructions rather than as batch.
+    is directives($side).List, (
+        'target site\bin\moneymoor.raku',
+        'app-exec moneymoor',
+        'app-display Moneymoor',
+        'set RAKULIB=inst#{root}\site',
+        'unset PERL6LIB',
+        'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
+        'prepend-path {root}\native\sqlcipher',
+        'set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll',
+    ), 'every directive, in the order the runner will apply them';
+
+    # PERL6LIB is *removed*, never set to empty: a set-but-empty one is
+    # not "unset" to Rakudo, which prints a deprecation warning across
+    # the whole run because of it.
+    ok directives($side).first('unset PERL6LIB'),
+        'PERL6LIB is unset rather than emptied';
+    nok directives($side).first(*.starts-with('set PERL6LIB')),
+        'and never assigned, because a set-but-empty one is not unset';
+
+    nok directives($side).first(*.contains(':\\')),
+        'nothing absolute: {root} is resolved by the runner at launch';
+    ok $side.starts-with('#'),
+        'it opens with a comment saying what it is and who reads it';
+    ok $side.contains('#   set NAME=VALUE'),
+        'and documents the grammar it is written in, for whoever opens it';
+
+    # An app with no SQLCipher contributes no SQLCipher lines. Nothing
+    # about the runner changes: it is the renderer that knows this
+    # bundle has a DLL to find, which is the point of the directive
+    # design — a future recipe adds lines here and no new executable.
+    my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+        |App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
+                                      :target<site/bin/moneymoor.raku>));
+    is directives($none).List, (
+        'target site\bin\moneymoor.raku',
+        'app-exec moneymoor',
+        'app-display Moneymoor',
+        'set RAKULIB=inst#{root}\site',
+        'unset PERL6LIB',
+        'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
+    ), 'an app without SQLCipher gets the same file minus its two lines';
+
+    # The runner is named after the exec, beside the sidecar, so the
+    # executable can find its own configuration from its own path.
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>,
+        :stage-runner(-> :$bundle-dir, :$slug, :$exec {
+            my $exe = $bundle-dir.IO.add('bin').add("$exec.exe");
+            $exe.spurt('MZ');
+            %( path => $exe, artifact => "ariza-runner-windows-x86_64.exe",
+               tag => 'runner-v1', url => 'https://example.invalid/runner.exe',
+               sha256 => 'a' x 64 );
+        }));
+    is %w<written>.map(*.basename).List,
+        ('moneymoor.ps1', 'moneymoor.cmd', 'moneymoor.ariza', 'moneymoor.exe'),
+        'a staged runner is written into bin/ beside its sidecar and reported';
+
+    # What the runner step found is carried out of `write` rather than
+    # dropped: it is the only place in a build that knows the URL the
+    # executable came from and the digest it was checked against, and
+    # the manifest records both.
+    is %w<runner><sha256>, 'a' x 64,
+        'and its provenance comes back with it, for the manifest';
 };

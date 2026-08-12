@@ -1,0 +1,12 @@
+Public domain dedication
+
+The component this notice accompanies carries no licence terms because its author released it into the
+public domain. There is no copyright to attribute, no notice to reproduce and no condition attached to
+using, copying, modifying or redistributing it, in source or in binary form.
+
+`LicenseRef-public-domain` is not an SPDX licence identifier. It is the SPDX-conformant way of naming a
+licensing situation that has no identifier: a bare public-domain dedication with no accompanying licence
+text of its own. The entry in `THIRD-PARTY.md` that points here names the component, its upstream project
+and the wording its own source files carry.
+
+No warranty of any kind is offered by the authors of such a component, nor by anyone redistributing it.

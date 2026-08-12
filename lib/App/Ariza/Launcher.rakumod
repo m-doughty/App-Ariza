@@ -2,30 +2,40 @@ use Template::Jinja2;
 
 use App::Ariza::Config;
 use App::Ariza::Resources;
+use App::Ariza::Runner;
 use App::Ariza::Tools;
 
 unit class App::Ariza::Launcher;
 
 my constant TEMPLATE-PREFIX = 'templates';
 
-# slug family -> the scripts a bundle for it gets. `suffix` is appended
-# to the app's exec name; `mode` is the POSIX permission bits (ignored
-# where the filesystem has no concept of them).
+# slug family -> the files a bundle for it gets rendered into `bin/`.
+# `suffix` is appended to the app's exec name; `mode` is the POSIX
+# permission bits (ignored where the filesystem has no concept of them).
+#
+# The Windows family renders three: the two scripts, and the `.ariza`
+# sidecar that the compiled launcher (App::Ariza::Runner) reads for the
+# handful of facts that are per-bundle rather than per-runner. The
+# sidecar is rendered whether or not a runner is pinned — it costs a few
+# hundred bytes, and a bundle whose configuration is present but whose
+# executable is not is a much easier thing to reason about than the
+# reverse.
 my constant %SCRIPTS =
     macos => (
-        { template => 'launcher-posix.sh.j2',      suffix => '',     mode => 0o755 },
+        { template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
     ),
     linux => (
-        { template => 'launcher-posix.sh.j2',      suffix => '',     mode => 0o755 },
+        { template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
     ),
     windows => (
-        { template => 'launcher-windows.ps1.j2',   suffix => '.ps1', mode => 0o644 },
-        { template => 'launcher-windows.cmd.j2',   suffix => '.cmd', mode => 0o644 },
+        { template => 'launcher-windows.ps1.j2',   suffix => '.ps1',   mode => 0o644 },
+        { template => 'launcher-windows.cmd.j2',   suffix => '.cmd',   mode => 0o644 },
+        { template => 'launcher-windows.ariza.j2', suffix => '.ariza', mode => 0o644 },
     ),
 ;
 
-#| The launcher scripts a slug's bundle gets: C<template>, C<suffix> and
-#| C<mode>, in write order.
+#| The launcher files a slug's bundle gets rendered: C<template>,
+#| C<suffix> and C<mode>, in write order.
 method scripts-for(Str:D $slug --> List) {
     my $family = $slug.split('-').head;
     (%SCRIPTS{$family}
@@ -80,7 +90,18 @@ method render(Str:D :$template!, *%ctx --> Str) {
 }
 
 #| Write every launcher a slug's bundle needs into C<< <bundle>/bin >>,
-#| and return the paths written.
+#| stage the compiled Windows runner beside them, and return
+#| C<{ written, runner }>: every path written, and what the runner step
+#| staged (an empty hash where it staged nothing).
+#|
+#| The runner detail is carried out rather than dropped because the
+#| manifest records every downloaded component with its URL and digest,
+#| and this is the only place in a build that knows them.
+#|
+#| C<:&stage-runner> is the seam L<App::Ariza::Runner> is reached
+#| through, so a test can render a bundle's launchers without a network
+#| — and so the one platform that fetches anything here is as testable
+#| as the three that do not.
 method write(
     IO() :$bundle-dir!,
     App::Ariza::Config:D :$config!,
@@ -88,7 +109,8 @@ method write(
     Str:D :$target!,
     Str :$app-version = '',
     Str :$sqlcipher-rel,
-    --> List
+    :&stage-runner = -> |c { App::Ariza::Runner.stage(|c) },
+    --> Hash
 ) {
     my %ctx = self.context(:$config, :$slug, :$target, :$app-version,
                            :$sqlcipher-rel);
@@ -101,7 +123,15 @@ method write(
         $path.chmod(%s<mode>);
         @written.push($path);
     }
-    @written.List
+
+    # Empty for every non-Windows platform, and for a Windows one built
+    # before the first runner release was pinned. Both are ordinary
+    # outcomes rather than failures, and both leave a bundle whose
+    # scripts do the whole job.
+    my %runner = stage-runner(:$bundle-dir, :$slug, :exec($config.app-exec));
+    @written.push(%runner<path>) if %runner<path>.defined;
+
+    %( written => @written.List, runner => %runner )
 }
 
 =begin pod
@@ -116,7 +146,7 @@ App::Ariza::Launcher - the one script a user runs
 
 use App::Ariza::Launcher;
 
-my @written = App::Ariza::Launcher.write(
+my %w = App::Ariza::Launcher.write(
     :bundle-dir($work),
     :config($cfg),
     :slug<macos-arm64>,
@@ -124,7 +154,8 @@ my @written = App::Ariza::Launcher.write(
     :app-version<0.2.0>,
     :sqlcipher-rel<rakudo/lib/libsqlcipher.0.dylib>,
 );
-say @written;               # (…/bin/moneymoor)
+say %w<written>;            # (…/bin/moneymoor)
+say %w<runner>;             # {} — macOS stages no executable
 
 # Just the text, for a diff or a test:
 say App::Ariza::Launcher.render(
@@ -197,20 +228,82 @@ specifically to keep it that way.
 
 =head2 Windows
 
-The C<.ps1> and C<.cmd> twins are written from the same context and are
-shipped for slugs in the C<windows> family. C<$PSScriptRoot> and C<%~dp0>
-already give a resolved directory, so neither needs the symlink loop.
+A Windows bundle gets four files in C<bin/>, and only one of them is the
+documented entry point.
 
-Windows output is CRLF; C<cmd.exe> mis-parses an LF-only batch file, in
-ways that look nothing like a line-ending problem.
+=item1 C<< <exec>.exe >> — the compiled launcher, staged by
+L<App::Ariza::Runner> from a pinned, digest-verified release artefact.
+This is what users run and what the installers put on C<PATH>. It does
+the whole launch with no C<cmd.exe> anywhere in it, which is what keeps
+C<^>, C<%VAR%>, C<!x!> and quote-heavy arguments intact on the way to
+the app — a batch file re-parses C<%*> and cannot not damage them — and
+what keeps the bundle usable where script-execution policy (AppLocker,
+SRP, a locked-down C<ExecutionPolicy>) refuses to run a C<.cmd> or a
+C<.ps1> at all.
+
+=item1 C<< <exec>.ariza >> — the runner's sidecar. Rendered like any
+other launcher, from the same context, and readable by anyone who wants
+to know what the executable is about to do. It carries the target
+script, the exec and display names, and then the bundle's environment as
+B<ordered directives>:
+
+=begin code :lang<text>
+
+target site\bin\moneymoor.raku
+app-exec moneymoor
+app-display Moneymoor
+set RAKULIB=inst#{root}\site
+unset PERL6LIB
+set NOTCURSES_NATIVE_DATA_DIR={root}\native
+prepend-path {root}\native\sqlcipher
+set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
+
+=end code
+
+C<{root}> is the bundle root the executable works out at run time, so
+nothing absolute is baked in. C<set>, C<unset> and C<prepend-path> are
+applied top to bottom, and the runner knows nothing whatever about what
+the variables mean — which is the point. Everything ariza knows about
+Rakudo's repository, notcurses' data directory and where a bundled DLL
+lives is B<here>, in the renderer, exactly as it is in the C<.cmd>
+template. A bundle that grows a native dependency grows a line in this
+file; it does not need a new executable, and an executable pinned
+several releases ago still launches it.
+
+=item1 C<< <exec>.cmd >> and C<< <exec>.ps1 >> — unchanged, still
+written, still supported. They are the transparent alternative for
+someone who would rather read their launcher than trust it, and the
+fallback while a bundle is built before the first runner release is
+pinned.
+
+C<$PSScriptRoot> and C<%~dp0> already give a resolved directory, so
+neither script needs the POSIX symlink loop; the executable asks Windows
+where it is with C<GetModuleFileNameW> and takes the directory above
+C<bin/>, which is the same rule spelled a third way.
+
+Windows output is CRLF, sidecar included; C<cmd.exe> mis-parses an
+LF-only batch file in ways that look nothing like a line-ending problem,
+and having one file in C<bin/> disagree with the others about line
+endings is a difference nobody should have to think about.
 
 =head1 METHODS
 
-=head2 write(:$bundle-dir!, :$config!, :$slug!, :$target!, :$app-version, :$sqlcipher-rel --> List)
+=head2 write(:$bundle-dir!, :$config!, :$slug!, :$target!, :$app-version, :$sqlcipher-rel, :&stage-runner --> Hash)
 
 Render and write every launcher the slug needs into
-C<< <bundle>/bin >>, C<chmod 0755> for the POSIX one, and return the
-paths.
+C<< <bundle>/bin >>, C<chmod 0755> for the POSIX one, stage the compiled
+runner where there is one, and return C<{ written, runner }> — every
+path written, and L<App::Ariza::Runner>'s account of what it staged
+(C<path>, C<artifact>, C<tag>, C<url>, C<sha256>), which is what
+C<ariza-manifest.json> records so the executable in a bundle can be
+traced back to a published, digest-verified artefact.
+
+C<:&stage-runner> replaces the call into L<App::Ariza::Runner> — the one
+thing here that touches the network — so a test can render a Windows
+bundle's C<bin/> without one. It is expected to return that same hash,
+or an empty one for a bundle that gets no executable: every non-Windows
+platform, and a Windows platform built while
+C<resources/runner-checksums.txt> is still empty.
 
 C<:$target> is the bundle-relative script the launcher hands to the
 interpreter — L<App::Ariza::Site>'s C<target-rel>. C<:$sqlcipher-rel> is
@@ -232,8 +325,15 @@ unmovable.
 
 =head2 scripts-for(Str $slug --> List)
 
-The C<{ template, suffix, mode }> entries a slug's bundle gets, in write
-order.
+The C<{ template, suffix, mode }> entries a slug's bundle gets rendered,
+in write order. Windows has three — C<.ps1>, C<.cmd> and the runner's
+C<.ariza> sidecar; the C<.exe> is not in this list because it is fetched
+rather than rendered.
+
+=head1 SEE ALSO
+
+L<App::Ariza::Runner>, which supplies the compiled Windows launcher this
+module stages and writes the sidecar for.
 
 =head1 AUTHOR
 

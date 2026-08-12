@@ -1,0 +1,253 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Resources;
+use App::Ariza::Runner;
+use App::Ariza::Tools;
+
+plan 8;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-runner-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| A stand-in download: writes fixed bytes wherever it is pointed, and
+#| records what it was asked for. The real one is `http-download`, which
+#| every other module in ariza also takes as a seam.
+sub fake-download(Str $body, @log --> Callable) {
+    -> $url, $dest {
+        @log.push($url);
+        ensure-dir($dest.IO.parent);
+        $dest.IO.spurt($body);
+        $dest.IO;
+    }
+}
+
+#| The sha256 of `$body`, computed the way ariza computes every digest,
+#| so a pin file written here is one `fetch` will accept.
+sub digest-of(Str $body --> Str) {
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $f = $dir.add('payload');
+    $f.spurt($body);
+    sha256-file($f);
+}
+
+sub write-file(IO::Path $path, Str $text --> IO::Path) {
+    $path.spurt($text);
+    $path;
+}
+
+sub pins-file(IO::Path $dir, %entries --> IO::Path) {
+    my $path = $dir.add('runner-checksums.txt');
+    $path.spurt("# a pin file\n\n"
+        ~ %entries.sort.map({ "{.value}  {.key}\n" }).join);
+    $path;
+}
+
+subtest 'a platform either has a runner or has none, and says which', {
+    plan 7;
+    is App::Ariza::Runner.arch-for('windows-x86_64'), 'x86_64',
+        'the 64-bit Intel Windows slug';
+    is App::Ariza::Runner.arch-for('windows-arm64'), 'aarch64',
+        'and the ARM one, named the way the release artefact is';
+
+    # Not an error, and not a special case anywhere: a POSIX bundle has
+    # a shell script for a launcher and needs nothing compiled.
+    nok App::Ariza::Runner.arch-for('macos-arm64').defined,
+        'macOS has no runner';
+    nok App::Ariza::Runner.arch-for('linux-x86_64-glibc').defined,
+        'nor Linux';
+
+    is App::Ariza::Runner.artifact-name('windows-x86_64'),
+        'ariza-runner-windows-x86_64.exe', 'the published filename';
+    is App::Ariza::Runner.artifact-name('windows-arm64'),
+        'ariza-runner-windows-aarch64.exe', 'per architecture';
+    nok App::Ariza::Runner.artifact-name('linux-x86_64-glibc').defined,
+        'and nothing to name for a platform that has none';
+};
+
+subtest 'the tag and the URL come from the shipped resources', {
+    plan 4;
+    my $tag = App::Ariza::Runner.tag;
+    ok $tag.defined && $tag.chars, 'resources/RUNNER_VERSION names a tag';
+    ok $tag.starts-with('runner-v'),
+        'in the shape the release workflow gates on';
+
+    my $url = App::Ariza::Runner.url(:slug<windows-x86_64>);
+    ok $url.starts-with('https://github.com/m-doughty/App-Ariza/releases/download/'),
+        'the URL is an App-Ariza release asset — the runner is ariza\'s own';
+    ok $url.ends-with("/$tag/ariza-runner-windows-x86_64.exe"),
+        'at the pinned tag, named for the architecture';
+};
+
+subtest 'the pin file is read strictly, because a skipped pin is an unverified download', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $sha = 'a' x 64;
+    my $path = $dir.add('pins.txt');
+    $path.spurt("# a comment\n\n$sha  ariza-runner-windows-x86_64.exe\n"
+              ~ "{'B' x 64}  ariza-runner-windows-aarch64.exe\n");
+
+    my %pins = App::Ariza::Runner.pins($path);
+    is %pins<ariza-runner-windows-x86_64.exe>, $sha,
+        'entries are read as artefact => digest';
+    is %pins<ariza-runner-windows-aarch64.exe>, 'b' x 64,
+        'and the digest is lowercased, the way sha256-file reports one';
+    is +%pins, 2, 'comments and blank lines contribute nothing';
+
+    $path.spurt("$sha  fine.exe\nnot a checksum line at all\n");
+    throws-like { App::Ariza::Runner.pins($path) }, Exception,
+        message => /'line 2'/,
+        'a line that is neither a comment nor an entry dies naming it';
+
+    is +App::Ariza::Runner.pins(write-file($dir.add('empty.txt'), '')), 0,
+        'while an empty file is simply no pins';
+};
+
+subtest 'the shipped pin file is one of the two states it is allowed to be in', {
+    plan 2;
+    my %pins = App::Ariza::Runner.pins;
+    ok %pins.defined, 'resources/runner-checksums.txt parses';
+
+    # Either it is still empty — the bootstrap state, where a Windows
+    # bundle ships its scripts alone — or every artefact it pins is one
+    # ariza would actually ask for. A pin for something else is a typo
+    # nobody would otherwise notice until a build failed.
+    my @expected = <windows-x86_64 windows-arm64>.map({
+        App::Ariza::Runner.artifact-name($_) });
+    is %pins.keys.grep({ !@expected.first($_) }).List, (),
+        'and pins nothing ariza would never download';
+};
+
+subtest 'a bundle with nothing pinned is built without the executable', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my @log;
+
+    # The bootstrap rung: the code that downloads a runner exists before
+    # the release it downloads can, so a Windows bundle built in that
+    # window is the same bundle ariza produced before the runner —
+    # scripts only, and a loud notice rather than a silent difference.
+    my %got = App::Ariza::Runner.stage(:bundle-dir($dir),
+        :slug<windows-x86_64>, :exec<moneymoor>,
+        :pins-path(write-file($dir.add('no-pins.txt'), "# nothing yet\n")),
+        :download(fake-download('MZ', @log)));
+
+    nok %got, 'nothing is staged';
+    is @log.List, (), 'and nothing was downloaded to not stage';
+    nok $dir.add('bin/moneymoor.exe').e, 'bin/ has no executable in it';
+};
+
+subtest 'a pinned runner is downloaded, verified and staged', {
+    plan 9;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my @log;
+    my $body = "MZ this is a launcher\n";
+
+    my $pins = pins-file($dir, %(
+        'ariza-runner-windows-x86_64.exe' => digest-of($body)));
+
+    my %staged = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle')),
+        :slug<windows-x86_64>, :exec<moneymoor>,
+        :pins-path($pins), :cache-dir($dir.add('cache')),
+        :download(fake-download($body, @log)));
+    my $exe = %staged<path>;
+
+    ok $exe.defined && $exe.f, 'the executable is staged';
+    is $exe.relative($dir.add('bundle')).subst('\\', '/', :g),
+        'bin/moneymoor.exe',
+        'at bin/<exec>.exe, beside the sidecar the runner reads';
+    is $exe.slurp, $body, 'byte for byte what was published';
+    is +@log, 1, 'downloaded once';
+    ok @log[0].ends-with('ariza-runner-windows-x86_64.exe'),
+        'from the release asset for this architecture';
+
+    # The manifest records every downloaded component with the URL it
+    # came from and the digest it was verified against, and this is the
+    # only step that knows either.
+    is %staged<sha256>, digest-of($body),
+        'and the staged file reports the digest it was verified against';
+    is %staged<artifact>, 'ariza-runner-windows-x86_64.exe',
+        'with the published artefact it is a copy of';
+    ok %staged<url>.ends-with('ariza-runner-windows-x86_64.exe'),
+        'and the URL a reader can fetch it from themselves';
+
+    # Second build, same machine: the cache answers and the network is
+    # not touched — and the cached copy is re-verified on the way past,
+    # which is what catches a half-written file from a killed run.
+    my %again = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle2')),
+        :slug<windows-x86_64>, :exec<moneymoor>,
+        :pins-path($pins), :cache-dir($dir.add('cache')),
+        :download(fake-download($body, @log)));
+    is +@log, 1, 'a second bundle reuses the cached artefact'
+        or diag "downloads: {@log.join(', ')}";
+};
+
+subtest 'once anything is pinned, every failure is fatal', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my @log;
+    my $body = "MZ this is a launcher\n";
+
+    # A digest that does not match what arrives. There is deliberately
+    # no way to proceed: this is an executable that will run on a user's
+    # machine, and "close enough" is not a verification result.
+    my $wrong = pins-file($dir, %(
+        'ariza-runner-windows-x86_64.exe' => 'c' x 64));
+    throws-like {
+        App::Ariza::Runner.stage(:bundle-dir($dir.add('b1')),
+            :slug<windows-x86_64>, :exec<moneymoor>,
+            :pins-path($wrong), :cache-dir($dir.add('c1')),
+            :download(fake-download($body, @log)));
+    }, Exception, message => /'does not match its pin'/,
+        'a mismatch fails the build';
+    is +$dir.add('c1').dir.grep(*.d).map(*.dir).flat.grep(*.f), 0,
+        'and the file that failed is not left in the cache to be reused';
+
+    # An architecture nobody published. The bundle is for a platform
+    # ariza knows, so silence here would produce a Windows bundle whose
+    # documented entry point simply is not in it.
+    my $partial = pins-file($dir, %(
+        'ariza-runner-windows-x86_64.exe' => digest-of($body)));
+    throws-like {
+        App::Ariza::Runner.stage(:bundle-dir($dir.add('b2')),
+            :slug<windows-arm64>, :exec<moneymoor>,
+            :pins-path($partial), :cache-dir($dir.add('c2')),
+            :download(fake-download($body, @log)));
+    }, Exception, message => /'no digest for ariza-runner-windows-aarch64.exe'/,
+        'an unpinned architecture fails rather than shipping without one';
+
+    # A download that never arrives.
+    throws-like {
+        App::Ariza::Runner.stage(:bundle-dir($dir.add('b3')),
+            :slug<windows-x86_64>, :exec<moneymoor>,
+            :pins-path($partial), :cache-dir($dir.add('c3')),
+            :download(-> $url, $dest { die "ariza: downloading $url failed" }));
+    }, Exception, message => /'failed'/, 'so does a failed download';
+};
+
+subtest 'a POSIX bundle asks for nothing and gets nothing', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my @log;
+
+    # Not the bootstrap path: this one is silent, because there is
+    # nothing missing. The pins are real, and still nothing happens.
+    my $pins = pins-file($dir, %(
+        'ariza-runner-windows-x86_64.exe' => 'd' x 64));
+    my %got = App::Ariza::Runner.stage(:bundle-dir($dir.add('bundle')),
+        :slug<macos-arm64>, :exec<moneymoor>, :pins-path($pins),
+        :download(fake-download('MZ', @log)));
+
+    nok %got, 'nothing is staged for macOS';
+    is @log.List, (), 'and nothing was fetched';
+};

@@ -4,7 +4,7 @@ use Test;
 use App::Ariza::Config;
 use App::Ariza::Resources;
 
-plan 11;
+plan 12;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
@@ -159,7 +159,7 @@ subtest 'bundle.smoke rejects shapes it cannot run', {
 };
 
 subtest '[bundle] is optional', {
-    plan 4;
+    plan 8;
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
     write-config($dir, MINIMAL);
@@ -169,6 +169,16 @@ subtest '[bundle] is optional', {
     is-deeply $cfg.bundle-platforms.List, (), 'platforms defaults to empty';
     is-deeply $cfg.bundle-native.List, (), 'native defaults to empty';
     is $cfg.smoke-command, Str, 'no smoke command is undefined, not empty';
+
+    # Every [licensing] value is empty-but-defined for a manifest that
+    # omits the table, so nothing downstream has to test for it — an app
+    # that says nothing about licensing still gets a complete
+    # THIRD-PARTY.md, built out of what ariza can read from the bundle.
+    is $cfg.licensing-strict, False, 'licensing is not strict unless asked';
+    is-deeply $cfg.licensing-app.Hash, {}, 'the app row defaults to nothing';
+    is-deeply $cfg.licensing-third-party.List, (),
+        'and so do the rows for what ariza cannot see';
+    is-deeply $cfg.licensing-dists.List, (), 'and the dist corrections';
 };
 
 subtest 'unknown keys warn, they never die', {
@@ -337,4 +347,72 @@ subtest 'missing files and missing required keys', {
         App::Ariza::Config.load-file(write-config($dir,
             "[app]\nname = \"A\"\nexec = \"k\"\n"))
     }, Exception, message => /'app.display is required'/, 'app.display is required';
+};
+
+subtest 'the [licensing] table', {
+    plan 10;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $path = write-config($dir, q:to/TOML/);
+    [app]
+    name = "App::Kelpie"
+    exec = "kelpie"
+    display = "Kelpie"
+
+    [licensing]
+    strict = true
+    unheard-of = "value"
+
+    [licensing.app]
+    copyright = "Copyright 2026 A Person"
+    made-up = "value"
+
+    [[licensing.third-party]]
+    name = "Inter"
+    version = "4.0"
+    spdx-license = "OFL-1.1"
+    license-files = ["licenses/OFL-1.1.txt"]
+    files = ["resources/fonts/Inter-*.ttf"]
+
+    [[licensing.dists]]
+    name = "Some::Module"
+    spdx-license = "Artistic-2.0"
+    TOML
+
+    my $cfg = App::Ariza::Config.load-file($path);
+    is $cfg.licensing-strict, True, 'strict is read as a boolean';
+    is $cfg.licensing-app<copyright>, 'Copyright 2026 A Person',
+        'the app can say what it is not derivable from its META6';
+    is +$cfg.licensing-third-party, 1, 'one declared third-party row';
+    is $cfg.licensing-third-party[0]<name>, 'Inter', 'with its name';
+    is-deeply $cfg.licensing-third-party[0]<license-files>.List,
+        ('licenses/OFL-1.1.txt',),
+        'and the paths in its own repository the texts live at';
+    is $cfg.licensing-dists[0]<name>, 'Some::Module',
+        'a dist correction names the distribution it corrects';
+
+    # The house rule, unchanged: an unrecognised key at any level is a
+    # warning, so one manifest can serve several ariza versions.
+    is +$cfg.warnings, 2, 'unknown keys warn rather than dying';
+    ok $cfg.warnings.first(/"'licensing.app.made-up'"/),
+        'naming the dotted path inside a row table';
+
+    # A wrong type is a different thing entirely: it cannot be a future
+    # feature, it is a mistake that would ship a document with a hole.
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir.add('two').&{ .mkdir; $_ },
+            "[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+          ~ "\n[licensing]\nstrict = \"yes\"\n"))
+    }, Exception, message => /'licensing.strict must be true or false'/,
+        'a strict flag that is not a boolean dies naming the key';
+
+    # A row without a licence is not a row: it is the absence this whole
+    # feature exists to make impossible.
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir.add('three').&{ .mkdir; $_ },
+            "[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+          ~ "\n[[licensing.third-party]]\nname = \"Inter\"\n"))
+    }, Exception, message => /'licensing.third-party.spdx-license is required'/,
+        'and a declared component with no licence dies naming what is missing';
 };

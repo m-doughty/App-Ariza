@@ -1,8 +1,8 @@
 use JSON::Fast;
-use Template::Jinja2;
 
 use App::Ariza::Config;
 use App::Ariza::Launcher;
+use App::Ariza::Licensing;
 use App::Ariza::Native;
 use App::Ariza::Platform;
 use App::Ariza::Rakudo;
@@ -12,40 +12,6 @@ use App::Ariza::Tools;
 use App::Ariza::Versions;
 
 unit class App::Ariza::Bundle;
-
-# Native libraries shipped in the notcurses pack, grouped by upstream
-# project, for LICENSES/COMPONENTS.md. Matched on the filename prefix in
-# order, so `libnotcurses_native_shim` has to come before `libnotcurses`.
-#
-# This exists because a redistributed binary with no attribution is not
-# something to ship, and a generated inventory is the only kind that
-# stays true when the pack changes.
-my constant @NATIVE-LICENSES =
-    'libnotcurses_native_shim' => ('Notcurses-Native (this project)', 'Artistic-2.0'),
-    'libnotcurses'   => ('notcurses',   'Apache-2.0'),
-    'libav'          => ('FFmpeg',      'GPL-2.0-or-later (see note)'),
-    'libsw'          => ('FFmpeg',      'GPL-2.0-or-later (see note)'),
-    'libpostproc'    => ('FFmpeg',      'GPL-2.0-or-later (see note)'),
-    'libx264'        => ('x264',        'GPL-2.0-or-later'),
-    'libx265'        => ('x265',        'GPL-2.0-or-later'),
-    'libSvtAv1'      => ('SVT-AV1',     'BSD-3-Clause-Clear'),
-    'libdav1d'       => ('dav1d',       'BSD-2-Clause'),
-    'libvpx'         => ('libvpx',      'BSD-3-Clause'),
-    'libaom'         => ('libaom',      'BSD-2-Clause'),
-    'libopus'        => ('Opus',        'BSD-3-Clause'),
-    'libmp3lame'     => ('LAME',        'LGPL-2.0-or-later'),
-    'libvmaf'        => ('VMAF',        'BSD-2-Clause-Patent'),
-    'libvorbis'      => ('Vorbis',      'BSD-3-Clause'),
-    'libogg'         => ('Ogg',         'BSD-3-Clause'),
-    'libtheora'      => ('Theora',      'BSD-3-Clause'),
-    'libcrypto'      => ('OpenSSL',     'Apache-2.0'),
-    'libssl'         => ('OpenSSL',     'Apache-2.0'),
-    'libncurses'     => ('ncurses',     'MIT-like (X11)'),
-    'libunistring'   => ('GNU libunistring', 'LGPL-3.0-or-later'),
-    'libdeflate'     => ('libdeflate',  'MIT'),
-    'libz'           => ('zlib',        'Zlib'),
-    'libsqlcipher'   => ('SQLCipher',   'BSD-style (Zetetic LLC)'),
-;
 
 #| The directory name (and archive stem) for a build:
 #| C<< <exec>-<version>-<platform> >>.
@@ -130,18 +96,29 @@ method build(
         :extra(%sqlcipher<staged> // ()));
     note "ariza: audited {%audit<checked>} native binaries" if $verbose;
 
-    my @launchers = App::Ariza::Launcher.write(
+    my %launchers = App::Ariza::Launcher.write(
         :bundle-dir($work), :$config, :slug($platform),
         :target(%site<target-rel>), :app-version($version),
         :sqlcipher-rel(%sqlcipher<rel> // Str));
+    my @launchers = %launchers<written>.list;
+
+    # Before the manifest, because the manifest records what it found:
+    # a bundle whose licensing summary is written after the fact is one
+    # whose summary can disagree with the document beside it.
+    my %licensing = self!licensing(
+        :$work, :$config, :$app-dir, :$version, :$platform,
+        :%rakudo, :%sqlcipher, :runner(%launchers<runner>));
+    note "ariza: $_" for %licensing<warnings>.list;
+    note "ariza: {%licensing<summary><rows>} licensing rows,"
+       ~ " {%licensing<summary><unknown>} unattributed" if $verbose;
 
     my %manifest = self!manifest(
         :$config, :$versions, :$version, :$platform, :$work,
-        :%rakudo, :%site, :%sqlcipher, :@launchers);
+        :%rakudo, :%site, :%sqlcipher, :@launchers,
+        :runner(%launchers<runner>), :licensing(%licensing<summary>));
 
     $work.add('ariza-manifest.json').spurt(to-json(%manifest, :sorted-keys) ~ "\n");
     $work.add('VERSION').spurt(self.version-file(%manifest));
-    self!licenses($work, $config, $app-dir, %manifest, %site);
 
     my %archive = self!package($out-dir, $name, $work, :$verbose);
 
@@ -156,6 +133,7 @@ method build(
         manifest  => %manifest,
         launchers => @launchers,
         audit     => %audit,
+        licensing => %licensing,
         platform  => $platform,
         version   => $version,
     }
@@ -164,7 +142,7 @@ method build(
 method !manifest(
     App::Ariza::Config:D :$config!, App::Ariza::Versions:D :$versions!,
     Str:D :$version!, Str:D :$platform!, IO::Path:D :$work!,
-    :%rakudo!, :%site!, :%sqlcipher!, :@launchers!,
+    :%rakudo!, :%site!, :%sqlcipher!, :@launchers!, :%runner!, :%licensing!,
     --> Hash
 ) {
     my %m =
@@ -201,6 +179,7 @@ method !manifest(
             %( name => %d<name>, version => %d<version>, auth => %d<auth> )
         }).List,
         smoke => $config.smoke-argvs.map(*.List).List,
+        licensing => %licensing,
     ;
 
     with %site<notcurses-tag> -> $tag {
@@ -211,8 +190,30 @@ method !manifest(
     }
 
     %m<components><sqlcipher> = self.sqlcipher-component(%sqlcipher) if %sqlcipher;
+    %m<components><runner> = self.runner-component(%runner, $work) if %runner;
 
     %m
+}
+
+#| The manifest's runner entry: which published artefact was staged,
+#| from which release, at which URL, and the digest it was verified
+#| against before it went anywhere near the bundle.
+#|
+#| The runner is downloaded like the runtime archive is, so it is
+#| recorded like the runtime archive is. Without this entry it would be
+#| the one binary in a bundle a reader could not trace back to something
+#| published — which for the file a Windows user actually runs is the
+#| worst possible place to have a gap.
+method runner-component(%runner, IO::Path $work --> Hash) {
+    %(
+        artifact => %runner<artifact> // '',
+        tag      => %runner<tag> // '',
+        url      => %runner<url> // '',
+        sha256   => %runner<sha256> // '',
+        path     => (%runner<path>.defined
+                        ?? %runner<path>.relative($work).subst('\\', '/', :g)
+                        !! ''),
+    )
 }
 
 #| The manifest's SQLCipher entry, from what L<App::Ariza::Native>
@@ -253,6 +254,9 @@ method version-file(%m --> Str) {
     with %m<components><notcurses> {
         @lines.push(sprintf('%-12s %s', 'notcurses', .<tag>));
     }
+    with %m<components><runner> {
+        @lines.push(sprintf('%-12s %s', 'runner', .<tag>));
+    }
     @lines.push(sprintf('%-12s %s', 'ariza', %m<ariza>));
     @lines.push(sprintf('%-12s %s', 'built', %m<built-at>));
     @lines.push('');
@@ -260,98 +264,53 @@ method version-file(%m --> Str) {
     @lines.join("\n") ~ "\n"
 }
 
-#| Assemble `LICENSES/`: the app's own licence, Rakudo's, and a
-#| generated inventory of everything else the bundle redistributes.
-method !licenses(IO::Path $work, App::Ariza::Config:D $config,
-                 IO::Path $app-dir, %m, %site) {
-    my $dir = ensure-dir($work.add('LICENSES'));
-
-    my $app-license-file = "{$config.app-name.subst('::', '-', :g)}.txt";
-    my $app-license = $app-dir.dir.first({
-        .f && .basename.uc.starts-with('LICENSE')
-    });
-    with $app-license {
-        $dir.add($app-license-file).spurt(.slurp);
-    }
-    else {
-        $dir.add($app-license-file).spurt(
-            "{$config.app-name} ships no LICENSE file in its repository.\n"
-          ~ "Its metadata declares: {self!meta-license($app-dir) // 'nothing'}\n");
-    }
-
-    my $rakudo-license = $work.add('rakudo').add('LICENSE');
-    $dir.add('rakudo.txt').spurt(
-        $rakudo-license.f ?? $rakudo-license.slurp
-                          !! "Rakudo's LICENSE file was not present in the"
-                           ~ " runtime archive; see https://rakudo.org/.\n");
-
-    $dir.add('COMPONENTS.md').spurt(self!components-md($work, $config, $app-dir, %m, %site));
-}
-
-method !meta-license(IO::Path $app-dir --> Str) {
-    my $meta = $app-dir.add('META6.json');
-    return Str unless $meta.f;
-    my $data = try { from-json($meta.slurp) };
-    ($data // {})<license> // Str
-}
-
-method !components-md(IO::Path $work, App::Ariza::Config:D $config,
-                      IO::Path $app-dir, %m, %site --> Str) {
-    my @rows = self.native-inventory(%site<notcurses-lib>);
-
-    my %ctx =
-        app_name     => $config.app-name,
-        app_display  => $config.app-display,
-        app_version  => %m<app><version>,
-        app_license  => self!meta-license($app-dir) // 'see LICENSES/',
-        app_license_file => "{$config.app-name.subst('::', '-', :g)}.txt",
-        platform     => %m<platform>,
-        ariza_version => %m<ariza>,
-        built_at     => %m<built-at>,
-        rakudo_tag   => %m<components><rakudo><tag>,
-        rakudo_url   => %m<components><rakudo><url>,
-        rakudo_sha256 => %m<components><rakudo><sha256>,
-        notcurses_tag => (%m<components><notcurses> andthen .<tag>) // '',
-        native_rows  => @rows,
-        sqlcipher_version => (%m<components><sqlcipher> andthen .<version>) // '',
-        sqlcipher_rel     => (%m<components><sqlcipher> andthen .<path>) // '',
-        sqlcipher_sha256  => (%m<components><sqlcipher> andthen .<sha256>) // '',
-        sqlcipher_source  => (%m<components><sqlcipher> andthen .<source>) // '',
-    ;
-
-    my $tpl = resource('templates/COMPONENTS.md.j2').slurp;
-    Template::Jinja2.new.from-string($tpl).render(|%ctx)
-}
-
-#| Group the staged native libraries by upstream project, as
-#| C<{ project, license, files }> rows sorted by project.
+#| Everything about what this bundle redistributes, in the two files a
+#| recipient reads: C<THIRD-PARTY.md> at the bundle root and the
+#| C<LICENSES/> directory beside it.
 #|
-#| Read off the staged directory rather than written down, so the licence
-#| inventory describes what is actually in B<this> bundle rather than what
-#| was in one when somebody last edited a document. A library the table
-#| does not recognise is listed as C<(unclassified)> — visible, and
-#| therefore fixable — rather than dropped.
-method native-inventory($lib-dir --> List) {
-    return () unless $lib-dir.defined && $lib-dir.d;
+#| Every fact in them is read rather than remembered — a native pack's
+#| own licensing kit, ariza's maintained record of the vendored runtime,
+#| each installed distribution's own C<META6.json>, the app's
+#| C<ariza.toml> — which is what keeps ariza a tool that bundles
+#| anybody's application rather than a list of facts about a few.
+#|
+#| The build knows four things L<App::Ariza::Licensing> cannot work out
+#| for itself, and they are all passed in here: which runtime was
+#| staged, which SQLCipher (and which files came with it), which runner,
+#| and therefore which of the data file's conditional rows apply.
+method !licensing(
+    IO::Path :$work!, App::Ariza::Config:D :$config!, IO::Path :$app-dir!,
+    Str:D :$version!, Str:D :$platform!, :%rakudo!, :%sqlcipher!, :%runner!,
+    --> Hash
+) {
+    my @conditions;
+    @conditions.push('sqlcipher') if %sqlcipher;
+    @conditions.push('runner') if %runner;
 
-    my %by-project;
-    for $lib-dir.dir.grep({ !.d }).map(*.basename).sort -> $file {
-        next if $file.ends-with('.srchash');
-        my $hit = @NATIVE-LICENSES.first({ $file.starts-with(.key) });
-        my ($project, $license) = $hit
-            ?? $hit.value
-            !! ('(unclassified)', 'see upstream');
-        %by-project{$project} //= { files => [], license => $license };
-        %by-project{$project}<files>.push($file);
-    }
-
-    %by-project.sort(*.key).map(-> $p {
-        %(
-            project => $p.key,
-            license => $p.value<license>,
-            files   => $p.value<files>.map({ "`$_`" }).join(', '),
-        )
-    }).List
+    App::Ariza::Licensing.write(
+        :bundle-dir($work), :$config, :$app-dir,
+        :app-version($version), :app-display($config.app-display), :$platform,
+        :@conditions,
+        :placeholders(%(
+            'rakudo-version'    => ~(%rakudo<version> // ''),
+            'rakudo-tag'        => ~(%rakudo<tag> // ''),
+            'rakudo-url'        => ~(%rakudo<url> // ''),
+            'sqlcipher-version' => ~(%sqlcipher<version> // 'unknown'),
+            'sqlcipher-source'  => ~(%sqlcipher<origin> // ''),
+            'runner-tag'        => ~(%runner<tag> // ''),
+            'runner-url'        => ~(%runner<url> // ''),
+            'app-exec'          => $config.app-exec,
+            'ariza-version'     => (try { $?DISTRIBUTION.meta<version> }) // 'dev',
+        )),
+        # What the SQLCipher row turned out to cover: the library and
+        # every dependency staged beside it. Read off the staging step
+        # rather than written down, because which libraries a SQLCipher
+        # drags in is a property of the machine it came from.
+        :files(%(
+            sqlcipher => (%sqlcipher<staged> // ()).list
+                            .map(*.basename).unique.sort.List,
+        )),
+    )
 }
 
 #| Tar the workdir and write the checksum file beside it.
@@ -447,12 +406,20 @@ native binary in the bundle. The audit runs after both staging steps
 because it is a statement about the finished bundle, not about any one
 component.
 
-=item1 B<L<App::Ariza::Launcher>> writes C<< <work>/bin/<exec> >>, last,
-because it needs the target L<App::Ariza::Site> discovered and the
-library path L<App::Ariza::Native> chose.
+=item1 B<L<App::Ariza::Launcher>> writes C<< <work>/bin/<exec> >> and
+stages the compiled Windows runner, last, because it needs the target
+L<App::Ariza::Site> discovered and the library path
+L<App::Ariza::Native> chose.
 
-Then C<VERSION>, C<ariza-manifest.json> and C<LICENSES/> are written and
-the whole directory is tarred.
+=item1 B<L<App::Ariza::Licensing>> then reads the finished bundle —
+every native pack's licensing kit, every installed distribution's
+metadata — and writes C<THIRD-PARTY.md> and C<LICENSES/>. It runs
+B<before> the manifest because the manifest records its summary, and a
+summary written after the fact is one that can disagree with the
+document beside it.
+
+Then C<VERSION> and C<ariza-manifest.json> are written and the whole
+directory is tarred.
 
 =head2 The artefact
 
@@ -483,7 +450,9 @@ site/                      every Raku module, with warm bytecode
 native/                    notcurses and friends
 VERSION                    one screen: app version and component pins
 ariza-manifest.json        the machine-readable version of the same
-LICENSES/                  app + Rakudo licence text, and COMPONENTS.md
+THIRD-PARTY.md             every component, its licence and where that
+                           fact came from
+LICENSES/                  the text of every licence the above cites
 
 =end code
 
@@ -496,19 +465,20 @@ SHA-256, every Raku distribution installed with its version and author,
 and the smoke commands, so C<ariza smoke> can check an archive it knows
 nothing else about.
 
-=head2 LICENSES/
+=head2 THIRD-PARTY.md and LICENSES/
 
-A bundle redistributes other people's software, so it says so. The app's
-own C<LICENSE> and Rakudo's are copied in verbatim;
-C<LICENSES/COMPONENTS.md> is generated — the native inventory is read
-off the staged libraries rather than written by hand, because a
-hand-written one stops being true the first time the pack changes.
+A bundle redistributes other people's software, so it says so — in one
+document listing every component with its version, its licence, its
+copyright and B<where that fact came from>, and one directory holding
+the text of every licence it cites.
 
-The inventory is grouped by upstream project and includes an explicit
-note that this notcurses pack's FFmpeg is built with C<libx264> and
-C<libx265>, and is therefore a GPL build rather than the LGPL one FFmpeg
-ships by default. That has redistribution consequences, so it is stated
-where someone will see it rather than left to be discovered.
+None of it is written down in ariza. L<App::Ariza::Licensing> reads a
+native pack's own licensing kit, ariza's maintained data file for the
+vendored runtime and MoarVM's vendored C libraries, the C<license> field
+of every distribution installed into the bundle, and the app's
+C<ariza.toml>. A component it cannot attribute is a visible row and a
+warning rather than a silence, and C<licensing.strict> in the app's
+config turns that into a failed build.
 
 =head2 Declared platforms are enforced
 
@@ -530,26 +500,28 @@ is what a cross-build or an air-gapped build needs.
 
 Returns C<name>, C<dir>, C<archive>, C<checksum>, C<sha256>,
 C<compressed>, C<uncompressed>, C<manifest>, C<launchers>, C<audit>,
-C<platform> and C<version>.
+C<licensing>, C<platform> and C<version>.
 
 =head2 bundle-name(:$exec!, :$version!, :$platform! --> Str)
 
 C<< <exec>-<version>-<platform> >> — the workdir name and the archive
 stem.
 
-=head2 native-inventory(IO() $lib-dir --> List)
-
-C<{ project, license, files }> for every staged native library, grouped
-by upstream project. This is what C<LICENSES/COMPONENTS.md> is rendered
-from, and it is read off the directory rather than written down: a
-hand-maintained inventory stops being true the first time the notcurses
-pack changes.
-
 =head2 version-file(%manifest --> Str)
 
 The text of C<VERSION>, rendered from a manifest. Public because it is
 the one artefact whose exact wording a human reads in a bug report, and
 because rendering it is worth testing without building 165MB first.
+
+=head2 runner-component(%runner, IO::Path $work --> Hash)
+
+The manifest's C<components.runner> entry: the published artefact that
+was staged, the release it came from, its URL and the digest it was
+verified against. The runner is downloaded like the runtime archive is,
+so it is recorded like the runtime archive is — without this it would be
+the one binary in a bundle a reader could not trace back to something
+published, which for the file a Windows user actually runs is the worst
+place to have a gap.
 
 =head2 sqlcipher-component(%sqlcipher --> Hash)
 

@@ -1,7 +1,22 @@
 .DS_Store
 .precomp
 lib/.precomp
-*.o *.a *.so *.so.* *.dll *.dylib *.exe
+# One pattern per line: git does not split a gitignore line on spaces,
+# so the old single-line list matched a file literally called
+# `*.o *.a *.so …` and nothing else. It matters now that runner/ builds
+# C: a stray object file or a locally built launcher is exactly what
+# should not be committed.
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+
+# Out-of-source builds of runner/, however they are named.
+runner/build/
+runner/build-*/
 .DS_Store ._*
 .idea/ .vscode/
 *.swp *.swo *~

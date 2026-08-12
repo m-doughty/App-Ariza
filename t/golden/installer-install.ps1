@@ -255,6 +255,18 @@ function Ariza-LinkBin {
     Ariza-PersistPath $ArizaBinDir
 }
 
+function Ariza-HasEntryPoint {
+    param([string]$Dir)
+    # A bundle launches from bin\<exec>.exe where one was staged, and
+    # from bin\<exec>.cmd otherwise. Either is a complete install: the
+    # directory goes on PATH, and PATHEXT already prefers the executable
+    # over the batch file where both are there.
+    foreach ($leaf in @("bin\$AppExec.exe", "bin\$AppExec.cmd")) {
+        if (Test-Path -LiteralPath (Join-Path $Dir $leaf)) { return $true }
+    }
+    return $false
+}
+
 function Ariza-Prune {
     param([string]$Keep)
     # Exactly one older version is kept, so a bad release can be rolled
@@ -281,7 +293,7 @@ function Ariza-CheckExisting {
     # and it should fix it.
     $dir = Join-Path $ArizaVersions $InstalledVersion
     if (-not (Test-Path -LiteralPath $dir)) { return $false }
-    if (-not (Test-Path -LiteralPath (Join-Path $dir "bin\$AppExec.cmd"))) {
+    if (-not (Ariza-HasEntryPoint $dir)) {
         Ariza-Warn "$dir is incomplete -- installing it again"
         Remove-Item -LiteralPath $dir -Recurse -Force
         return $false
@@ -421,8 +433,8 @@ function Ariza-Main {
         # has to mean "the one I installed before this one".
         (Get-Item -LiteralPath $dest).LastWriteTime = Get-Date
 
-        if (-not (Test-Path -LiteralPath (Join-Path $dest "bin\$AppExec.cmd"))) {
-            Ariza-Err "the unpacked bundle has no bin\$AppExec.cmd -- not touching your existing install"
+        if (-not (Ariza-HasEntryPoint $dest)) {
+            Ariza-Err "the unpacked bundle has neither bin\$AppExec.exe nor bin\$AppExec.cmd -- not touching your existing install"
         }
 
         Ariza-PointCurrent $dest

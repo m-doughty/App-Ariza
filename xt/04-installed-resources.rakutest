@@ -1,0 +1,83 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+
+=begin comment
+
+This one installs ariza into a throwaway repository and asks the
+installed copy questions, which is why it lives in xt/ rather than t/:
+it needs `zef` and it writes a repository somewhere.
+
+What it is for is a bug class the unit suite structurally cannot see.
+`zef install` stages every file listed in META6 `resources` under a
+CONTENT-HASHED name, so an installed distribution's licence text is not
+`MIT.txt` but `0E9B31899D6294E87F9E5AB0D9A173C54E08D279.txt` and its data
+file is not `runtime-third-party.json` but
+`A3FCDF0A634E0AAB3C94E470AF2CA1C7793B3DA8.json`. Anything that takes
+`.basename` off a resource therefore works perfectly from a checkout —
+which is where the whole test suite runs — and produces nonsense once
+ariza is installed, which is how every user has it.
+
+App::Ariza::Licensing has two such places by nature: the pool of licence
+texts is keyed by the name a row cites, and every runtime row records the
+data file it came from. Both were wrong exactly once, and this is what
+would have caught them.
+
+    prove6 -Ilib xt/
+
+=end comment
+
+plan 4;
+
+my $zef = have-command('zef');
+unless $zef {
+    skip 'no zef on this machine to install with', 4;
+    exit 0;
+}
+
+my $root = $*TMPDIR.add("ariza-installed-{$*PID}-{(^1_000_000).pick}");
+my $repo = ensure-dir($root.add('repo'));
+LEAVE { rm-rf($root) }
+
+my $dist = $?FILE.IO.parent(2).absolute;
+my ($code, $out, $err) = try-run(
+    ['zef', 'install', $dist, "--to=inst#{$repo.absolute}", '--/test',
+     '--force-install']);
+unless $code == 0 {
+    diag(($err || $out).lines.tail(10).join("\n"));
+    flunk 'ariza installs into a throwaway repository';
+    skip 'nothing installed to interrogate', 3;
+    exit 1;
+}
+pass 'ariza installs into a throwaway repository';
+
+#| Run a snippet under the INSTALLED copy, and give back its output.
+sub installed(Str:D $program --> Str) {
+    my ($c, $o, $e) = try-run(['raku', "-Iinst#{$repo.absolute}", '-e', $program]);
+    die "ariza: the installed copy failed: {($e || $o).trim}" unless $c == 0;
+    $o.trim
+}
+
+my @texts = installed(q:to/RAKU/).lines;
+    use App::Ariza::Licensing;
+    .say for App::Ariza::Licensing.text-pool.keys.sort;
+    RAKU
+
+is @texts.grep({ !.contains('-') && !.contains('.txt') }).List, (),
+    'the installed licence texts are keyed by name, not by content hash';
+ok @texts.first('MIT.txt').defined,
+    'so a row citing LICENSES/MIT.txt finds the text it names';
+
+my $provenance = installed(q:to/RAKU/);
+    use App::Ariza::Licensing;
+    say App::Ariza::Licensing.runtime-rows(
+        :placeholders(%( 'rakudo-version' => '0', 'rakudo-tag' => '0',
+                         'rakudo-url' => 'x', 'app-exec' => 'x',
+                         'ariza-version' => '0' ))).head<provenance>;
+    RAKU
+
+is $provenance, 'ariza runtime data (runtime-third-party.json)',
+    'and a row names the data file a reader can go and look at, rather'
+  ~ ' than the digest zef staged it under';
