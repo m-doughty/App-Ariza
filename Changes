@@ -2,6 +2,50 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.3  2026-08-12T09:38:21+01:00
+    - `scaffold-ci` now gives every declared platform with a GitHub-hosted
+      runner its own clean-machine installer smoke, not just Linux:
+      `smoke-installer-macos-arm64` (the only coverage install.sh's BSD
+      branches -- `shasum -a 256`, bsdtar -- ever get), the renamed
+      `smoke-installer-linux-x86_64-glibc`, and a new
+      `smoke-installer-windows-x86_64` that downloads the published
+      windows-x86_64 bundle, runs the committed install.ps1 against it
+      with `-Url`, and launches the installed `<exec>.cmd` under a
+      from-scratch environment built with `System.Diagnostics.Process`
+      (PowerShell has no `env -i`). The macOS/Linux/Windows split lives in
+      one place, `%LANES` in App::Ariza::CI, alongside each platform's
+      build lane; a platform with a build lane but no smoke recipe yet
+      renders no smoke job and a rendered comment says so, instead of
+      silently having none.
+    - Fixed: the Linux release lane's SQLCipher build, broken by the first
+      real `release.yml` dispatch. `--enable-tempstore` is gone in 4.14 --
+      SQLCipher moved to SQLite's autosetup configure, which spells the
+      same flag `--with-tempstore` -- and 4.14 links OpenSSL 3 (its codec
+      calls `EVP_MAC_*`, absent from EL8's default OpenSSL 1.1), which EL8
+      parallel-ships under /usr/include/openssl3 and /usr/lib64/openssl3
+      rather than as the system OpenSSL. The build now installs
+      openssl3-devel, points CFLAGS/LDFLAGS at that tree, and passes
+      `--dll-basename=libsqlcipher --soname=legacy` -- autosetup otherwise
+      names the library libsqlite3, not the libsqlcipher.so.0 every
+      consumer here looks for -- plus an /etc/ld.so.conf.d entry, since
+      EL8's ldconfig does not search /usr/local/lib by default.
+      xxt/linux-selfcontain-proof.sh carried the same dead flag and an
+      OpenSSL 1.1 recipe; it now derives its source-build version from
+      resources/versions.toml's `sqlcipher` pin instead of a stale
+      hardcoded default, and shares the fixed recipe.
+    - Fixed: the Windows release lane installed ariza (and everything else
+      in the job) under `defaults: run: shell: bash`, which made zef --
+      including the one `ariza bundle` runs internally for the bundled
+      site install -- resolve `tar` off Git Bash's MSYS build. GNU tar
+      reads a leading `C:` in a path as a remote hostname, so any
+      mixed-separator temp path zef handed it aborted the extract. The
+      lane now runs under the runner's default pwsh instead (proven
+      working already by App-Moneymoor's test.yml Windows job), with the
+      bundle and smoke steps ported to PowerShell and their exit codes
+      checked explicitly against `$LASTEXITCODE`, the same pattern the
+      installer-smoke workflow already uses -- PowerShell does not fail a
+      step on a nonzero native exit code the way bash's `set -e` does.
+
 0.0.2  2026-08-12T03:02:19+01:00
     - Every Windows CI failure across the suite's first two runs on a
       real Windows machine was a genuine portability bug rather than a
