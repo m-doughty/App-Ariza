@@ -1,0 +1,943 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Native;
+use App::Ariza::Platform;
+use App::Ariza::Tools;
+use App::Ariza::Versions;
+
+plan 24;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-native-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub versions(--> App::Ariza::Versions) { App::Ariza::Versions.load }
+
+#| A file shaped enough like a shared library for staging to work on it:
+#| bytes, plus SQLCipher's own NUL-terminated version constant where the
+#| version probe will find it.
+sub fake-library(IO::Path $path, Str :$version = '4.14.0' --> IO::Path) {
+    ensure-dir($path.parent);
+    $path.spurt("fake payload\x[00]$version\x[00]trailing\x[00]");
+    $path
+}
+
+#| The same, but with an ELF magic number in front of it, so
+#| `binary-format` calls it an ELF and the Linux self-containment pass
+#| treats it as something worth walking. Nothing here parses ELF
+#| structure — `ldd` and `patchelf` are seams in every test that uses one.
+sub fake-elf(IO::Path $path, Str :$version = '4.14.0' --> IO::Path) {
+    ensure-dir($path.parent);
+    $path.spurt(buf8.new(0x7F, 0x45, 0x4C, 0x46)
+                ~ "fake payload\x[00]$version\x[00]trailing\x[00]".encode('latin-1'));
+    $path
+}
+
+#| Run a block with STDERR captured, and hand back what it said. Every
+#| advisory-pin warning goes there, and a test that lets it through is a
+#| test transcript nobody reads.
+sub notes-from(&block --> Str) {
+    my $file = $*TMPDIR.add("ariza-native-err-{$*PID}-{(^1_000_000).pick}");
+    {
+        temp $*ERR = open $file, :w;
+        LEAVE $*ERR.close;
+        block();
+    }
+    LEAVE $file.unlink;
+    $file.slurp
+}
+
+#| A `try-run` stand-in: maps a command line, joined with spaces, to the
+#| `(exitcode, stdout, stderr)` it should answer with. An unlisted
+#| command is "no such command", exactly as `try-run` reports one.
+sub fake-run(%answers) {
+    -> @cmd, |c {
+        %answers{@cmd.join(' ')} // (-1, '', "could not run '{@cmd.head}'")
+    }
+}
+
+#| A `try-run` stand-in for the Linux tools, which are asked about files
+#| in a temporary directory whose name no fixture can know in advance:
+#| `ldd`, `readelf` and `patchelf --print-rpath` answer per B<basename>,
+#| from %answers; everything else answers the way a working machine does.
+#|
+#| Every command line is appended to @calls, so a test can assert that
+#| `patchelf --set-rpath` was run on each staged file — the step whose
+#| absence is invisible until a user's machine loads the wrong OpenSSL.
+sub elf-run(%answers, :@calls, :$patchelf = True, :$readelf = True) {
+    -> @cmd, |c {
+        @calls.push(@cmd.join(' '));
+        my $base = @cmd > 1 ?? @cmd[*-1].IO.basename !! '';
+        given @cmd[0] {
+            when 'which' | 'where' {
+                my $found = do given @cmd[1] {
+                    when 'patchelf'              { $patchelf }
+                    when 'readelf' | 'eu-readelf' { $readelf }
+                    default                      { True }
+                };
+                $found ?? (0, "/usr/bin/{@cmd[1]}\n", '') !! (1, '', '')
+            }
+            when 'ldd' {
+                (0, %answers{"ldd $base"} // "\tlibc.so.6 => /lib64/libc.so.6 (0x1)\n", '')
+            }
+            when 'readelf' | 'eu-readelf' {
+                (0, %answers{"readelf $base"} // '', '')
+            }
+            when 'patchelf' {
+                @cmd[1] eq '--print-rpath'
+                    ?? (0, (%answers{"rpath $base"} // '$ORIGIN') ~ "\n", '')
+                    !! (0, '', '')
+            }
+            default { (-1, '', "could not run '{@cmd.head}'") }
+        }
+    }
+}
+
+# Real `otool -L` output, verbatim: a Homebrew libsqlcipher before ariza
+# has touched it. The first line is otool's banner; the second is the
+# library's own install name; the rest are its dependencies.
+my constant DIRTY-MACHO = q:to/OUT/;
+    /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib:
+    	/opt/homebrew/opt/sqlcipher/lib/libsqlcipher.dylib (compatibility version 9.0.0, current version 9.6.0)
+    	/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)
+    	/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
+    	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+    OUT
+
+my constant CLEAN-MACHO = q:to/OUT/;
+    libsqlcipher.0.dylib:
+    	@rpath/libsqlcipher.0.dylib (compatibility version 9.0.0, current version 9.6.0)
+    	/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)
+    	@loader_path/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
+    	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+    	/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+    OUT
+
+my constant CLEAN-ELF = q:to/OUT/;
+    Dynamic section at offset 0x1d000 contains 27 entries:
+      Tag        Type                         Name/Value
+     0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
+     0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+     0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN:$ORIGIN/../lib]
+    OUT
+
+my constant DIRTY-ELF = q:to/OUT/;
+    Dynamic section at offset 0x1d000 contains 27 entries:
+      Tag        Type                         Name/Value
+     0x0000000000000001 (NEEDED)             Shared library: [/home/build/lib/libcrypto.so.3]
+     0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+     0x000000000000000f (RPATH)              Library rpath: [/home/build/lib:$ORIGIN]
+    OUT
+
+subtest 'macho-strays reads otool output', {
+    plan 5;
+    is-deeply macho-strays(CLEAN-MACHO), (),
+        'a self-contained library has nothing to report';
+
+    my @strays = macho-strays(DIRTY-MACHO);
+    is +@strays, 2, 'the Homebrew paths are found';
+    ok @strays.first(/'openssl@3'/),
+        'including the OpenSSL that exists on the build machine and nowhere else';
+    ok @strays.first(/'libsqlcipher.dylib'/),
+        'and the absolute install name, which is copied into everything that links it';
+    nok @strays.first(/'libSystem'/),
+        'while /usr/lib is left alone — those really are on every Mac';
+};
+
+subtest 'elf-strays reads readelf output', {
+    plan 4;
+    is-deeply elf-strays(CLEAN-ELF), (),
+        'plain sonames plus $ORIGIN runpaths are exactly right';
+
+    my @strays = elf-strays(DIRTY-ELF);
+    ok @strays.first(/'/home/build/lib/libcrypto.so.3'/),
+        'a NEEDED entry with a slash is an absolute path baked into the binary';
+    ok @strays.first({ $_ eq '/home/build/lib' }),
+        'and an RPATH entry that is not $ORIGIN-relative points at the build machine';
+    nok @strays.first(/'libc.so.6'/), 'bare sonames are fine';
+};
+
+subtest 'what SQLCipher is called, per platform', {
+    plan 5;
+    is App::Ariza::Native.sqlcipher-layout('macos-arm64')<lib>,
+        'libsqlcipher.0.dylib', 'macOS opens the versioned dylib name';
+    is App::Ariza::Native.sqlcipher-layout('linux-x86_64-musl')<lib>,
+        'libsqlcipher.so.0', 'Linux the soname — musl included, since the'
+                           ~ ' library now comes off the machine itself';
+    is App::Ariza::Native.sqlcipher-layout('windows-arm64')<alias>, Str,
+        'Windows asks for exactly one name, so there is no alias to make';
+
+    is-deeply App::Ariza::Native.sqlcipher-slugs.List, known-slugs().List,
+        'every platform ariza can name is a platform it can stage SQLCipher for';
+
+    throws-like { App::Ariza::Native.sqlcipher-layout('linux-riscv64-glibc') },
+        Exception, message => /'does not know what SQLCipher is called' .* 'macos-arm64'/,
+        'and a slug it has never heard of is named, with the known set listed';
+};
+
+subtest 'where the library is staged, and why macOS differs', {
+    plan 4;
+    my $b = '/b'.IO;
+
+    # macOS: rakudo/lib is on the interpreter's own LC_RPATH, so
+    # `is native('sqlcipher')` resolves with no launcher involvement.
+    is App::Ariza::Native.sqlcipher-dir($b, :slug<macos-arm64>).absolute,
+        '/b/rakudo/lib'.IO.absolute, 'macOS stages into rakudo/lib';
+    is App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>),
+        'rakudo/lib/libsqlcipher.0.dylib', 'and records that relative path';
+
+    is App::Ariza::Native.sqlcipher-dir($b, :slug<linux-x86_64-glibc>).absolute,
+        '/b/native/sqlcipher'.IO.absolute,
+        'Linux has no implicit path, so it gets an explicit directory';
+    is App::Ariza::Native.sqlcipher-rel(:slug<windows-x86_64>),
+        'native/sqlcipher/sqlcipher.dll', 'as does Windows';
+};
+
+subtest 'the archive override beats everything, and a missing one is named', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $archive = $dir.add('libsqlcipher-linux-x86_64.tar.gz');
+    $archive.spurt('not really an archive, but it has bytes');
+
+    # Everything that could disagree, disagreeing at once: a directory
+    # named in the environment, a brew that would answer, and a host slug
+    # that is not the one being built.
+    my $keg = fake-library($dir.add('keg/lib/libsqlcipher.so.0')).parent;
+    my %got = App::Ariza::Native.sqlcipher-source(
+        :slug<linux-x86_64-glibc>, :$archive,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $keg.absolute )),
+        :run(fake-run(%())));
+
+    is %got<kind>, 'archive', 'the file the operator named is what is used';
+    is %got<path>.absolute, $archive.absolute, 'that exact file';
+    ok %got<origin>.contains('local archive: libsqlcipher-linux-x86_64.tar.gz'),
+        'and the manifest will say where it came from';
+    is %got<version>, Str,
+        'an archive says nothing about its version; the staged library will';
+
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>,
+            :archive($dir.add('absent.tar.gz')))
+    }, Exception, message => /'no SQLCipher archive at'/,
+        'and pointing --sqlcipher-archive at nothing fails rather than'
+      ~ ' quietly falling back to this machine\'s library';
+};
+
+subtest 'SQLCIPHER_LIB_DIR names a directory, and a wrong one is fatal', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = fake-library($dir.add('vendored/sqlcipher.dll'));
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<macos-arm64>,
+        :env(%( SQLCIPHER_LIB_DIR => $lib.parent.absolute )));
+
+    is %got<kind>, 'library', 'the library in it is taken directly';
+    is %got<path>.absolute, $lib.resolve.absolute,
+        'by name, per platform, resolved to the real file';
+    ok %got<origin>.contains('SQLCIPHER_LIB_DIR'),
+        'recorded as having been named by hand';
+
+    # Falling through to a different library here would stage something
+    # the operator explicitly ruled out.
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+            :host-slug<windows-x86_64>,
+            :env(%( SQLCIPHER_LIB_DIR => $dir.add('empty').absolute )))
+    }, Exception, message => /'SQLCIPHER_LIB_DIR' .* 'holds no sqlcipher.dll'/,
+        'a directory without the library is an error, not a fall-through';
+};
+
+subtest 'macOS asks Homebrew, and takes the keg\'s real file', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # A keg as Homebrew lays one out: a versioned Cellar directory, and a
+    # `.0.dylib` pointing at the real file, whose own name carries
+    # SQLite's version rather than SQLCipher's.
+    my $keg = $dir.add('Cellar/sqlcipher/4.14.0');
+    my $real = fake-library($keg.add('lib/libsqlcipher.3.51.3.dylib'));
+    my $link = $keg.add('lib/libsqlcipher.0.dylib');
+    my ($code, $, $) = try-run(['ln', '-s', $real.basename, $link.absolute]);
+    my $symlinked = $code == 0 && $link.l;
+    fake-library($link) unless $symlinked;
+
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>,
+        :host-slug<macos-arm64>, :env(%()),
+        :run(fake-run(%( 'brew --prefix sqlcipher' => (0, $keg.absolute ~ "\n", '') ))));
+
+    is %got<kind>, 'library', 'an installed keg is used in place';
+    # Branching on whether this filesystem has symlinks at all rather
+    # than skipping: on Windows there are none to chase and the library
+    # is a plain file, which is the correct answer there.
+    $symlinked
+        ?? is %got<path>.basename, $real.basename,
+             'chasing the symlink, so what is copied is bytes and not a'
+           ~ ' link into a Cellar the user does not have'
+        !! is %got<path>.basename, $link.basename,
+             'and where there are no symlinks, the file itself';
+    is %got<version>, '4.14.0',
+        'the keg directory names the version the filename does not';
+    ok %got<origin>.contains('homebrew keg'), 'and says so in the manifest';
+};
+
+subtest 'macOS with no keg fetches the bottle; with no brew it says so', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $bottle = $dir.add(
+        'abc123--sqlcipher--4.17.0.arm64_tahoe.bottle.tar.gz');
+    $bottle.spurt('a bottle, for naming purposes');
+
+    my %answers =
+        'brew --prefix sqlcipher'      => (0, $dir.add('opt/sqlcipher').absolute, ''),
+        'brew fetch --formula sqlcipher' => (0, 'Downloaded', ''),
+        'brew --cache --formula sqlcipher' => (0, $bottle.absolute, ''),
+    ;
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>,
+        :host-slug<macos-arm64>, :env(%()), :run(fake-run(%answers)));
+
+    is %got<kind>, 'archive', 'the bottle is an archive to unpack';
+    is %got<path>.absolute, $bottle.absolute, 'the one brew --cache names';
+    is %got<version>, '4.17.0',
+        'whose filename names the version brew would have installed';
+    ok %got<origin>.contains('homebrew bottle'), 'recorded as such';
+
+    # No brew at all: `brew --prefix` cannot be spawned.
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>,
+            :host-slug<macos-arm64>, :env(%()), :run(fake-run(%())))
+    }, Exception,
+        message => /'brew install sqlcipher' .* '--sqlcipher-archive'/,
+        'and with no Homebrew the death names both remedies';
+};
+
+subtest 'Linux takes what ldconfig resolves, then the standard directories', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = fake-library($dir.add('usr/lib/x86_64-linux-gnu/libsqlcipher.so.0'));
+    my $ldconfig = qq:to/OUT/;
+        \t2 libs found in cache `/etc/ld.so.cache'
+        \tlibsqlcipher.so.0 (libc6,x86-64) => {$lib.absolute}
+        \tlibc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6
+        OUT
+
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+        :host-slug<linux-x86_64-glibc>, :env(%()),
+        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))));
+    is %got<path>.absolute, $lib.resolve.absolute,
+        'the loader\'s own answer is the authority on what will be found';
+    ok %got<origin>.contains('ldconfig'), 'and is recorded as such';
+
+    # /sbin is not on every user's PATH, which is exactly when the
+    # absolute path has to be tried too.
+    my %sbin = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+        :host-slug<linux-x86_64-glibc>, :env(%()),
+        :run(fake-run(%( '/sbin/ldconfig -p' => (0, $ldconfig, '') ))));
+    is %sbin<path>.absolute, $lib.resolve.absolute,
+        'ldconfig is also tried by path';
+
+    # No ldconfig at all — a container without one, a stale cache.
+    my %probed = App::Ariza::Native.sqlcipher-source(:slug<linux-aarch64-musl>,
+        :host-slug<linux-aarch64-musl>, :env(%()), :run(fake-run(%())),
+        :search([$dir.add('nowhere').absolute, $lib.parent.absolute]));
+    is %probed<path>.absolute, $lib.resolve.absolute,
+        'and the standard library directories are probed in order after it';
+
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+            :host-slug<linux-x86_64-glibc>, :env(%()), :run(fake-run(%())),
+            :search([$dir.add('nowhere').absolute]))
+    }, Exception,
+        message => /'apt install libsqlcipher0' .* 'dnf install sqlcipher`' .* '--sqlcipher-archive'/,
+        'a machine without it is told what to install, not just refused — and'
+      ~ ' the Fedora/RHEL remedy names the real package, `sqlcipher`, not the'
+      ~ ' nonexistent `sqlcipher-libs`';
+};
+
+subtest 'a renamed EPEL soname is accepted, but the exact name always wins', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # EPEL's `sqlcipher` package: no libsqlcipher.so.0 anywhere on the
+    # machine, but a libsqlcipher-<version>.so.0 ldconfig already knows
+    # about — the exact bug this module used to fail on every RHEL-family
+    # host over.
+    my $renamed = fake-library($dir.add('usr/lib64/libsqlcipher-3.34.1.so.0'));
+    my $ldconfig = qq:to/OUT/;
+        \t1 libs found in cache `/etc/ld.so.cache'
+        \tlibsqlcipher-3.34.1.so.0 (libc6,x86-64) => {$renamed.absolute}
+        \tlibc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6
+        OUT
+
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+        :host-slug<linux-x86_64-glibc>, :env(%()),
+        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))));
+
+    is %got<kind>, 'library',
+        'the renamed soname is taken in place of the canonical one';
+    is %got<path>.absolute, $renamed.resolve.absolute,
+        'the file ldconfig actually reports';
+    ok %got<origin>.contains('staged as libsqlcipher.so.0'),
+        'the manifest says which canonical name it will be staged under —'
+      ~ ' stage-sqlcipher always copies to that name regardless of what'
+      ~ ' the source file was called';
+    ok %got<origin>.contains('found as libsqlcipher-3.34.1.so.0'),
+        'and which file on the machine it actually came from';
+
+    # The exact canonical name wins outright when it is there too, even
+    # with a newer-looking versioned file sitting right beside it.
+    my $canonical = fake-library($dir.add('usr/lib64/libsqlcipher.so.0'));
+    my $both = qq:to/OUT/;
+        \t2 libs found in cache `/etc/ld.so.cache'
+        \tlibsqlcipher.so.0 (libc6,x86-64) => {$canonical.absolute}
+        \tlibsqlcipher-9.9.9.so.0 (libc6,x86-64) => {$renamed.absolute}
+        OUT
+    my %exact = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+        :host-slug<linux-x86_64-glibc>, :env(%()),
+        :run(fake-run(%( 'ldconfig -p' => (0, $both, '') ))));
+    is %exact<path>.absolute, $canonical.resolve.absolute,
+        'the exact canonical name is preferred over any versioned one';
+    nok %exact<origin>.contains('staged as'),
+        'and nothing is said about a rename, because there was not one';
+
+    # Two versioned candidates and no canonical name at all: the newest
+    # wins, by a numeric comparison rather than a string one — a plain
+    # sort would put -3.9. ahead of -3.34.
+    my $old = fake-library($dir.add('usr/lib64b/libsqlcipher-3.9.0.so.0'));
+    my $versioned = qq:to/OUT/;
+        \tlibsqlcipher-3.9.0.so.0 (libc6,x86-64) => {$old.absolute}
+        \tlibsqlcipher-3.34.1.so.0 (libc6,x86-64) => {$renamed.absolute}
+        OUT
+    my %newest = App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+        :host-slug<linux-x86_64-glibc>, :env(%()),
+        :run(fake-run(%( 'ldconfig -p' => (0, $versioned, '') ))));
+    is %newest<path>.absolute, $renamed.resolve.absolute,
+        'and among several versioned candidates the newest wins, numerically';
+
+    # Naming is one thing; what actually lands in the bundle is another —
+    # stage-sqlcipher copies to %l<lib> regardless of what sourced it, so
+    # the EPEL file is staged under the canonical name it was found for.
+    my $bundle = ensure-dir($dir.add('bundle'));
+    App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+        :slug<linux-x86_64-glibc>, :versions(versions()),
+        :host-slug<linux-x86_64-glibc>, :host-kernel<linux>, :env(%()),
+        :run(fake-run(%( 'ldconfig -p' => (0, $ldconfig, '') ))));
+    ok $bundle.add('native/sqlcipher/libsqlcipher.so.0').f,
+        'stage-sqlcipher writes the copy under the canonical name, not the'
+      ~ ' EPEL one it was found as';
+};
+
+subtest 'Windows looks in the vcpkg tree, and names both remedies otherwise', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = fake-library($dir.add('vcpkg/installed/x64-windows/bin/sqlcipher.dll'));
+    my %got = App::Ariza::Native.sqlcipher-source(:slug<windows-x86_64>,
+        :host-slug<windows-x86_64>,
+        :env(%( VCPKG_ROOT => $dir.add('vcpkg').absolute )));
+    is %got<path>.absolute, $lib.resolve.absolute,
+        'VCPKG_ROOT/installed/<triplet>/bin';
+    ok %got<origin>.contains('vcpkg'), 'recorded as a vcpkg tree';
+
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<windows-arm64>,
+            :host-slug<windows-arm64>, :env(%()))
+    }, Exception, message => /'SQLCIPHER_LIB_DIR' .* '--sqlcipher-archive'/,
+        'and with no tree at all, both ways of supplying one are named';
+};
+
+subtest 'a system library is only offered for the machine it is on', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # A macOS keg is not a Linux library, and an x86_64 one is not an
+    # arm64 one: a cross-build that took either would produce an artefact
+    # that fails at dlopen on every machine it was named for.
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<linux-x86_64-glibc>,
+            :host-slug<macos-arm64>, :env(%()))
+    }, Exception,
+        message => /'cannot be taken from this machine' .* 'macos-arm64'/,
+        'building for another platform refuses the package-manager path';
+
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<macos-x86_64>,
+            :host-slug<macos-arm64>, :env(%()))
+    }, Exception, message => /'--sqlcipher-archive'/,
+        'naming the way to supply one instead';
+
+    # An unnameable host is not this machine either.
+    throws-like {
+        App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>,
+            :host-slug(Str), :env(%()))
+    }, Exception, message => /'cannot name'/,
+        'and a machine ariza cannot name says that, rather than guessing';
+};
+
+subtest 'the version is read out of the staged library, and the pin is advisory', {
+    plan 10;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = fake-library($dir.add('src/libsqlcipher.so.0'), :version<4.17.0>);
+    my $bundle = ensure-dir($dir.add('bundle'));
+
+    my %staged;
+    my $said = notes-from({
+        %staged = App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>,
+            :env(%( SQLCIPHER_LIB_DIR => $lib.parent.absolute )));
+    });
+
+    is %staged<version>, '4.17.0',
+        'what the library says about itself, not what the pin hoped for';
+    is %staged<pinned>, versions().sqlcipher, 'the pin travels alongside it';
+    ok $said.contains("sqlcipher 4.17.0 staged, pin says {versions().sqlcipher}"),
+        'a mismatch is announced';
+
+    ok $bundle.add('native/sqlcipher/libsqlcipher.so.0').f,
+        'and the build carries on and stages it anyway — the machine\'s'
+      ~ ' package manager decides, not versions.toml';
+    ok $bundle.add('native/sqlcipher/libsqlcipher.so').e,
+        'with the second name the loader may ask for';
+    is %staged<sha256>, sha256-file($lib),
+        'the digest is of the library as it came off the machine';
+    is %staged<rel>, 'native/sqlcipher/libsqlcipher.so.0',
+        'and the manifest gets the bundle-relative path';
+
+    # The matching case has nothing to say.
+    my $quiet = notes-from({
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('bundle2')),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>,
+            :env(%( SQLCIPHER_LIB_DIR =>
+                fake-library($dir.add('src2/libsqlcipher.so.0'),
+                    :version(versions().sqlcipher)).parent.absolute )));
+    });
+    is $quiet.trim, '', 'a library that matches the pin says nothing at all';
+
+    # A library whose bytes name no version is staged too — but nobody is
+    # left thinking ariza knows what went in.
+    my %mute;
+    my $mumbled = notes-from({
+        my $anon = $dir.add('src3/libsqlcipher.so.0');
+        ensure-dir($anon.parent);
+        $anon.spurt("no version constant here at all\x[00]");
+        %mute = App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('bundle3')),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>,
+            :env(%( SQLCIPHER_LIB_DIR => $anon.parent.absolute )));
+    });
+    is %mute<version>, Str, 'an unreadable version is not filled in from the pin';
+    ok $mumbled.contains('does not say what version it is'),
+        'and the build says so rather than shipping a number it invented';
+};
+
+subtest 'a library whose bytes do not name a version is not guessed at', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    is sqlcipher-version-of(fake-library($dir.add('one/libsqlcipher.so.0'))),
+        '4.14.0', 'one candidate is the answer';
+
+    $dir.add('two.so').spurt("payload\x[00]with no version at all\x[00]");
+    is sqlcipher-version-of($dir.add('two.so')), Str,
+        'none is "I do not know" rather than a guess';
+
+    # Two plausible versions is exactly when a guess would be wrong.
+    $dir.add('three.so').spurt("\x[00]4.14.0\x[00]padding\x[00]9.9.9\x[00]");
+    is sqlcipher-version-of($dir.add('three.so')), Str,
+        'and so is more than one';
+
+    is sqlcipher-version-of($dir.add('absent.so')), Str,
+        'a file that is not there is not an exception either — the'
+      ~ ' caller has a pin to fall back on';
+};
+
+subtest 'the audit counts, skips, and passes a clean tree', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = ensure-dir($dir.add('native/Notcurses-Native/tag/lib'));
+    $lib.add('libnotcurses.dylib').spurt('binary');
+    $lib.add('libnotcurses.dylib.srchash').spurt('deadbeef');
+
+    my %clean = App::Ariza::Native.audit(:bundle-dir($dir), :slug<macos-arm64>,
+        :inspect(-> $f {
+            $f.basename.ends-with('.dylib') ?? CLEAN-MACHO !! Str
+        }));
+    is %clean<checked>, 1, 'the Mach-O is checked';
+    is %clean<skipped>, 1, 'the text file beside it is skipped, not failed';
+    is-deeply %clean<findings>.List, (), 'and nothing is wrong with it';
+
+    is App::Ariza::Native.audit(:bundle-dir($dir.add('nothing-here')),
+        :slug<macos-arm64>, :inspect(-> $ { Str }))<checked>, 0,
+        'a bundle with no native payload audits vacuously rather than dying';
+};
+
+subtest 'the audit fails loudly, naming file and dependency', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = ensure-dir($dir.add('native/sqlcipher'));
+    $lib.add('libsqlcipher.so.0').spurt('binary');
+
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<macos-arm64>,
+            :inspect(-> $ { DIRTY-MACHO }))
+    }, Exception, message => /'load' .* 'libraries from outside it'/,
+        'a stray dependency fails the build';
+
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<macos-arm64>,
+            :inspect(-> $ { DIRTY-MACHO }))
+    }, Exception, message => /'libsqlcipher.so.0'/, 'the offending file is named';
+
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<macos-arm64>,
+            :inspect(-> $ { DIRTY-MACHO }))
+    }, Exception, message => /'openssl@3'/, 'and the offending dependency';
+
+    # The Linux and Windows verdicts, from a Mac, because the tool call
+    # is a seam and the verdict functions are pure.
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<linux-x86_64-glibc>,
+            :inspect(-> $ { DIRTY-ELF }))
+    }, Exception, message => /'/home/build/lib'/, 'the ELF verdict is reachable too';
+
+    lives-ok {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<linux-x86_64-glibc>,
+            :inspect(-> $ { CLEAN-ELF }))
+    }, 'and a clean ELF passes';
+};
+
+subtest 'the ELF skiplist keeps the loader out and OpenSSL in', {
+    plan 8;
+
+    ok elf-system-lib('libc.so.6'), 'the C library stays dynamic';
+    ok elf-system-lib('libc.musl-x86_64.so.1'),
+        'under musl\'s name for it as well';
+    ok elf-system-lib('ld-musl-aarch64.so.1'), 'as does musl\'s loader';
+    ok elf-system-lib('libstdc++.so.6'),
+        'and the compiler runtime, whose glob has a + in it';
+    ok elf-system-lib('/lib64/ld-linux-x86-64.so.2'),
+        'a path is judged by its leaf name';
+
+    # The one deliberate difference from bundle-elf.sh: SQLCipher without
+    # its own OpenSSL is SQLCipher that opens the user's database with
+    # whatever version their machine happens to have, or not at all.
+    nok elf-system-lib('libcrypto.so.3'), 'libcrypto is bundled, not borrowed';
+    nok elf-system-lib('libssl.so.3'), 'and so is libssl';
+    nok elf-system-lib('libz.so.1'), 'and anything else it drags in';
+};
+
+subtest 'ldd output is read as soname => path', {
+    plan 5;
+
+    my $out = qq:to/OUT/;
+        \tlinux-vdso.so.1 (0x00007ffd51dfe000)
+        \tlibcrypto.so.3 => /lib64/libcrypto.so.3 (0x00007f2c0a000000)
+        \tlibmissing.so.1 => not found
+        \t/lib64/ld-linux-x86-64.so.2 (0x00007f2c0b000000)
+        OUT
+
+    my @deps = ldd-deps($out);
+    is +@deps, 2, 'only the "name => path" lines carry a pair to act on';
+    is @deps[0].key, 'libcrypto.so.3', 'the soname the loader asked for';
+    is @deps[0].value, '/lib64/libcrypto.so.3',
+        'and where it found it, with the load address stripped';
+    is @deps[1].value, Str,
+        '"not found" is the undefined Str, not a path to copy';
+
+    is-deeply ldd-deps("\tstatically linked\n").List, (),
+        'a file with nothing to resolve resolves nothing';
+};
+
+subtest 'the ELF audit asks the loader too, when it is standing on one', {
+    plan 7;
+
+    my $static = q:to/OUT/.trim;
+         0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
+         0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+         0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]
+        OUT
+
+    sub report(Str $rpath, Str $ldd --> Str) {
+        ($static, ELF-RPATH-SECTION, $rpath, ELF-LDD-SECTION, $ldd).join("\n")
+    }
+
+    my $inside = "\tlibcrypto.so.3 => /b/native/sqlcipher/libcrypto.so.3 (0x1)\n"
+               ~ "\tlibc.so.6 => /lib64/libc.so.6 (0x2)";
+
+    is-deeply elf-strays(report('$ORIGIN', $inside), :inside(['/b'])).List, (),
+        'a bundled dependency beside its library, and libc from the system,'
+      ~ ' is exactly right';
+
+    # The hole this whole pass exists to close: `NEEDED libcrypto.so.3`
+    # with no slash in it is perfectly legal ELF, passes every static
+    # check, and loads the build machine's OpenSSL.
+    my @outside = elf-strays(
+        report('$ORIGIN', "\tlibcrypto.so.3 => /lib64/libcrypto.so.3 (0x1)"),
+        :inside(['/b']));
+    is-deeply @outside.List, ('libcrypto.so.3 => /lib64/libcrypto.so.3',),
+        'while the same library resolving to /lib64 is a finding, though'
+      ~ ' nothing in the file itself says so';
+
+    ok elf-strays(report('$ORIGIN', "\tlibcrypto.so.3 => not found"),
+                  :inside(['/b'])).first(/'not found'/),
+        'and a dependency the user\'s loader cannot find at all is one too';
+
+    ok elf-strays(report('/opt/build/lib', $inside), :inside(['/b']))
+        .first('/opt/build/lib'),
+        'an rpath pointing at the build machine is reported once, in the'
+      ~ ' same words the static check would have used';
+
+    ok elf-strays(report('', $inside), :inside(['/b'])).first(/'no rpath'/),
+        'and an empty one, on a file with a non-system NEEDED, means'
+      ~ ' nothing tells the loader to look beside it';
+
+    is-deeply elf-strays(
+        ($static.lines[1], ELF-RPATH-SECTION, '', ELF-LDD-SECTION, '').join("\n")
+    ).List, (),
+        'a file needing only libc is allowed to have no rpath at all —'
+      ~ ' there is nothing beside it to find';
+
+    # macOS cross-inspecting an ELF: patchelf and ldd answer for the
+    # machine they run on, so from a Mac there are no such sections.
+    is-deeply elf-strays($static).List, (),
+        'and a report with neither section is the static half, which is'
+      ~ ' all a Mac can honestly say about an ELF';
+};
+
+subtest 'formats are read from the file, not from `file`', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    is binary-format(fake-elf($dir.add('libsqlcipher.so.0'))), 'ELF',
+        'ELF by its magic number';
+    $dir.add('libfoo.dylib').spurt(buf8.new(0xCF, 0xFA, 0xED, 0xFE, 1, 2));
+    is binary-format($dir.add('libfoo.dylib')), 'Mach-O', 'Mach-O by its';
+    $dir.add('foo.dll').spurt('MZ' ~ "\0" x 8);
+    is binary-format($dir.add('foo.dll')), 'PE', 'and PE by "MZ"';
+
+    # The reason this is four bytes rather than a call to `file`:
+    # manylinux images do not ship one, and a format probe that answers
+    # "not a binary" when its helper is missing turns the audit into a
+    # loop that checks nothing and passes.
+    $dir.add('libnotcurses.so.3.srchash').spurt('deadbeef');
+    is binary-format($dir.add('libnotcurses.so.3.srchash')), Str,
+        'a sidecar beside a library is not a binary';
+    $dir.add('tiny').spurt('ab');
+    is binary-format($dir.add('tiny')), Str, 'nor is a file too short to say';
+    is binary-format($dir.add('absent')), Str, 'nor is one that is not there';
+};
+
+subtest 'Linux staging copies its dependencies in and points at them', {
+    plan 10;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # A machine's libraries: the distro libsqlcipher, the OpenSSL it
+    # names, and the zlib OpenSSL names in turn.
+    my $sys = $dir.add('usr/lib64');
+    my $src = fake-elf($sys.add('libsqlcipher.so.0'), :version(versions().sqlcipher));
+    fake-elf($sys.add('libcrypto.so.3'));
+    fake-elf($sys.add('libz.so.1'));
+
+    my %ldd =
+        "ldd libsqlcipher.so.0" =>
+            "\tlibcrypto.so.3 => {$sys.add('libcrypto.so.3').absolute} (0x1)\n"
+          ~ "\tlibc.so.6 => /lib64/libc.so.6 (0x2)\n",
+        "ldd libcrypto.so.3" =>
+            "\tlibz.so.1 => {$sys.add('libz.so.1').absolute} (0x3)\n"
+          ~ "\tlibpthread.so.0 => /lib64/libpthread.so.0 (0x4)\n",
+    ;
+
+    my @calls;
+    my $bundle = ensure-dir($dir.add('bundle'));
+    my %staged;
+    my $said = notes-from({
+        %staged = App::Ariza::Native.stage-sqlcipher(:bundle-dir($bundle),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>, :host-kernel<linux>,
+            :env(%( SQLCIPHER_LIB_DIR => $sys.absolute )),
+            :run(elf-run(%ldd, :@calls)));
+    });
+
+    my $dest = $bundle.add('native/sqlcipher');
+    ok $dest.add('libcrypto.so.3').f,
+        'the OpenSSL the library names is copied in beside it — a bare'
+      ~ ' NEEDED would have resolved from the user\'s machine';
+    ok $dest.add('libz.so.1').f,
+        'and the walk recurses, so its own dependencies come too';
+    nok $dest.add('libc.so.6').e, 'while libc stays dynamic';
+    nok $dest.add('libpthread.so.0').e, 'as does the rest of the skiplist';
+
+    my @rpath = @calls.grep(*.starts-with('patchelf --set-rpath $ORIGIN'));
+    is +@rpath, 3,
+        'every staged ELF is told to look beside itself — the library and'
+      ~ ' both copies';
+    ok @rpath.first(*.ends-with($dest.add('libz.so.1').absolute)),
+        'including the one that arrived through the recursion';
+
+    is-deeply %staged<staged>.map(*.basename).sort.List,
+        <libcrypto.so.3 libsqlcipher.so.0 libz.so.1>,
+        'and the manifest hears about all three';
+    is %staged<version>, versions().sqlcipher,
+        'patching does not disturb the version constant in the bytes';
+    is $said.trim, '', 'a clean run of the pass says nothing';
+
+    # `ldd` is the loader: if it cannot find something, no amount of
+    # copying will, and shipping the bundle anyway is the bug.
+    throws-like {
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('bundle2')),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>, :host-kernel<linux>,
+            :env(%( SQLCIPHER_LIB_DIR => $sys.absolute )),
+            :run(elf-run(%( "ldd libsqlcipher.so.0" =>
+                "\tlibcrypto.so.3 => not found\n" ))));
+    }, Exception, message => /'needs libcrypto.so.3' .* 'cannot find'/,
+        'a dependency the loader cannot resolve fails the build, naming it';
+};
+
+subtest 'the Linux pass refuses to pretend, off Linux and without patchelf', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $sys = $dir.add('usr/lib64');
+    fake-elf($sys.add('libsqlcipher.so.0'));
+
+    # A Mac has none of the Linux libraries to resolve against, and
+    # neither ldd nor patchelf to ask. Silence here would produce exactly
+    # the bundle this pass exists to prevent.
+    my @calls;
+    my $said = notes-from({
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('cross')),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>, :host-kernel<darwin>,
+            :env(%( SQLCIPHER_LIB_DIR => $sys.absolute )),
+            :run(elf-run(%(), :@calls)));
+    });
+    ok $said.contains('staged on a darwin host'),
+        'staging an ELF anywhere else says so, loudly';
+    ok $said.contains('--sqlcipher-archive'),
+        'and names the way to do it properly';
+    is +@calls, 0, 'and asks that machine no questions it cannot answer';
+    ok $dir.add('cross/native/sqlcipher/libsqlcipher.so.0').f,
+        'the library is still staged — the warning is not a refusal';
+
+    throws-like {
+        App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('nopatchelf')),
+            :slug<linux-x86_64-glibc>, :versions(versions()),
+            :host-slug<linux-x86_64-glibc>, :host-kernel<linux>,
+            :env(%( SQLCIPHER_LIB_DIR => $sys.absolute )),
+            :run(elf-run(%(), :patchelf(False))));
+    }, Exception, message => /'needs patchelf' .* 'apk add patchelf'/,
+        'and a Linux machine without patchelf is told what to install,'
+      ~ ' before the build gets far enough to ship something broken';
+
+    # The fake libraries every other test in this file stages are text
+    # files. There is nothing in one to walk, and the audit skips it for
+    # the same reason, so the pass must not go looking for tools.
+    my @quiet;
+    App::Ariza::Native.stage-sqlcipher(:bundle-dir($dir.add('plain')),
+        :slug<linux-x86_64-glibc>, :versions(versions()),
+        :host-slug<linux-x86_64-glibc>, :host-kernel<linux>,
+        :env(%( SQLCIPHER_LIB_DIR =>
+            fake-library($dir.add('plain-src/libsqlcipher.so.0'),
+                :version(versions().sqlcipher)).parent.absolute )),
+        :run(elf-run(%(), :calls(@quiet), :patchelf(False))));
+    is +@quiet, 0, 'a staged file that is not an ELF has no dependencies to walk';
+};
+
+subtest 'the Linux audit, on Linux, asks patchelf and a clean-env ldd', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $dest = ensure-dir($dir.add('native/sqlcipher'));
+    fake-elf($dest.add('libsqlcipher.so.0'));
+    fake-elf($dest.add('libcrypto.so.3'));
+    $dest.add('libsqlcipher.so.0.srchash').spurt('deadbeef');
+
+    my $needed = " 0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]\n"
+               ~ " 0x000000000000001d (RUNPATH)            Library runpath: [\$ORIGIN]";
+    my %answers =
+        "readelf libsqlcipher.so.0" => $needed,
+        "readelf libcrypto.so.3"    => '',
+        "ldd libsqlcipher.so.0"     =>
+            "\tlibcrypto.so.3 => {$dest.add('libcrypto.so.3').absolute} (0x1)\n"
+          ~ "\tlibc.so.6 => /lib64/libc.so.6 (0x2)\n",
+    ;
+
+    my @calls;
+    my %ok = App::Ariza::Native.audit(:bundle-dir($dir), :slug<linux-x86_64-glibc>,
+        :host-kernel<linux>, :run(elf-run(%answers, :@calls)));
+    is %ok<checked>, 2, 'both ELFs are checked';
+    is %ok<skipped>, 1, 'and the sidecar beside them is skipped';
+    ok @calls.first(*.starts-with('patchelf --print-rpath')),
+        'the rpath is read back from the file, not assumed';
+    ok @calls.first(*.starts-with('ldd ')),
+        'and the loader is asked where each dependency actually lands';
+
+    # The same tree, with the OpenSSL resolving off the machine: nothing
+    # in the file changed, and this is the only check that can tell.
+    %answers{"ldd libsqlcipher.so.0"} =
+        "\tlibcrypto.so.3 => /lib64/libcrypto.so.3 (0x1)\n";
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<linux-x86_64-glibc>,
+            :host-kernel<linux>, :run(elf-run(%answers)))
+    }, Exception, message => /'libcrypto.so.3 => /lib64/libcrypto.so.3'/,
+        'a dependency resolving outside the bundle fails the audit, with'
+      ~ ' the path it resolved to';
+
+    # From a Mac the same tree is inspectable but not runnable, so the
+    # audit does the static half and does not invent the rest.
+    my @mac;
+    lives-ok {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<linux-x86_64-glibc>,
+            :host-kernel<darwin>, :run(elf-run(%answers, :calls(@mac))))
+    }, 'and cross-inspecting from a Mac runs neither tool';
+};
+
+subtest 'the Windows audit is a presence check, and says so', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $sql = ensure-dir($dir.add('native/sqlcipher'));
+    $sql.add('sqlcipher.dll').spurt('MZ...');
+    $sql.add('notes.txt').spurt('not a dll');
+
+    my %r = App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>);
+    is %r<checked>, 1, 'only the DLL is checked';
+    is %r<skipped>, 1, 'the text file is skipped';
+
+    # There is no rpath in a PE to inspect, so the only thing a PE audit
+    # can catch is a payload that is not really there.
+    $sql.add('sqlcipher.dll').spurt('');
+    throws-like {
+        App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)
+    }, Exception, message => /'empty file'/, 'an empty DLL is a finding';
+};

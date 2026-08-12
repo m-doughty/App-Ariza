@@ -1,0 +1,363 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Config;
+use App::Ariza::Installer;
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+
+plan 9;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-installer-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| A config from TOML text, written and read back the way a real one is.
+sub config(Str $toml --> App::Ariza::Config) {
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    $dir.add('ariza.toml').spurt($toml);
+    App::Ariza::Config.load($dir);
+}
+
+# The same values App-Moneymoor's manifest carries, as a fixture rather
+# than by reading that repository: the golden files are a statement about
+# ariza's templates, and they should fail when a template changes, not
+# when a sibling app's platform list does.
+my constant MONEYMOOR = q:to/TOML/;
+[app]
+name = "App::Moneymoor"
+exec = "moneymoor"
+display = "Moneymoor"
+
+[bundle]
+platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
+native = ["notcurses", "sqlcipher"]
+
+[installer]
+repo = "m-doughty/App-Moneymoor"
+TOML
+
+my $CFG = config(MONEYMOOR);
+my %CTX = App::Ariza::Installer.context(:config($CFG));
+
+sub render(Str $template --> Str) {
+    App::Ariza::Installer.render(:$template, |%CTX)
+}
+
+my $SH   = render('install-posix.sh.j2');
+my $UNSH = render('uninstall-posix.sh.j2');
+my $PS1  = render('install-windows.ps1.j2');
+
+sub golden-path(Str $name --> IO::Path) {
+    checkout-root().add('t/golden').add("installer-$name")
+}
+
+subtest 'an app gets the installers its platforms justify', {
+    plan 7;
+
+    is App::Ariza::Installer.scripts-for($CFG).map(*.<output>).List,
+        ('install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1'),
+        'an app on all three platform families gets all four scripts';
+
+    is App::Ariza::Installer.family-of('macos-arm64'), 'posix',
+        'macOS and Linux share one installer -- the only difference left is';
+    is App::Ariza::Installer.family-of('linux-x86_64-musl'), 'posix',
+        'which asset to download, and that is a uname call away at run time';
+    is App::Ariza::Installer.family-of('windows-x86_64'), 'windows',
+        'Windows does not';
+
+    # A script whose only possible answer is "there is no bundle for your
+    # machine" is worse than no script at all.
+    my $win-only = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["windows-x86_64"]
+    [installer]
+    repo = "o/n"
+    TOML
+    is App::Ariza::Installer.scripts-for($win-only).map(*.<output>).List,
+        ('install.ps1', 'uninstall.ps1'),
+        'a Windows-only app ships no install.sh';
+
+    my $posix-only = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64", "macos-x86_64"]
+    [installer]
+    repo = "o/n"
+    TOML
+    is App::Ariza::Installer.scripts-for($posix-only).map(*.<output>).List,
+        ('install.sh', 'uninstall.sh'), 'and a POSIX-only app no install.ps1';
+
+    is App::Ariza::Installer.env-url($CFG), 'MONEYMOOR_BUNDLE_URL',
+        'the source override is named after the executable';
+};
+
+subtest 'the context carries the app, not the machine that rendered it', {
+    plan 6;
+
+    is %CTX<repo>, 'm-doughty/App-Moneymoor', 'the repository releases come from';
+    is %CTX<raw_base>, 'https://raw.githubusercontent.com/m-doughty/App-Moneymoor/main',
+        'and where the one-liner reads the scripts from';
+    is %CTX<slugs>, 'macos-arm64 linux-x86_64-glibc',
+        'POSIX slugs are a shell word list';
+    is %CTX<slugs_ps>, "'windows-x86_64'",
+        'and Windows ones a PowerShell array literal, since PowerShell has no word splitting';
+    is %CTX<env_url_expr>, '"${MONEYMOOR_BUNDLE_URL:-}"',
+        'the override is a whole expansion: the shell cannot expand a variable another names';
+
+    # An installer is downloaded onto someone else's machine, so nothing
+    # from this one may survive into it.
+    my @all = $SH, $UNSH, $PS1, render('uninstall-windows.ps1.j2');
+    nok @all.first(*.contains($*HOME.absolute)),
+        'and no path from the machine that rendered it appears anywhere';
+};
+
+subtest 'the rendered installers match their golden files', {
+    plan 5;
+
+    # Set ARIZA_REGENERATE_GOLDEN=1 to rewrite these after an intentional
+    # template change; read the diff before you commit it.
+    my $regenerate = ?%*ENV<ARIZA_REGENERATE_GOLDEN>;
+
+    for App::Ariza::Installer.scripts-for($CFG) -> %s {
+        my $text = render(%s<template>);
+        my $golden = golden-path(%s<output>);
+        ensure-dir($golden.parent);
+        $golden.spurt($text) if $regenerate || !$golden.f;
+
+        # Read as bytes: IO::Handle normalises CRLF to LF in text mode, so
+        # a text slurp would silently agree with an LF-only PowerShell
+        # script -- the one thing the golden file is there to catch.
+        is $text, $golden.slurp(:bin).decode('utf8'),
+            "{%s<output>} renders byte-for-byte as committed";
+    }
+
+    ok golden-path('install.ps1').f,
+       'and the Windows pair is committed even though nothing here runs it';
+};
+
+subtest 'the POSIX installer is safe to pipe into a shell', {
+    plan 8;
+
+    ok $SH.starts-with("#!/bin/sh\n"), 'it is a POSIX shell script';
+    ok $SH.contains("\nset -eu\n"),
+        'an unset variable or a failed command stops it, rather than continuing blind';
+
+    # A script read from a pipe is executed as it arrives, so a single
+    # call at the very end is what makes a truncated download harmless
+    # instead of half-run.
+    is $SH.lines.grep(*.trim).tail, 'main "$@"',
+        'everything is a definition until one call on the last line';
+    is +$SH.comb(/ ^^ 'main "$@"' /), 1, 'and there is exactly one of them';
+
+    # When the script arrives *on* stdin there is nothing left to read
+    # from, so an installer that prompts is an installer that hangs.
+    my @code = $SH.lines.grep({ !.trim.starts-with('#') });
+    nok @code.first(/ << 'read' \s+ [ '-r' | '-p' ] /),
+        'nothing reads from stdin -- there is no stdin to read';
+
+    # readlink -f is a GNU extension, absent on macOS before Monterey and
+    # on the BSDs. (Checked against code, not comments.)
+    nok @code.first(/'readlink -f'/), 'no readlink -f';
+
+    ok $SH.contains('--insecure-no-verify'), 'the one escape hatch is spelled out';
+    ok $SH.contains('curl -fsSL'), 'and the usage shows the one-liner it is meant for';
+};
+
+#| Every line on which one of C<@vars> is expanded outside any quotes.
+#|
+#| Adjacency to a C<"> is not enough to decide this — C<"$a/$b"> has one
+#| of each — so the line is walked with the shell's own quoting rules.
+#| Comment lines are skipped (an apostrophe in prose is not a quote) and
+#| so are here-document bodies, where an expansion is not word-split and
+#| needs no quotes.
+sub unquoted-expansions(Str $text, @vars --> List) {
+    my @hits;
+    my $heredoc = Str;
+    for $text.lines -> $line {
+        with $heredoc {
+            $heredoc = Str if $line.trim eq $heredoc;
+            next;
+        }
+        if $line ~~ / '<<' '-'? \s* (\w+) \s* $ / {
+            $heredoc = ~$0;
+            next;
+        }
+        next if $line.trim.starts-with('#') || !$line.trim;
+        # `case $x in` splits nothing, so its subject needs no quotes.
+        next if $line ~~ / ^ \s* 'case' \s+ \S+ \s+ 'in' \s* $ /;
+
+        my ($single, $double) = False, False;
+        my @stack;
+        my @c = $line.comb;
+        loop (my $i = 0; $i < @c; $i++) {
+            my $ch = @c[$i];
+
+            # Quoting starts afresh inside a command substitution, so
+            # `"$(basename "$x")"` is three quoted regions, not two.
+            if $ch eq '$' && ($i + 1 < @c) && @c[$i + 1] eq '(' && !$single {
+                # An Array, not a parenthesised list: `push` takes its
+                # arguments as a list, so `push(($a, $b))` pushes two
+                # elements and `pop` gives half a state back.
+                @stack.push([$single, $double]);
+                ($single, $double) = False, False;
+                $i++;
+                next;
+            }
+            if $ch eq ')' && @stack && !$single && !$double {
+                ($single, $double) = @stack.pop.list;
+                next;
+            }
+            if $ch eq q{'} && !$double { $single = !$single; next }
+            if $ch eq '"' && !$single  { $double = !$double; next }
+            next unless $ch eq '$' && !$single && !$double;
+
+            # An explicit parameter, not `$_`: `~~` rebinds the topic to
+            # its left operand while matching, so a `$_` inside the
+            # regex would be the haystack and every line would "match".
+            my $rest = $line.substr($i + 1);
+            @hits.push($line.trim) if @vars.first(-> $v { $rest ~~ / ^ $v >> / });
+        }
+    }
+    @hits.List
+}
+
+subtest 'every path expansion is quoted', {
+    plan 2;
+
+    # A quoting slip here is an installer that works until someone's home
+    # directory has a space in it -- which on macOS is one "Corporate
+    # Laptop" away.
+    my constant VARS =
+        'ARIZA_ROOT', 'ARIZA_VERSIONS', 'ARIZA_VERSION', 'ARIZA_BIN_DIR',
+        'ARIZA_TMP', 'ARIZA_STAGING', 'HOME', '_dest', '_top', '_archive',
+        '_rc', '_bin', '_dir', '_link';
+
+    for ($SH, 'install.sh'), ($UNSH, 'uninstall.sh') -> ($text, $name) {
+        is-deeply unquoted-expansions($text, VARS.List), (),
+            "$name: every expansion of every path variable is double-quoted";
+    }
+};
+
+subtest 'what the installer promises about the machine it lands on', {
+    plan 10;
+
+    ok $SH.contains('ARIZA_SLUGS=\'macos-arm64 linux-x86_64-glibc\''),
+        'it looks for exactly the platforms the app declares';
+    ok $SH.contains('ld-musl-'),
+        'and settles glibc vs musl on the loader, which is conclusive';
+    ok $SH.contains('no prebuilt $APP_DISPLAY bundle for $(uname -s) $(uname -m) yet'),
+        'an unknown platform names the machine rather than guessing at a bundle';
+
+    ok $SH.contains('releases/latest'),
+        'the default version is the latest release';
+    ok $SH.contains("tolower(\$1) == \"location:\""),
+        'read from the redirect header, so no JSON parser is needed';
+
+    ok $SH.contains('refusing to install a bundle that cannot be verified'),
+        'a missing checksum is fatal';
+    ok $SH.contains('checksum mismatch'), 'and so is a wrong one';
+
+    ok $SH.contains('ln -sfn "versions/$1"'),
+        'current points at a relative target, so the data directory can be moved';
+    ok $SH.contains('mv "$_top" "$_dest"'),
+        'the new version is renamed into place complete, never assembled in place';
+    ok $SH.contains('ARIZA_STAGING="$ARIZA_ROOT/.staging.$$"'),
+        'from a staging directory on the same filesystem, which is what makes that a rename';
+};
+
+subtest 'the uninstaller removes what it made and nothing else', {
+    plan 5;
+
+    ok $UNSH.contains('rm -rf "$ARIZA_ROOT"'), 'the versions directory goes';
+    ok $UNSH.contains('"$ARIZA_ROOT"/*)'),
+        'the bin link goes only when it points into that directory';
+    ok $UNSH.contains('ariza_unpersist_path'), 'and the PATH block goes';
+
+    ok $UNSH.contains('XDG_STATE_HOME'),
+        'while the state directory it never created is named, not deleted';
+
+    # Both scripts have to agree about the marker or the block outlives
+    # the app; they are built from the executable name in both.
+    is $SH.comb(/ '# >>> $APP_EXEC PATH >>>' /).elems,
+       $UNSH.comb(/ '# >>> $APP_EXEC PATH >>>' /).elems,
+       'installer and uninstaller name the same marker block';
+};
+
+subtest 'sh -n accepts them, and write puts them where they belong', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my @written = App::Ariza::Installer.write(:out-dir($dir), :config($CFG));
+    is @written.map(*.basename).List,
+        ('install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1'),
+        'all four land in the output directory';
+
+    # A downloaded installer that is not executable is a support ticket.
+    # Windows has no such bit to set.
+    if $*DISTRO.is-win {
+        ok @written[0].f, 'install.sh is written (Windows has no executable bit)';
+    }
+    else {
+        ok @written[0].x, 'install.sh is executable';
+    }
+
+    if have-command('sh') {
+        for @written.grep(*.basename.ends-with('.sh')) -> $script {
+            my ($code, $, $err) = try-run(['sh', '-n', $script.absolute]);
+            is $code, 0, "sh -n accepts {$script.basename}" or diag $err;
+        }
+    }
+    else {
+        skip 'no sh on this machine to syntax-check with', 2;
+    }
+
+    throws-like {
+        App::Ariza::Installer.write(:out-dir($dir.add('nope')), :config($CFG))
+    }, Exception, message => /'output directory does not exist'/,
+        'and a missing output directory is named, never created';
+
+    throws-like {
+        App::Ariza::Installer.write(:out-dir($dir), :config(config(q:to/TOML/)))
+        [app]
+        name = "A"
+        exec = "a"
+        display = "A"
+        [bundle]
+        platforms = ["macos-arm64"]
+        TOML
+    }, Exception, message => /'installer.repo'/,
+        'an app with nowhere to download from is told so, not given a 404 generator';
+};
+
+subtest 'the Windows pair mirrors it, in PowerShell', {
+    plan 8;
+
+    # PowerShell reads a .ps1 fine either way, but every other file in a
+    # Windows repository is CRLF and a here-string is not forgiving.
+    ok $PS1.contains("\r\n"), 'the PowerShell installer has CRLF line endings';
+    nok $PS1.subst("\r\n", '', :g).contains("\n"), 'and no bare LF anywhere';
+    nok $SH.contains("\r"), 'while the POSIX script has none';
+
+    ok $PS1.contains('Join-Path $env:LOCALAPPDATA $AppDisplay'),
+        'it installs under %LOCALAPPDATA%';
+    ok $PS1.contains("New-Item -ItemType Junction"),
+        'and links current with a junction -- a symlink would need administrator rights';
+    ok $PS1.contains("[Environment]::SetEnvironmentVariable('PATH'"),
+        'PATH is the user one in the registry, so nothing needs elevation';
+    ok $PS1.contains('$ArizaSlugs = @(\'windows-x86_64\')'),
+        'it looks for exactly the Windows platforms the app declares';
+    ok $PS1.contains('tar.exe'),
+        'and unpacks the .tar.gz ariza actually publishes, not a hypothetical .zip';
+};

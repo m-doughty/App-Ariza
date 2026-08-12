@@ -1,0 +1,340 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Config;
+use App::Ariza::Resources;
+
+plan 11;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub rm-rf(IO::Path $d) {
+    return unless $d.d;
+    .&rm-rf for $d.dir.grep(*.d);
+    .unlink for $d.dir.grep(*.f);
+    $d.rmdir;
+}
+
+sub write-config(IO::Path $dir, Str $content --> IO::Path) {
+    my $path = $dir.add('ariza.toml');
+    $path.spurt($content);
+    $path;
+}
+
+my constant FULL = q:to/TOML/;
+[app]
+name = "App::Moneymoor"
+exec = "moneymoor"
+display = "Moneymoor"
+
+[bundle]
+platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
+native = ["notcurses", "sqlcipher"]
+smoke = "{exec} --version"
+
+[installer]
+repo = "m-doughty/App-Moneymoor"
+TOML
+
+my constant MINIMAL = q:to/TOML/;
+[app]
+name = "App::Kelpie"
+exec = "kelpie"
+display = "Kelpie"
+TOML
+
+subtest 'the v1 schema, in full', {
+    plan 9;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    write-config($dir, FULL);
+
+    my $cfg = App::Ariza::Config.load($dir);
+    is $cfg.app-name, 'App::Moneymoor', 'app.name is the dist name';
+    is $cfg.app-exec, 'moneymoor', 'app.exec is the launcher name';
+    is $cfg.app-display, 'Moneymoor', 'app.display is the human name';
+    is-deeply $cfg.bundle-platforms.List,
+        ('macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64'),
+        'bundle.platforms keeps its order';
+    is-deeply $cfg.bundle-native.List, ('notcurses', 'sqlcipher'),
+        'bundle.native';
+    is $cfg.bundle-smoke, '{exec} --version', 'bundle.smoke is stored raw';
+    is $cfg.smoke-command, 'moneymoor --version', '{exec} expands to app.exec';
+    is $cfg.installer-repo, 'm-doughty/App-Moneymoor',
+        'installer.repo is where the generated installers download from';
+    is-deeply $cfg.warnings.List, (), 'a clean manifest warns about nothing';
+};
+
+subtest 'App-Moneymoor ships the first real manifest', {
+    plan 6;
+
+    # App-Moneymoor is checked out beside App-Ariza on a development box;
+    # skip rather than fail if this checkout is somewhere else entirely.
+    my $repo = checkout-root().parent.add('App-Moneymoor');
+    if $repo.add('ariza.toml').f {
+        my $cfg = App::Ariza::Config.load($repo);
+        is $cfg.app-name, 'App::Moneymoor', 'names the distribution';
+        is $cfg.app-exec, 'moneymoor', 'names the launcher';
+        is $cfg.app-display, 'Moneymoor', 'names the product';
+        is $cfg.smoke-command, 'moneymoor --version', 'has a usable smoke command';
+        like $cfg.installer-repo, / ^ <-[/]>+ '/' <-[/]>+ $ /,
+            'and names the repository its installers download from';
+        is-deeply $cfg.warnings.List, (), 'and parses without warnings';
+    } else {
+        skip 'App-Moneymoor is not a sibling of this checkout', 6;
+    }
+};
+
+subtest 'bundle.smoke: a string, a list, or argv arrays', {
+    plan 7;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $one = App::Ariza::Config.load-file(write-config($dir, FULL));
+    is-deeply $one.smoke-argvs, (('{exec}', '--version'),),
+        'a string command is split on whitespace';
+
+    my $many = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
+    [app]
+    name = "A"
+    exec = "k"
+    display = "K"
+    [bundle]
+    smoke = ["{exec} --version", "{exec} --help"]
+    TOML
+    is +$many.smoke-argvs, 2, 'a list of strings is several commands';
+    is $many.smoke-command, 'k --version',
+        'and smoke-command shows the first one, for a human';
+
+    # The shape that exists so a command can carry a whole program
+    # without a shell-quoting layer to get wrong.
+    my $argv = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
+    [app]
+    name = "A"
+    exec = "k"
+    display = "K"
+    [bundle]
+    smoke = [
+        ["{exec}", "--version"],
+        ["{raku}", "-e", "say 'a b  c'", "{tmp}"],
+    ]
+    TOML
+    is-deeply $argv.smoke-argvs[1],
+        ('{raku}', '-e', "say 'a b  c'", '{tmp}'),
+        'an argv array keeps spaces and quotes exactly as written';
+
+    my @expanded = $argv.smoke-commands(:raku</b/raku>, :tmp("/a dir/tmp"));
+    is-deeply @expanded[0], ('k', '--version'), '{exec} defaults to app.exec';
+    is-deeply @expanded[1], ('/b/raku', '-e', "say 'a b  c'", '/a dir/tmp'),
+        'and every other placeholder comes from the caller';
+
+    # A hole in a smoke command does not fail — it runs something else.
+    throws-like { $argv.smoke-commands(:raku</b/raku>) }, Exception,
+        message => /'unknown placeholder'/,
+        'an unsupplied placeholder is an error, not an empty string';
+};
+
+subtest 'bundle.smoke rejects shapes it cannot run', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[bundle]\n";
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = 1\n"))
+    }, Exception, message => /'bundle.smoke must be'/, 'a number';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[1, 2]]\n"))
+    }, Exception, message => /'bundle.smoke must be'/, 'an argv of non-strings';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[]]\n"))
+    }, Exception, message => /'empty command'/,
+        'and an empty command, which would silently pass by doing nothing';
+};
+
+subtest '[bundle] is optional', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    write-config($dir, MINIMAL);
+
+    my $cfg = App::Ariza::Config.load($dir);
+    is $cfg.app-name, 'App::Kelpie', 'the app section still loads';
+    is-deeply $cfg.bundle-platforms.List, (), 'platforms defaults to empty';
+    is-deeply $cfg.bundle-native.List, (), 'native defaults to empty';
+    is $cfg.smoke-command, Str, 'no smoke command is undefined, not empty';
+};
+
+subtest 'unknown keys warn, they never die', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $path = write-config($dir, q:to/TOML/);
+    [app]
+    name = "App::Kelpie"
+    exec = "kelpie"
+    display = "Kelpie"
+    icon = "kelpie.png"
+
+    [bundle]
+    signing = "developer-id"
+
+    [notarize]
+    team = "ABCD1234"
+    TOML
+
+    my $cfg = App::Ariza::Config.load-file($path);
+    is $cfg.app-name, 'App::Kelpie', 'the recognised keys still load';
+    is +$cfg.warnings, 3, 'each unknown key warned once';
+    ok $cfg.warnings.first(/"'app.icon'"/), 'a nested unknown key is dotted';
+    ok $cfg.warnings.first(/"'notarize'"/), 'an unknown top-level table is named';
+};
+
+subtest '//-prefixed keys are ignored silently', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $path = write-config($dir, q:to/TOML/);
+    "// note" = "manifest for the nightly channel"
+
+    [app]
+    "// why" = "the launcher is not named after the dist"
+    name = "App::Kelpie"
+    exec = "kelpie"
+    display = "Kelpie"
+    TOML
+
+    my $cfg = App::Ariza::Config.load-file($path);
+    is-deeply $cfg.warnings.List, (), 'no warnings for comment keys';
+    is $cfg.app-exec, 'kelpie', 'and the real keys are unaffected';
+};
+
+subtest 'wrong types die naming the key', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = 42\nexec = \"k\"\ndisplay = \"K\"\n"))
+    }, Exception, message => /'app.name must be a string'/, 'app.name';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+            ~ "[bundle]\nplatforms = \"macos-arm64\"\n"))
+    }, Exception, message => /'bundle.platforms must be an array of strings'/,
+        'a bare string where a list belongs';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+            ~ "[bundle]\nnative = [1, 2]\n"))
+    }, Exception, message => /'bundle.native must be an array of strings'/,
+        'a list of the wrong element type';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+            ~ "[bundle]\nsmoke = 1\n"))
+    }, Exception, message => /'bundle.smoke must be a string'/, 'bundle.smoke';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, "app = \"App::Kelpie\"\n"))
+    }, Exception, message => /'app must be a table'/, 'a scalar where a table belongs';
+};
+
+subtest 'an unknown platform slug is a hard error', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $typo = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+             ~ "[bundle]\nplatforms = [\"macos-arm64\", \"macos-aarch64\"]\n";
+
+    throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
+        Exception, message => /'unknown platform' .* 'macos-aarch64'/,
+        'the offending slug is named';
+    throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
+        Exception, message => /'macos-arm64'/,
+        'and the supported set is listed, so the fix is obvious';
+
+    # Contrast: an unknown *key* is forward-compatible and only warns.
+    my $future = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+               ~ "[bundle]\nchannels = [\"nightly\"]\n";
+    lives-ok { App::Ariza::Config.load-file(write-config($dir, $future)) },
+        'while an unknown key in the same table only warns';
+};
+
+subtest 'the [installer] table', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
+
+    is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).installer-repo,
+        Str, 'an app that publishes nowhere has no repo, not an empty string';
+
+    # The value is interpolated straight into three release URLs, so its
+    # shape is closed for the same reason a platform slug's is: a typo
+    # cannot be a future feature, and the 404 lands on a stranger.
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            $head ~ "repo = \"https://github.com/o/n\"\n"))
+    }, Exception, message => /"must look like 'owner/name'"/,
+        'a full URL is rejected';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = \"justaname\"\n"))
+    }, Exception, message => /"must look like 'owner/name'"/,
+        'and so is a bare name';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = 42\n"))
+    }, Exception, message => /'installer.repo must be a string'/,
+        'a wrong type dies naming the dotted path, as everywhere else';
+
+    my $future = App::Ariza::Config.load-file(write-config($dir,
+        $head ~ "repo = \"o/n\"\nchannel = \"nightly\"\n"));
+    ok $future.warnings.first(/"'installer.channel'"/),
+        'while an unknown key in the table only warns';
+};
+
+subtest 'missing files and missing required keys', {
+    plan 6;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    throws-like { App::Ariza::Config.load($dir) }, Exception,
+        message => /'no ariza.toml at'/, 'no manifest at all';
+
+    throws-like { App::Ariza::Config.load-file(write-config($dir, "= = =\n")) },
+        Exception, message => /'malformed TOML in'/, 'a file that is not TOML';
+
+    throws-like { App::Ariza::Config.load-file(write-config($dir, '')) },
+        Exception, message => /'app.name is required'/,
+        'an empty manifest fails on its missing keys, not as malformed';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nexec = \"k\"\ndisplay = \"K\"\n"))
+    }, Exception, message => /'app.name is required'/, 'app.name is required';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = \"A\"\ndisplay = \"K\"\n"))
+    }, Exception, message => /'app.exec is required'/, 'app.exec is required';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            "[app]\nname = \"A\"\nexec = \"k\"\n"))
+    }, Exception, message => /'app.display is required'/, 'app.display is required';
+};

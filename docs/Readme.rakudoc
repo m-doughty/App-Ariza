@@ -1,0 +1,745 @@
+=begin pod
+
+=head1 NAME
+
+App::Ariza - bundler and distribution tool for Raku terminal apps
+
+=head1 SYNOPSIS
+
+=begin code :lang<console>
+
+# Build a self-contained bundle of an app, and prove it works:
+$ ariza bundle --app=../App-Moneymoor --out-dir=dist
+$ ariza smoke  --archive=dist/moneymoor-0.2.0-macos-arm64.tar.gz
+
+# Render the four scripts an end user runs, into the app's repository:
+$ ariza installers --app=../App-Moneymoor
+
+# Write the workflows that build one bundle per declared platform, on
+# machines that are actually those platforms, and publish them on a tag:
+$ ariza scaffold-ci --app=../App-Moneymoor
+
+$ ariza version
+$ ariza help
+
+=end code
+
+From Raku, every verb is a class method, and the machinery underneath
+is a library in its own right:
+
+=begin code :lang<raku>
+
+use App::Ariza;
+
+my %b = App::Ariza.cmd-bundle(:app<../App-Moneymoor>, :out-dir<dist>);
+App::Ariza.cmd-smoke(:archive(%b<archive>));
+App::Ariza.cmd-installers(:app<../App-Moneymoor>);
+App::Ariza.cmd-scaffold-ci(:app<../App-Moneymoor>);
+
+say current-slug;                                  # macos-arm64
+say App::Ariza::Versions.load.rakudo-tag;          # 2026.07-01
+say App::Ariza::Config.load($app-repo).bundle-platforms;
+
+=end code
+
+=head1 DESCRIPTION
+
+ariza packages Raku TUI applications — Cantina, Kelpie, Mindmoor,
+Moneymoor — for people who do not have Raku and should not have to care
+that the thing is written in it.
+
+=head2 The bundle
+
+The end state ariza is built towards is a B<bundle>: one archive per
+platform containing the application, a Rakudo runtime, every Raku
+dependency, and every native shared library the app touches — notcurses,
+SQLCipher, libvips — laid out so that unpacking it anywhere and running
+a single launcher works.
+
+The properties that matter, and that shape everything below:
+
+=item1 B<Self-contained.> Nothing is fetched at run time and nothing is
+assumed to be present. A machine with no Raku, no Homebrew and no
+compiler runs the app.
+
+=item1 B<Per-platform, and honest about it.> A glibc binary does not run
+on Alpine; an arm64 dylib does not run on an Intel Mac. Every artefact
+is named after exactly one platform slug and contains binaries for
+exactly that platform.
+
+=item1 B<Relocatable.> No absolute paths baked in, no install step, no
+PATH surgery. It runs from a home directory, a USB stick or C</opt>.
+
+=item1 B<Removable.> Deleting the directory removes the software.
+Nothing is registered, nothing is scattered, nothing is left behind.
+
+=head2 What is in a bundle
+
+=begin code :lang<console>
+
+moneymoor-0.2.0-macos-arm64/
+  bin/moneymoor            the launcher, and the only thing a user runs
+  rakudo/                  the interpreter (plus SQLCipher, on macOS)
+  site/                    every Raku module, with warm bytecode
+  native/                  notcurses and friends
+  VERSION                  app version and component pins, one screen
+  ariza-manifest.json      the same, machine-readable, plus every sha256
+  LICENSES/                app + Rakudo licence text, and COMPONENTS.md
+
+moneymoor-0.2.0-macos-arm64.tar.gz          50 MiB (165 MiB unpacked)
+moneymoor-0.2.0-macos-arm64.tar.gz.sha256
+
+=end code
+
+=head2 How it is built
+
+=item1 B<The runtime> is the official archive from C<rakudo.org>, pinned
+by C<[rakudo]> in C<versions.toml>, downloaded once into
+C<$XDG_CACHE_HOME/ariza/rakudo> and unpacked into the bundle. The cache
+records a SHA-256 on first download and verifies it on every reuse.
+
+=item1 B<The Raku closure> is installed by the B<bundled> C<zef> into the
+bundle's own repository, so the precompiled bytecode matches the runtime
+that ships rather than whatever Rakudo the build machine had.
+
+=item1 B<The bytecode is warmed at build time.> C<zef> does not do this,
+and it matters: a cold bundle spends about 55 seconds compiling on its
+first launch — and does it again on every launch if the bundle happens to
+live somewhere unwritable, which for a downloaded archive is normal. Warm
+it is half a second. The store is position-independent, so warming it
+here and unpacking the archive somewhere else entirely works.
+
+=item1 B<Native libraries> are staged and then B<audited>: every Mach-O,
+ELF or PE ariza put in the bundle must resolve inside it, or the build
+fails naming the file and the dependency. That is the difference between
+a bundle that works on the machine that built it and one that works
+anywhere.
+
+=item1 B<The launcher> is the one file a user runs. It finds its own
+bundle by resolving its own path (through a C<readlink> loop, not
+C<readlink -f>, which is a GNU extension), points C<RAKULIB> and
+C<NOTCURSES_NATIVE_DATA_DIR> at the bundle, and execs the bundled
+interpreter. Everything is quoted, so a path with spaces works.
+
+=head2 Where SQLCipher comes from
+
+notcurses arrives on its own — Notcurses-Native's prebuilt pack is
+staged as a side effect of the C<zef> install. SQLCipher has no such
+hook, so ariza takes it from the build machine's own package manager:
+
+=item1 B<macOS> — the installed Homebrew keg (C<brew --prefix
+sqlcipher>), or, if it is not installed, the bottle
+C<brew fetch --formula sqlcipher> puts in the cache.
+=item1 B<Linux> — whatever C<ldconfig -p> resolves C<libsqlcipher.so.0>
+to, falling back to the Debian multiarch, Red Hat and Alpine library
+directories. CI installs the distribution package
+(C<apt install libsqlcipher0>) before it calls C<ariza bundle>.
+=item1 B<Windows> — a vcpkg tree under C<VCPKG_ROOT>, or wherever
+C<SQLCIPHER_LIB_DIR> points.
+
+There is deliberately B<no> ariza-operated mirror to download from.
+SQLCipher's ABI does not move often enough to justify a second piece of
+release infrastructure with its own signing story, its own staleness and
+its own outages — and what makes a library safe to redistribute is not
+where it was downloaded from but what happens to it next: every
+dependency it names outside the bundle is copied in beside it and
+rewritten to load from there, and the audit then refuses to ship the
+bundle if anything still points off the machine.
+
+=head3 Self-containment on Linux, and why it needs a Linux machine
+
+ELF hides the same problem better than Mach-O does, which is why it went
+unnoticed longer. A Homebrew library names its OpenSSL by absolute path,
+so it is obvious. A distribution's C<libsqlcipher.so.0> names its
+OpenSSL as a bare C<NEEDED libcrypto.so.3> — no path, no C<RPATH>,
+nothing in the file for an audit to object to — and at run time that
+means "whatever C<libcrypto.so.3> this machine has", which on a user's
+machine may be nothing at all.
+
+So a Linux bundle gets the same treatment a macOS one does, spelled the
+way ELF spells it: C<ldd> (the loader itself, so its answer is the one
+the machine will really give) reports where each dependency resolves;
+every non-system one is copied in beside the library under its soname
+and recursed into; and C<patchelf --set-rpath '$ORIGIN'> on the library
+and every copy makes each find its siblings in its own directory
+wherever the bundle is unpacked. What stays dynamic is the loader,
+C<libc> and the compiler runtime — a second copy of those is a conflict,
+not insurance. C<libcrypto> and C<libssl> are B<not> in that category:
+SQLCipher without OpenSSL is SQLite.
+
+The audit then adds two checks that only exist on a Linux host, because
+both tools answer for the machine they are on: C<patchelf --print-rpath>
+must be C<$ORIGIN>-relative, and C<ldd> run with the environment
+B<replaced> by a bare C<PATH> — the user's view, not the build's — must
+resolve every non-system dependency inside the bundle. Cross-inspecting
+an ELF from a Mac does the static half and says so, rather than
+pretending to more; which is the long way of saying the Linux bundle is
+built on Linux.
+
+That claim is proved rather than asserted:
+C<xxt/linux-selfcontain-proof.sh> runs the whole thing in a
+C<manylinux> container — real SQLCipher, real Rakudo, the test suite,
+a real bundle staged and audited, the result re-checked independently in
+shell, and three negative controls (a planted absolute C<NEEDED>, a
+deleted dependency, a stripped rpath) that must each make the audit
+fail.
+
+Two overrides beat the package managers, in this order:
+C<--sqlcipher-archive=FILE> (an archive to unpack) and
+C<SQLCIPHER_LIB_DIR> (a directory holding the library). Both are how a
+cross-build works, because they are the only way to be honest about it:
+a library installed on this machine is built B<for> this machine, so
+ariza refuses to take one when the platform being built is not the
+platform it is building on. Missing entirely, on any platform, is a
+death naming the package to install B<and> the override to pass —
+never a silent bundle without a database.
+
+The version in C<versions.toml> is B<advisory>. The package manager
+decides what is actually installed, so ariza reads the version out of
+the staged library's own bytes and warns if it disagrees with the pin:
+
+=begin code :lang<console>
+
+ariza: sqlcipher 4.17.0 staged, pin says 4.14.0
+
+=end code
+
+The build continues, and C<ariza-manifest.json> records the version that
+was B<staged>, the pin beside it, the digest of the library as it came
+off the machine, and which keg, bottle or archive it came from. A
+manifest that quotes a number nobody verified is worse than no number at
+all.
+
+=head2 Proving it, rather than hoping
+
+C<ariza smoke> takes the finished archive, unpacks it into a scratch
+directory B<with a space in its name>, and runs it with a B<replaced>
+environment — C<PATH>, C<HOME>, C<TERM> and nothing else:
+
+=begin code :lang<console>
+
+$ ariza smoke --archive=dist/moneymoor-0.2.0-macos-arm64.tar.gz
+ok   unpack         extracted to moneymoor-0.2.0-macos-arm64
+ok   manifest       App::Moneymoor 0.2.0, 8 distributions for macos-arm64
+ok   launcher       bin/moneymoor
+ok   runtime        rakudo 2026.07-01
+ok   target         site/bin/moneymoor.raku
+ok   precomp        398 precompiled artefacts ship with the bundle
+ok   native-audit   26 native binaries resolve inside the bundle
+ok   smoke[0]       {exec} → exit 0: App::Moneymoor 0.2.0
+ok   smoke[1]       {raku} → exit 0: ok: encrypted database created, written and reopened
+
+ariza: 9 checks passed
+
+=end code
+
+The replaced environment is the point. The failure this catches is a
+bundle that quietly uses something from the developer's shell — a system
+Rakudo on C<PATH>, a C<DBIISH_SQLCIPHER_LIB> pointing into Homebrew —
+which makes a broken bundle look perfect on the machine that built it.
+
+Every check runs; nothing short-circuits. A failing run leaves the
+unpacked tree behind and prints where, because the state it failed in is
+the whole value of the exercise.
+
+=head1 GETTING A BUNDLE ONTO A MACHINE
+
+A bundle is self-contained, so "installing" it is unpacking it
+somewhere and running the launcher. C<ariza installers> writes the four
+scripts that do exactly that, and nothing more, from the app's own
+manifest:
+
+=begin code :lang<console>
+
+$ ariza installers --app=../App-Moneymoor
+ariza: wrote /Users/you/Code/App-Moneymoor/install.sh
+ariza: wrote /Users/you/Code/App-Moneymoor/install.ps1
+ariza: wrote /Users/you/Code/App-Moneymoor/uninstall.sh
+ariza: wrote /Users/you/Code/App-Moneymoor/uninstall.ps1
+ariza: rendered 4 installers for Moneymoor
+
+=end code
+
+They are committed at the app's repository root, because C<curl> has to
+be able to fetch them from somewhere. What a user runs is one line:
+
+=begin code :lang<console>
+
+$ curl -fsSL https://raw.githubusercontent.com/m-doughty/App-Moneymoor/main/install.sh | sh
+==> Moneymoor 0.2.0 for macos-arm64
+==> downloading https://github.com/…/moneymoor-0.2.0-macos-arm64.tar.gz
+ok  sha256 verified
+ok  added /home/you/.local/bin to PATH in /home/you/.zshrc
+ok  Moneymoor 0.2.0 installed
+
+    run it:        moneymoor
+    installed in:  /home/you/.local/share/moneymoor/versions/0.2.0
+    uninstall:     curl -fsSL https://raw.githubusercontent.com/…/uninstall.sh | sh
+
+=end code
+
+That raw URL is built from C<installer.repo> in the app's C<ariza.toml>
+and the C<--branch> flag (C<main> by default). It only becomes a working
+link once the repository is public — until then the same script runs
+just as well as a file:
+C<sh install.sh>.
+
+=head2 What it does
+
+=item1 Detects the platform and downloads the matching release asset —
+one of the slugs the app B<declares>, never a nearest match, because a
+glibc bundle does not run on Alpine and an arm64 one does not run on an
+Intel Mac.
+
+=item1 B<Verifies the SHA-256> against the C<.sha256> asset published
+beside it. No digest, no install.
+
+=item1 Unpacks into
+C<< $XDG_DATA_HOME/<exec>/versions/<version>/ >> — beside whatever is
+already there — and only then flips a C<current> symlink and links
+C<< ~/.local/bin/<exec> >> at it. A failed or interrupted download
+cannot damage a working install.
+
+=item1 Adds C<~/.local/bin> to C<PATH> B<only if it is not there
+already>, through one marked block in each shell rc file that exists.
+Re-running never duplicates it; the uninstaller removes exactly that
+block.
+
+=item1 Keeps one previous version to roll back to and prunes anything
+older, saying which.
+
+=item1 Needs no root, no compiler, no package manager, and no Raku.
+
+Re-running it for a version that is already installed does not download
+anything: it re-points the symlinks, re-checks the PATH block and exits
+saying "already installed" — which makes "run the installer again" the
+correct advice for the most common breakage.
+
+=head2 Version, source, and the escape hatch
+
+The default is the latest release, read from the C<location:> header of
+C<<https://github.com/<repo>/releases/latest>>: one HEAD request,
+no API token, no C<jq>. C<--version v1.2.3> names a tag instead.
+
+C<--url> — or C<< <EXEC>_BUNDLE_URL >>, e.g. C<MONEYMOOR_BUNDLE_URL> —
+installs from a source you name and bypasses GitHub entirely. It takes
+a B<plain file path> as readily as a URL, which is what makes an
+air-gapped install, a release candidate, and ariza's own end-to-end
+test possible with no network and no published release.
+
+C<--insecure-no-verify> applies to that path only. A source you named
+yourself may legitimately have no C<.sha256> beside it, and the script
+says so loudly before continuing; a published release always has one, so
+a missing digest there stays fatal however many flags are passed.
+
+=head2 One POSIX script, not two
+
+The installer scripts that came before a bundle shipped
+C<install-macos.sh> and C<install-linux.sh> separately because they did
+genuinely different things — one drove Homebrew, the other five package
+managers. A bundle
+installer does none of that, so the only per-platform decision left is
+which asset to download, and that is a C<uname> call away at run time.
+One script, one C<curl> line in a README, and nobody has to work out
+which of two files applies to them.
+
+=head2 Windows
+
+The same shape in PowerShell:
+C<%LOCALAPPDATA%\E<lt>DisplayE<gt>\versions\E<lt>versionE<gt>>, a
+C<current> B<junction> rather than a symlink (which would need
+administrator rights or Developer Mode, and a per-user install has no
+business demanding either), and C<...\current\bin> added once to the
+user C<PATH> in C<HKCU\Environment>. Because the PATH entry points
+through the junction, an upgrade needs no PATH change at all.
+
+=head2 It is meant to be piped, so it never asks
+
+A script read from a pipe is executed as it arrives, so the generated
+one is entirely definitions with a single C<main "$@"> on the last line:
+a truncated download cannot half-run it. It also never reads standard
+input — no prompts, no confirmations — because when the script arrives
+I<on> standard input there is nothing left to read from. That is not a
+limitation to work around; it is what makes the thing runnable from CI.
+
+=head2 Platform slugs
+
+C<App::Ariza::Platform> names the platform an artefact is for:
+
+=begin code :lang<console>
+
+macos-arm64            macos-x86_64
+linux-x86_64-glibc     linux-aarch64-glibc
+linux-x86_64-musl      linux-aarch64-musl
+windows-x86_64         windows-arm64
+
+=end code
+
+These strings are not ariza's to choose. They are Notcurses-Native's
+platform slugs, character for character, because a bundle carries that
+distribution's prebuilt notcurses libraries and the two have to agree
+about what platform they are on.
+
+Detection reads C<$*KERNEL> and, on Linux only, probes the C library: a
+C<ld-musl-*.so.1> loader under C</lib> or C</usr/lib> settles it
+immediately, otherwise C<ldd --version> is parsed for a glibc version. A
+Linux system with neither — uclibc, a static busybox image — produces an
+honest "unsupported platform" rather than a bundle that will not run.
+
+Setting C<ARIZA_PLATFORM> to a known slug short-circuits detection,
+which is what makes cross-builds and CI matrices possible. An override
+that is not a known slug is a hard error: every other input is a system
+fact that might legitimately be unnameable, but an override is a human
+typing a string, and quietly ignoring a misspelled one would produce an
+artefact for the wrong platform.
+
+=head2 Pinned versions
+
+C<App::Ariza::Versions> parses C<resources/versions.toml>, the one file
+every artefact's version numbers come from, so that a bump re-renders
+everything in lockstep and nothing drifts:
+
+=begin code :lang<toml>
+
+sqlcipher = "4.14.0"
+
+[rakudo]
+version  = "2026.07"
+revision = "01"
+
+=end code
+
+C<[rakudo]> is the runtime a B<bundle> embeds, where nothing is
+installed at all and the interpreter travels inside the artefact;
+C<revision> disambiguates rebuilds of the same upstream release without
+pretending upstream cut a new version.
+
+C<sqlcipher> is the one pin ariza cannot enforce, and does not pretend
+to: a bundle's SQLCipher comes from the build machine's package manager,
+so this is the version B<expected>, a mismatch warns, and the manifest
+records what was really staged.
+
+=head2 The per-app manifest
+
+What a given app needs is declared by that app, in an C<ariza.toml> in
+its own repository — so ariza stays a general tool instead of growing a
+list of special cases about specific applications:
+
+=begin code :lang<toml>
+
+[app]
+name = "App::Moneymoor"      # dist name
+exec = "moneymoor"           # launcher/binary name
+display = "Moneymoor"
+
+[bundle]
+platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
+native = ["notcurses", "sqlcipher"]
+smoke = "{exec} --version"   # command run by ariza smoke
+
+[installer]
+repo = "m-doughty/App-Moneymoor"   # where the releases live
+
+[ci]
+ariza-source = "fez"         # how the workflows install ariza itself
+
+=end code
+
+All three C<[app]> keys are required. C<display> is required rather than
+derived because the correct capitalisation of a product name is not
+something a tool should guess at.
+
+Building a platform the app does not list in C<bundle.platforms> is an
+error: an app that lists its platforms has said which ones it is tested
+on, and producing an artefact named after one it never claimed is a
+promise ariza has no business making on its behalf. The same list is
+what the generated installers detect against, so an app that has never
+built for musl says so on an Alpine box rather than downloading
+something that cannot run there.
+
+C<installer.repo> is the GitHub C<owner/name> the installers download
+releases from. It is optional in the schema — an app published nowhere
+has no repository to name — and required by C<ariza installers>, which
+says so rather than rendering a script that 404s. Its shape is closed
+like a platform slug's: a full URL or a bare name is a hard error, not
+a warning.
+
+C<ci.ariza-source> is read only by C<ariza scaffold-ci>, and says where
+the generated workflows install ariza from: C<"fez"> (the default), or
+anything C<zef install> accepts — a repository URL, for an app whose
+release workflow has to exist before ariza is published. Whichever is
+not in use is rendered beside it as a comment. Unlike a platform slug
+this is not a closed set, so only an B<empty> value is an error: it
+would render a step that installs nothing and succeeds.
+
+=head2 Smoke commands
+
+C<bundle.smoke> is a command, a list of commands, or a list of B<argv
+arrays>. Nothing goes through a shell, in any form, so the argv shape can
+carry an entire program with no quoting layer to get wrong — which is
+what makes it reasonable for an app to smoke-test its database engine
+rather than only C<--version>:
+
+=begin code :lang<toml>
+
+smoke = [
+    ["{exec}", "--version"],
+    ["{raku}", "-e", '''
+use App::Moneymoor::DB;
+# create, write and reopen an encrypted database under {tmp}
+''', "{tmp}"],
+]
+
+=end code
+
+C<{exec}> is the launcher, C<{raku}> the bundled interpreter, and
+C<{site}>, C<{native}>, C<{bundle}> and C<{tmp}> the rest of the bundle
+plus a scratch directory. A command that starts with C<{exec}> is run
+with nothing but C<PATH>/C<HOME>/C<TERM>, because that run is a test
+I<of> the launcher; one that starts with C<{raku}> additionally gets what
+the launcher would have exported, because it is standing in for code
+running inside the app.
+
+=head2 Unknown keys warn; wrong types die
+
+Both config files follow the same rule, shared with C<App::Shigur>: an
+unrecognised key at any level is collected into C<warnings> and loading
+continues, so one file can serve several ariza versions in either
+direction. A wrongly-I<typed> value dies immediately, naming the dotted
+path and the expected shape — C<ariza: bundle.platforms must be an array
+of strings> — because a mistyped pin would otherwise be silently baked
+into an artefact. Keys beginning with C<//> are ignored entirely,
+without a warning, in every ariza config file.
+
+There is exactly one value-level exception. An unknown platform slug in
+C<bundle.platforms> dies rather than warning, because the supported set
+is closed: a typo cannot be a future feature, and ignoring it would ship
+a release quietly missing a platform the author asked for.
+C<macos-aarch64> for C<macos-arm64> is the mistake this catches.
+
+=head1 BUILDING ALL OF THEM: CI
+
+C<ariza bundle> builds one bundle, on one machine, for the platform that
+machine is. A release needs one per declared platform, each built on a
+machine that B<is> that platform — SQLCipher comes off the build host, so
+there is no cross-build to fall back on — and all of them published
+together. That is a CI problem, and C<ariza scaffold-ci> writes the CI:
+
+=begin code :lang<console>
+
+$ ariza scaffold-ci --app=../App-Moneymoor
+ariza: wrote /Users/you/Code/App-Moneymoor/.github/workflows/test.yml
+ariza: wrote /Users/you/Code/App-Moneymoor/.github/workflows/release.yml
+ariza: scaffolded 2 of 2 workflows for Moneymoor
+
+=end code
+
+Neither file is ariza's to run. Both are committed to the B<app's>
+repository and run by GitHub, exactly as C<install.sh> is committed and
+run by a user.
+
+=head2 What release.yml does
+
+One build job per slug in C<bundle.platforms>, in parallel, each doing
+the same three things after it has installed what ariza needs:
+
+=begin code :lang<console>
+
+bundle-macos-arm64           macos-latest, setup-raku, brew install sqlcipher
+bundle-linux-x86_64-glibc    ubuntu-latest in a manylinux_2_28 container,
+                             Rakudo from the rakudo.org index, SQLCipher
+                             built from source at the pin
+bundle-windows-x86_64        windows-latest, setup-raku, vcpkg + SQLCIPHER_LIB_DIR
+
+                             …then: ariza bundle, ariza smoke, upload
+
+=end code
+
+The Linux lane is the one with a shape of its own, for two converging
+reasons. It builds inside C<quay.io/pypa/manylinux_2_28_x86_64> so the
+archive's glibc floor is 2.28 — RHEL 8+, Ubuntu 18.10+, Debian 10+ —
+rather than whatever C<ubuntu-latest> happens to ship this month; a
+bundle cannot be older than the machine that built it. And
+C<Raku/setup-raku> cannot install into a container (it writes to the
+runner's tool cache, which is not in the container's filesystem), so the
+lane resolves the C<[rakudo]> pin against the same JSON release index
+C<App::Ariza::Rakudo> reads and unpacks the archive itself. There is no
+URL to construct — upstream filenames carry a toolchain suffix — so the
+index is the only honest route.
+
+Then, on a tag only:
+
+=item1 B<C<publish>> collects every lane's artefact, flattens it,
+recomputes a combined C<checksums.txt>, checks that against the
+C<.sha256> sidecars C<ariza bundle> wrote — a release whose digest
+refuses its own archive is worse than one with no digest — and cuts the
+GitHub release with a body saying what a bundle is, which machines each
+archive runs on, and how to verify a download.
+
+=item1 B<C<smoke-installer>> takes the archive that was B<just
+published>, on a plain C<ubuntu-latest> runner with nothing installed on
+it, installs it with the repository's own committed C<install.sh>, and
+runs the installed launcher under C<env -i>. It is the only job that
+exercises the artefact a user will actually receive, by the path they
+will actually take. Scaffolded for an app that declares
+C<linux-x86_64-glibc> and has an C<installer.repo>.
+
+=head2 Dispatch before you tag
+
+The workflow triggers on C<workflow_dispatch> as well as on
+C<push: tags: ['v*']>, and a dispatch run B<stops after the build
+lanes>: C<publish> and C<smoke-installer> are both gated on
+C<startsWith(github.ref, 'refs/tags/')>.
+
+That is the iteration loop, and the reason the dispatch trigger exists.
+A recipe that has gone stale — a renamed package, a runner image that
+moved on, a vcpkg port that is not there any more — costs a run and a
+push to a branch, rather than a burnt tag and a deleted release. The
+dispatch input C<ref> takes a branch, so the lane being fixed does not
+have to be on the default branch to be tried.
+
+=head2 Which Raku is which
+
+Every lane installs a Raku B<to run ariza with>, and it is not the
+runtime that ends up in the bundle: ariza downloads the pinned Rakudo
+for itself, verifies it, and unpacks that into the archive. The lane's
+own Raku can be any version, which is why C<setup-raku> asks for
+C<latest> rather than for anything in particular.
+
+=head2 What is regenerated, and what is yours
+
+C<release.yml> is B<derived> from C<bundle.platforms>: add a platform,
+re-run C<scaffold-ci>, and the file gains a lane and a C<needs:> entry.
+It is rewritten in place every time, so a hand edit to it is an edit you
+will make twice.
+
+C<test.yml> is written B<only when it is absent>. A test workflow
+acquires system dependencies, extra jobs and skip conditions that no
+generator can infer from a manifest — the scaffolded one is a starting
+point in the house shape (three runners, C<zef install --deps-only>,
+C<prove6 -I. t>), and the moment it is committed it is the repository's.
+C<--force> overwrites it anyway. Each generated file's header says which
+of the two it is, so nobody has to remember.
+
+For the same reason, an app whose B<test suite> needs its native
+libraries has to add those steps itself: C<bundle.native> says what a
+I<bundle> carries, which is a different question from what a test run
+needs on the runner. The scaffolded C<test.yml> names the libraries and
+says it is not installing them, rather than guessing either way.
+
+=head2 The platforms it will scaffold
+
+C<macos-arm64>, C<linux-x86_64-glibc> and C<windows-x86_64>: the slugs
+with both a GitHub-hosted runner and an official Rakudo build behind
+them. A declared platform outside that set is a B<hard error>, not a
+skipped job — the same reasoning as an unknown slug in
+C<bundle.platforms>, since silently dropping one produces a release
+quietly missing a platform the author asked for. A bundle for one of the
+other five is built by hand today, and a generated lane for it would be
+a guess rather than a recipe.
+
+=head1 FINDING RESOURCES
+
+ariza ships data: Jinja2 templates, shell partials, the pin file. It has
+to read them both when installed (where C<zef> has staged every resource
+under a content-hashed name and C<%?RESOURCES> is the only way back to
+the bytes) and from a source checkout (where C<%?RESOURCES> is typically
+unpopulated and the files are sitting in C<resources/>).
+
+C<App::Ariza::Resources> is the single place that knows this, so neither
+world is a special case anywhere else:
+
+=begin code :lang<raku>
+
+use App::Ariza::Resources;
+
+resource('versions.toml').slurp;
+resource('templates/launcher-posix.sh.j2').slurp;
+resource-list('templates/ci');      # (templates/ci/lane-macos-arm64.yml.j2, …)
+
+=end code
+
+C<resource-list> exists because C<%?RESOURCES> cannot list a directory —
+an installed distribution's resources are flat. A checkout reads the
+working tree, so a file you just created is visible before you have
+listed it in META6; an installed run enumerates the distribution
+manifest, so it shows exactly what was packaged. A resource that is
+missing from both fails loudly, naming the path it tried, because the
+cause is always the same packaging bug: a file on disk that nobody added
+to META6 C<resources>.
+
+=head1 COMMANDS
+
+=head2 ariza bundle --app=DIR [--platform=SLUG] [--out-dir=DIR] [--sqlcipher-archive=FILE]
+
+Build a bundle. C<--platform> defaults to this machine's slug.
+C<--sqlcipher-archive> stages SQLCipher from a local archive instead of
+from the build machine's package manager, which is what a cross-build
+(a Linux bundle needs a Linux library) or an air-gapped build needs.
+C<SQLCIPHER_LIB_DIR> does the same job with a directory.
+
+=head2 ariza smoke --archive=FILE [--keep]
+
+Unpack a built archive somewhere new and check it. Exits non-zero if any
+check fails, so it drops straight into CI. C<--keep> keeps the unpacked
+tree even on success.
+
+=head2 ariza installers --app=DIR [--out-dir=DIR] [--branch=NAME]
+
+Render C<install.sh>, C<install.ps1>, C<uninstall.sh> and
+C<uninstall.ps1> from the app's C<ariza.toml>. C<--out-dir> defaults to
+the app's own repository root, since these are committed artefacts;
+C<--branch> is the branch the C<curl … | sh> one-liner names, C<main>
+by default. An app declaring no Windows platform gets no C<.ps1> pair —
+a script whose only possible answer is "there is no bundle for your
+machine" is worse than its absence.
+
+=head2 ariza scaffold-ci --app=DIR [--out-dir=DIR] [--force]
+
+Write C<.github/workflows/test.yml> and C<release.yml> into the app's
+repository, from its C<ariza.toml>. C<release.yml> is derived from
+C<bundle.platforms> and is rewritten every time; C<test.yml> is written
+only when it is absent, because a test workflow acquires things a
+generator cannot infer. C<--force> overwrites both. C<--out-dir> writes
+somewhere else; the app's own C<.github/workflows> is created if it is
+not there, which in a repository with no CI is the ordinary case.
+
+=head2 ariza version
+
+ariza's own distribution version.
+
+=head2 ariza help
+
+Usage.
+
+=head1 MODULES
+
+=item1 C<App::Ariza> — the facade; one C<cmd-*> class method per CLI verb.
+=item1 C<App::Ariza::Platform> — platform slugs and detection.
+=item1 C<App::Ariza::Versions> — the pinned component versions.
+=item1 C<App::Ariza::Config> — the per-app C<ariza.toml> manifest.
+=item1 C<App::Ariza::Rakudo> — fetching, caching and unpacking the runtime.
+=item1 C<App::Ariza::Site> — installing the app's closure, and warming it.
+=item1 C<App::Ariza::Native> — staging SQLCipher, and the self-containment audit.
+=item1 C<App::Ariza::Launcher> — the one script a user runs.
+=item1 C<App::Ariza::Installer> — the four scripts that put a bundle on
+someone's machine, and take it off again.
+=item1 C<App::Ariza::CI> — the workflows that build every platform's
+bundle and publish them.
+=item1 C<App::Ariza::Bundle> — the orchestrator, and the bundle's metadata.
+=item1 C<App::Ariza::Smoke> — proving a finished archive works elsewhere.
+=item1 C<App::Ariza::Tools> — the shell-out layer: run, fetch, digest, extract.
+=item1 C<App::Ariza::Resources> — locating ariza's own data files.
+
+=head1 AUTHOR
+
+Matt Doughty
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2026 Matt Doughty
+
+This library is free software; you can redistribute it and/or modify it
+under the Artistic License 2.0.
+
+=end pod

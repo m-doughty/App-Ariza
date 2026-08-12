@@ -1,0 +1,94 @@
+  bundle-windows-x86_64:
+    name: bundle windows-x86_64
+    runs-on: windows-latest
+    defaults:
+      run:
+        # bash, so the build and smoke steps below are the same three
+        # lines they are on the other two lanes. Git Bash ships with the
+        # runner image; the one step that wants PowerShell says so.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: {% raw %}${{ inputs.ref || github.ref }}{% endraw %}
+
+      # This Raku runs ariza. It is NOT the runtime that ends up in the
+      # bundle -- ariza downloads the pinned one ({{ rakudo_tag }}) from
+      # rakudo.org itself.
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Install ariza
+        run: {{ ariza_install }}
+{%- for line in ariza_install_note %}
+        # {{ line }}
+{%- endfor %}
+
+      # Windows has no package manager ariza drives, so it is told where
+      # the library is: SQLCIPHER_LIB_DIR names the directory holding
+      # sqlcipher.dll and beats every other source. (Setting VCPKG_ROOT to
+      # the same tree works too -- ariza probes the standard triplets'
+      # `bin` directories under it -- but naming the directory outright is
+      # one less thing to be wrong about.)
+
+      # vcpkg installs into C:\vcpkg\installed, and building sqlcipher from
+      # there is the slowest step in this lane. Restored here and, on a
+      # miss, saved again right after the build below -- not left to
+      # actions/cache's combined action, which only saves in a post step
+      # gated on the job succeeding. A failed smoke later in this same run
+      # would then throw away a fifteen-minute build for nothing; saving
+      # immediately after the build keeps it regardless of what the rest
+      # of the job does.
+      - name: Restore cached SQLCipher
+        id: cache-sqlcipher
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-sqlcipher-x64-windows-v1
+
+      - name: Install SQLCipher
+        if: steps.cache-sqlcipher.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: vcpkg install sqlcipher:x64-windows
+
+      - name: Save SQLCipher cache
+        if: steps.cache-sqlcipher.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-sqlcipher-x64-windows-v1
+
+      # PowerShell for this step alone: it writes a native Windows path,
+      # where Git Bash would produce `C:\vcpkg/installed/...` and leave
+      # every consumer to cope with the mixed separators. Runs whether the
+      # step above just built sqlcipher.dll or the cache restored it, so
+      # SQLCIPHER_LIB_DIR is set either way.
+      - name: Locate SQLCipher
+        shell: pwsh
+        run: |
+          $lib = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows\bin'
+          if (-not (Test-Path (Join-Path $lib 'sqlcipher.dll'))) {
+              throw "vcpkg installed no sqlcipher.dll in $lib"
+          }
+          "SQLCIPHER_LIB_DIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build the bundle
+        run: ariza bundle --app=. --platform=windows-x86_64 --out-dir=dist-out
+
+      # Unpacks the archive somewhere new, with a replaced environment,
+      # and runs {{ app_name }}'s own bundle.smoke commands against it.
+      - name: Smoke the bundle
+        run: |
+          set -euo pipefail
+          archive=$(ls dist-out/*.tar.gz)
+          ariza smoke --archive="$archive"
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-x86_64
+          path: |
+            dist-out/*.tar.gz
+            dist-out/*.tar.gz.sha256
+          if-no-files-found: error

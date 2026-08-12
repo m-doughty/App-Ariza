@@ -1,0 +1,12 @@
+.DS_Store
+.precomp
+lib/.precomp
+*.o *.a *.so *.so.* *.dll *.dylib *.exe
+.DS_Store ._*
+.idea/ .vscode/
+*.swp *.swo *~
+*.bak *.tmp *.old
+*.log core *.core
+App-Ariza-*.tar.gz
+App-Ariza-*/
+NUL

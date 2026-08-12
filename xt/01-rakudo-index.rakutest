@@ -1,0 +1,63 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Rakudo;
+use App::Ariza::Versions;
+
+=begin comment
+
+This one talks to rakudo.org, which is why it lives in xt/ rather than
+t/: the unit suite has to pass on a laptop in a tunnel, and a test that
+fails because a CDN blinked is a test people learn to ignore.
+
+What it is for is the thing no fixture can check — that the pin in
+`resources/versions.toml` still resolves against the index as it exists
+today. A pin bump that names a build upstream never published is caught
+here, in one second, rather than three minutes into a bundle build.
+
+    prove6 -Ilib xt/
+
+=end comment
+
+plan 3;
+
+my $versions = App::Ariza::Versions.load;
+my @entries;
+
+subtest 'the live release index is reachable and shaped as expected', {
+    plan 3;
+    @entries = App::Ariza::Rakudo.fetch-index;
+    ok @entries > 100, 'the index lists a great many files';
+    ok @entries.first({ .<type> eq 'archive' }), 'some of which are archives';
+    ok @entries.first({ (.<platform> // '') eq 'macos' }), 'including macOS builds';
+};
+
+subtest 'the pinned runtime still exists upstream', {
+    plan 1 + App::Ariza::Rakudo.fetchable-slugs;
+    my $version  = $versions.rakudo-version;
+    my $revision = $versions.rakudo-revision;
+
+    ok $version.defined && $revision.defined,
+        "versions.toml pins a runtime ({$versions.rakudo-tag // 'nothing'})";
+
+    for App::Ariza::Rakudo.fetchable-slugs -> $slug {
+        # Every slug ariza claims it can bundle for has to have a build
+        # at the pinned version, or a cross-build for it will fail after
+        # the download rather than before it.
+        my %e = App::Ariza::Rakudo.select-entry(@entries, :$slug, :$version, :$revision);
+        ok %e<url>.starts-with('https://'), "$slug: {%e<url>.split('/').tail}";
+    }
+};
+
+subtest 'the pinned archives are actually downloadable', {
+    plan 1;
+    # A HEAD, not a GET: this is about the URL being real, and the four
+    # runtimes together are the better part of a hundred megabytes.
+    my %e = App::Ariza::Rakudo.select-entry(@entries, :slug<macos-arm64>,
+        :version($versions.rakudo-version), :revision($versions.rakudo-revision));
+    my $proc = run <curl --silent --show-error --head --location --fail --output>,
+        $*SPEC.devnull, %e<url>, :out, :err;
+    $proc.out.slurp(:close);
+    my $err = $proc.err.slurp(:close);
+    is $proc.exitcode, 0, 'the macOS arm64 archive URL resolves' or diag $err;
+};

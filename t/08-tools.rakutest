@@ -1,0 +1,174 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Tools;
+
+plan 8;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-tools-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+subtest 'ensure-dir creates, and refuses to pretend a file is a directory', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $nested = $dir.add('a/b/c');
+    is ensure-dir($nested).absolute, $nested.absolute, 'returns the directory';
+    ok $nested.d, 'and created every missing parent';
+    lives-ok { ensure-dir($nested) }, 'calling it again is a no-op';
+
+    my $file = $dir.add('regular');
+    $file.spurt('x');
+    throws-like { ensure-dir($file) }, Exception,
+        message => /'is not a directory'/,
+        'a file where a directory belongs is named, not silently used';
+};
+
+subtest 'rm-rf removes trees, tolerates absence, and never follows a symlink out', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $tree = $dir.add('tree');
+    ensure-dir($tree.add('deep/deeper'));
+    $tree.add('deep/deeper/file').spurt('x');
+    rm-rf($tree);
+    nok $tree.e, 'a nested tree goes';
+
+    lives-ok { rm-rf($dir.add('never-existed')) },
+        'a missing path is not an error, so this is safe in LEAVE';
+
+    # The bundle really does contain symlinked libraries; a cleanup that
+    # descends through one deletes files outside the tree.
+    my $outside = $dir.add('outside');
+    ensure-dir($outside);
+    $outside.add('precious').spurt('keep me');
+
+    my $with-link = $dir.add('with-link');
+    ensure-dir($with-link);
+    my $linked = try { $outside.absolute.IO.symlink($with-link.add('link')); True };
+
+    if $linked {
+        rm-rf($with-link);
+        nok $with-link.e, 'the tree holding the symlink goes';
+        ok $outside.add('precious').f, 'and what it pointed at survives';
+    }
+    else {
+        # Creating a symlink on Windows needs a privilege an ordinary
+        # account does not have. The behaviour is still implemented and
+        # still correct there; it just cannot be provoked from here.
+        skip 'this account cannot create symlinks', 2;
+    }
+};
+
+subtest 'try-run answers, run-checked complains', {
+    plan 6;
+    my ($ok, $out, $) = try-run([$*EXECUTABLE.absolute, '-e', 'print "hi"']);
+    is $ok, 0, 'a successful command exits zero';
+    is $out, 'hi', 'and its stdout comes back';
+
+    my ($bad, $, $) = try-run([$*EXECUTABLE.absolute, '-e', 'exit 3']);
+    is $bad, 3, 'a failing command reports its exit code rather than dying';
+
+    my ($missing, $, $err) = try-run(['ariza-no-such-command-anywhere']);
+    isnt $missing, 0, 'an unspawnable command is a non-zero code, not an exception';
+    ok $err.chars, 'with a reason on stderr, so callers need one error path';
+
+    throws-like {
+        run-checked([$*EXECUTABLE.absolute, '-e', 'note "the reason"; exit 1'],
+                    :what('the thing'))
+    }, Exception, message => /'the thing' .* 'exit 1' .* 'the reason'/,
+        'run-checked names what failed and shows the child stderr';
+};
+
+subtest 'child-env removes undefined keys instead of blanking them', {
+    plan 3;
+    my %env = child-env(:ARIZA_TEST_MARKER<set>, :PATH(Str));
+    is %env<ARIZA_TEST_MARKER>, 'set', 'an override is applied';
+    nok %env<PATH>:exists,
+        'an undefined override deletes the key — PERL6LIB="" is not unset,'
+      ~ ' and makes Rakudo deprecate for the whole run';
+    ok %env.keys > 1, 'everything else in %*ENV is carried through';
+};
+
+subtest 'sha256-file', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $file = $dir.add('known');
+    $file.spurt("hello\n");
+    is sha256-file($file),
+        '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03',
+        'matches the known digest of "hello\n"';
+
+    my $empty = $dir.add('empty');
+    $empty.spurt('');
+    is sha256-file($empty),
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        'and of the empty file';
+
+    throws-like { sha256-file($dir.add('absent')) }, Exception,
+        message => /'cannot digest missing file'/, 'a missing file is named';
+};
+
+subtest 'extract-archive handles tar.gz and refuses what it cannot read', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $payload = ensure-dir($dir.add('payload'));
+    $payload.add('inside.txt').spurt("contents\n");
+    run 'tar', '-c', '-z', '-f', $dir.add('a.tar.gz').absolute,
+        '-C', $dir.absolute, 'payload';
+
+    my $into = $dir.add('extracted');
+    extract-archive($dir.add('a.tar.gz'), $into);
+    ok $into.add('payload/inside.txt').f, 'a .tar.gz unpacks';
+    is $into.add('payload/inside.txt').slurp, "contents\n", 'with its contents';
+
+    $dir.add('a.rar').spurt('not really an archive');
+    throws-like { extract-archive($dir.add('a.rar'), $into) }, Exception,
+        message => /"don't know how to extract"/, 'an unknown format is named';
+    throws-like { extract-archive($dir.add('missing.tar.gz'), $into) }, Exception,
+        message => /'cannot extract missing archive'/, 'so is a missing archive';
+};
+
+subtest 'sole-child insists on exactly one entry', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $one = ensure-dir($dir.add('one'));
+    ensure-dir($one.add('wrapper'));
+    is sole-child($one).basename, 'wrapper', 'the single entry comes back';
+
+    ensure-dir($one.add('second'));
+    throws-like { sole-child($one) }, Exception,
+        message => /'expected exactly one entry' .* 'second'/,
+        'two entries dies naming what it found, rather than picking one';
+
+    throws-like { sole-child(ensure-dir($dir.add('none'))) }, Exception,
+        message => /'expected exactly one entry'/, 'and so does none';
+};
+
+subtest 'copy-writable makes the copy writable', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # Homebrew ships libraries 0444. A bundler that preserves that mode
+    # cannot run install_name_tool over its own copy.
+    my $src = $dir.add('readonly.dylib');
+    $src.spurt('bytes');
+    $src.chmod(0o444);
+
+    my $dest = copy-writable($src, $dir.add('sub/copy.dylib'));
+    ok $dest.f, 'the copy exists, parents and all';
+    is $dest.slurp, 'bytes', 'with the same bytes';
+    ok $dest.w, 'and is writable, whatever the source mode was';
+};

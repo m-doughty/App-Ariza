@@ -1,0 +1,257 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Platform;
+use App::Ariza::Smoke;
+use App::Ariza::Tools;
+
+plan 8;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-smoke-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| Whether this machine can host a fake bundle whose "launcher" and
+#| "interpreter" are shell scripts.
+#|
+#| A bundle's entry points are a native executable and a script with a
+#| shebang, and a fixture can only stand in for those where a POSIX shell
+#| exists. Windows still gets every structural check below — the layout,
+#| the manifest, the audit — because those inspect files rather than run
+#| them; what it cannot get from a fixture is the environment-isolation
+#| evidence, which needs a process to actually start.
+sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
+
+#| A bundle with the shape of a real one and none of the weight: a
+#| launcher, an "interpreter", an installed script, a warm precomp store
+#| and a manifest. Everything Smoke inspects, nothing it does not.
+sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists --> IO::Path) {
+    my $root = ensure-dir($where.add('moneymoor-0.2.0-' ~ current-slug()));
+    my $win  = $*DISTRO.is-win;
+
+    # Non-interpolating heredocs: these are shell scripts, and `${VAR}`
+    # and `{...}` both mean something to qq.
+    my $launcher = ensure-dir($root.add('bin'))
+        .add('moneymoor' ~ ($win ?? '.cmd' !! ''));
+    $launcher.spurt(q:to/SH/.subst('EXIT_STATUS', $exec-status));
+        #!/bin/sh
+        # Prints whether anything leaked in from the invoking shell —
+        # which is what Smoke's replaced environment prevents.
+        printf 'launcher ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
+        exit EXIT_STATUS
+        SH
+    $launcher.chmod(0o755);
+
+    my $raku = ensure-dir($root.add('rakudo/bin')).add('raku' ~ ($win ?? '.exe' !! ''));
+    $raku.spurt(q:to/SH/);
+        #!/bin/sh
+        printf 'raku ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
+        SH
+    $raku.chmod(0o755);
+
+    ensure-dir($root.add('site/bin')).add('moneymoor.raku').spurt('sub MAIN(*@, *%) { }');
+    ensure-dir($root.add('site/precomp/ABC')).add('DEF').spurt('bytecode');
+
+    $root.add('ariza-manifest.json').spurt(to-json({
+        'ariza-manifest' => 1,
+        platform => current-slug(),
+        app => { name => 'App::Moneymoor', exec => 'moneymoor',
+                 display => 'Moneymoor', version => '0.2.0' },
+        launcher => { target => 'site/bin/moneymoor.raku', scripts => ['bin/moneymoor'] },
+        components => { rakudo => { tag => '2026.07-01' } },
+        # Trailing comma: `[ %h ]` hits the single-arg rule and flattens
+        # the Hash into Pairs, producing exactly the broken shape the
+        # manifest check exists to catch.
+        dists => $dists // [{ name => 'App::Moneymoor', version => '0.2.0' },],
+        smoke => @smoke,
+    }));
+
+    $root;
+}
+
+sub pack(IO::Path $root --> IO::Path) {
+    my $archive = $root.parent.add($root.basename ~ '.tar.gz');
+    run 'tar', '-c', '-z', '-f', $archive.absolute,
+        '-C', $root.parent.absolute, $root.basename;
+    $archive;
+}
+
+sub checks-by-name(%r --> Hash) {
+    %r<checks>.map({ .<name> => $_ }).Hash
+}
+
+subtest 'the scratch directory has a space in its name', {
+    plan 2;
+    my $dir = App::Ariza::Smoke.scratch-dir(:work-dir($*TMPDIR));
+    ok $dir.basename.contains(' '),
+        'because a bundle that only works from an unspaced path is broken'
+      ~ ' for most of macOS and all of Windows';
+    nok $dir.e, 'and it does not exist yet';
+};
+
+subtest 'the environment is replaced, not filtered', {
+    plan 5;
+    temp %*ENV;
+    %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
+    %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
+
+    my %env = App::Ariza::Smoke.base-env;
+    nok %env<ARIZA_LEAK_MARKER>:exists, 'nothing arbitrary survives';
+    nok %env<DBIISH_SQLCIPHER_LIB>:exists,
+        'least of all a library path into Homebrew, which is the exact'
+      ~ ' variable that makes a broken bundle look perfect here';
+    ok %env<PATH>:exists, 'PATH is set, so a shebang can find /bin/sh';
+
+    my $root = '/b'.IO;
+    my %rt = App::Ariza::Smoke.runtime-env($root,
+        { platform => 'linux-x86_64-glibc',
+          components => { sqlcipher => { path => 'native/sqlcipher/libsqlcipher.so.0' } } });
+    is %rt<RAKULIB>, 'inst#/b/site', 'the runtime environment names the bundle';
+    is %rt<DBIISH_SQLCIPHER_LIB>, '/b/native/sqlcipher/libsqlcipher.so.0',
+        'and on Linux, where the loader needs telling, points at SQLCipher';
+};
+
+subtest 'macOS gets no SQLCipher variables, because it does not need them', {
+    plan 2;
+    my %rt = App::Ariza::Smoke.runtime-env('/b'.IO,
+        { platform => 'macos-arm64',
+          components => { sqlcipher => { path => 'rakudo/lib/libsqlcipher.0.dylib' } } });
+    nok %rt<DBIISH_SQLCIPHER_LIB>:exists,
+        'the library is inside rakudo/lib, on the interpreter\'s own rpath';
+    nok %rt<LD_LIBRARY_PATH>:exists, 'and LD_LIBRARY_PATH means nothing there';
+};
+
+subtest 'a good bundle passes every check', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    if !runnable-fixtures() {
+        skip 'a shell-script fixture needs a POSIX shell to stand in for'
+           ~ ' the launcher and the interpreter', 8;
+    }
+    else {
+        temp %*ENV;
+        %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
+
+        my $archive = pack(fake-bundle($dir,
+            :smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']])));
+
+        my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
+        ok %r<passed>, 'the smoke passes';
+
+        my %by = checks-by-name(%r);
+        ok %by<unpack><ok>, 'it unpacked';
+        ok %by<launcher><ok>, 'the launcher is there and executable';
+        ok %by<precomp><ok>, 'the precompilation store shipped warm';
+        ok %by<native-audit><ok>, 'and nothing loads from outside the bundle';
+
+        ok %by{'smoke[0]'}<output>.contains('LEAK=none'),
+            'the launcher ran with none of the invoking shell\'s environment';
+
+        # A {raku} command stands in for code running inside the app, so
+        # it gets what the launcher would have exported — otherwise it
+        # would be testing the absence of a launcher.
+        ok %by{'smoke[1]'}<output>.contains('RAKULIB=inst#'),
+            'while a direct interpreter call gets the launcher\'s environment';
+
+        nok %r<dir>.e, 'and a passing run cleans up after itself';
+    }
+};
+
+subtest 'a failing bundle fails one check and keeps the evidence', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    if !runnable-fixtures() {
+        skip 'needs a POSIX shell to fake a launcher that fails', 5;
+    }
+    else {
+        my $archive = pack(fake-bundle($dir,
+            :smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']]),
+            :exec-status(3)));
+
+        my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
+        nok %r<passed>, 'the smoke fails';
+
+        my %by = checks-by-name(%r);
+        nok %by{'smoke[0]'}<ok>, 'on the command that exited non-zero';
+        ok %by{'smoke[0]'}<detail>.contains('exit 3'), 'reporting its exit code';
+
+        # Every check runs: "the launcher failed" and "the launcher failed
+        # and the audit found something" are different bug reports.
+        ok %by{'smoke[1]'}<ok>, 'the later checks still ran';
+        ok %r<dir>.d,
+            'and the unpacked tree is kept, because the state it failed in is the point';
+    }
+};
+
+subtest 'a bundle that is not one fails honestly', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    throws-like { App::Ariza::Smoke.smoke(:archive($dir.add('nope.tar.gz')), :!verbose) },
+        Exception, message => /'no bundle archive at'/, 'a missing archive';
+
+    my $root = fake-bundle($dir, :smoke([]));
+    $root.add('ariza-manifest.json').unlink;
+    my %r = App::Ariza::Smoke.smoke(:archive(pack($root)), :work-dir($dir), :!verbose);
+    nok %r<passed>, 'an archive with no manifest fails';
+    ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
+        'on the manifest check, naming it';
+
+    my %none = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('second'), :smoke([])))),
+        :work-dir($dir), :!verbose);
+    ok %none<checks>.first({ .<name> eq 'smoke-commands' && .<ok> }),
+        'while an app that declares no smoke commands is checked structurally and passes';
+};
+
+subtest 'the manifest has to be the right shape, not merely parseable', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # This is what a Raku `{ .<name> => … }` block-literal serialises to:
+    # an array of one-key objects per distribution. It parses, it reads
+    # plausibly, and it lists nothing.
+    my $broken = pack(fake-bundle($dir, :smoke([]),
+        :dists([[{ name => 'App::Moneymoor' }, { version => '0.2.0' }]])));
+
+    my %r = App::Ariza::Smoke.smoke(:archive($broken), :work-dir($dir), :!verbose);
+    nok %r<passed>, 'a manifest whose dists are not objects fails';
+    ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
+        'on the manifest check';
+
+    my %good = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
+        :work-dir($dir), :!verbose);
+    ok %good<checks>.first({ .<name> eq 'manifest' && .<ok> }),
+        'while a well-formed one passes and says how many distributions it has';
+};
+
+subtest 'the structural checks need nothing to be runnable', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # No smoke commands, so nothing is executed: this is the shape of the
+    # check that has to work identically on every platform, including the
+    # one where a fixture cannot pretend to be an interpreter.
+    my %r = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir, :smoke([])))),
+        :work-dir($dir), :!verbose);
+
+    my %by = checks-by-name(%r);
+    ok %r<passed>, 'a structurally sound bundle passes';
+    ok %by<launcher><ok>, 'the launcher is where the manifest says';
+    ok %by<runtime><ok>, 'so is the interpreter';
+    ok %by<target><ok>, 'and the script it is meant to run';
+    ok %by<precomp><ok>, 'and the bytecode shipped with it';
+};

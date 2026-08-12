@@ -1,0 +1,169 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Config;
+use App::Ariza::Site;
+use App::Ariza::Tools;
+
+plan 6;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-site-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub config(--> App::Ariza::Config) {
+    my $dir = tmp-dir;
+    $dir.add('ariza.toml').spurt(q:to/TOML/);
+    [app]
+    name = "App::Moneymoor"
+    exec = "moneymoor"
+    display = "Moneymoor"
+    TOML
+    my $cfg = App::Ariza::Config.load($dir);
+    rm-rf($dir);
+    $cfg;
+}
+
+#| A site repository with the `dist/` metadata a real one would have.
+sub fake-repo(IO::Path $bundle, @dists --> IO::Path) {
+    my $dist = ensure-dir(App::Ariza::Site.site-dir($bundle).add('dist'));
+    for @dists.kv -> $i, %d {
+        $dist.add("DIST{$i}").spurt(to-json(%d));
+    }
+    $bundle;
+}
+
+subtest 'the two directories a bundle keeps its Raku world in', {
+    plan 2;
+    my $b = '/b'.IO;
+    is App::Ariza::Site.site-dir($b).absolute, '/b/site'.IO.absolute,
+        'modules go in site/';
+    is App::Ariza::Site.native-dir($b).absolute, '/b/native'.IO.absolute,
+        'native payloads go in native/';
+};
+
+subtest 'the child environment names the bundle and unsets the rest', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    temp %*ENV;
+    %*ENV<PERL6LIB> = '/somewhere/else';
+    %*ENV<RAKULIB>  = 'inst#/the/users/own/repo';
+
+    my %env = App::Ariza::Site.child-env($dir);
+    is %env<RAKULIB>, 'inst#' ~ $dir.add('site').absolute,
+        'RAKULIB points at the bundle, overriding whatever the user had';
+
+    # zef precompiles nothing into a repository that is not in the chain,
+    # which is why RAKULIB is set during the install and not just after.
+    ok %env<RAKULIB>.starts-with('inst#'), 'as an installation repository';
+
+    nok %env<PERL6LIB>:exists,
+        'PERL6LIB is removed, not blanked — an empty one deprecates for the whole run';
+
+    is %env<NOTCURSES_NATIVE_DATA_DIR>, $dir.add('native').absolute,
+        'and Notcurses::Native stages into (and later loads from) the bundle';
+};
+
+subtest 'installed-dists reads the repository, not the app metadata', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    is-deeply App::Ariza::Site.installed-dists($dir), (),
+        'a bundle with no repository has no distributions';
+
+    # A list of Hashes, bound rather than slurped: a slurpy positional
+    # flattens each Hash into its Pairs, and every "dist" arrives as a
+    # one-key hash.
+    my @fake =
+        { name => 'Selkie', ver => '0.13.0', auth => 'zef:apogee',
+          provides => { 'Selkie' => 'lib/Selkie.rakumod' },
+          depends => ['Notcurses::Native:ver<0.4.3+>'] },
+        { name => 'App::Moneymoor', version => '0.2.0', auth => 'zef:apogee',
+          provides => { 'App::Moneymoor' => 'x', 'App::Moneymoor::DB' => 'y' } },
+    ;
+    fake-repo($dir, @fake);
+
+    my @dists = App::Ariza::Site.installed-dists($dir);
+    is-deeply @dists.map(*.<name>).List, ('App::Moneymoor', 'Selkie'),
+        'sorted by name';
+    is @dists[0]<version>, '0.2.0',
+        'version comes from `ver` or `version`, whichever the repository wrote';
+    is-deeply @dists[0]<provides>.List, ('App::Moneymoor', 'App::Moneymoor::DB'),
+        'with the modules it provides, which is what gets precompiled';
+};
+
+subtest 'closure-gaps catches a dependency satisfied from outside the bundle', {
+    plan 4;
+    my @complete =
+        { name => 'App::Moneymoor', depends => ['Selkie:ver<0.11.0+>:auth<zef:apogee>',
+                                                'JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>'] },
+        { name => 'Selkie', depends => [] },
+        { name => 'JSON::Fast', depends => [] },
+    ;
+    is-deeply App::Ariza::Site.closure-gaps(@complete), (),
+        'a closed closure has no gaps';
+
+    # The bug this exists to catch: a name split on ":" turns a
+    # dependency on JSON::Fast into a dependency on "JSON".
+    ok !App::Ariza::Site.closure-gaps(@complete).first(/'JSON'/),
+        'and `::` in a dependency name is not mistaken for an adverb';
+
+    my @broken =
+        { name => 'App::Moneymoor', depends => ['Selkie:ver<0.11.0+>'] },
+        { name => 'JSON::Fast', depends => [] },
+    ;
+    my @gaps = App::Ariza::Site.closure-gaps(@broken);
+    is +@gaps, 1, 'a missing distribution is one gap';
+    is @gaps[0], 'App::Moneymoor needs Selkie', 'naming who needs what';
+};
+
+subtest 'exec-target prefers the .raku stub over the sh wrapper', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $cfg = config();
+    my $bin = ensure-dir($dir.add('bin'));
+
+    throws-like { App::Ariza::Site.exec-target($dir, :config($cfg)) },
+        Exception, message => /"installed no 'moneymoor' script"/,
+        'an empty bin/ names the executable that is missing';
+
+    # zef writes both: a `sh` wrapper that execs a bare `rakudo` off
+    # PATH (useless in a bundle) and a `.raku` stub that calls
+    # CompUnit::RepositoryRegistry.run-script (exactly right).
+    $bin.add('moneymoor').spurt("#!/usr/bin/env sh\nexec rakudo …\n");
+    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'moneymoor',
+        'with only the wrapper present, that is the target';
+
+    $bin.add('moneymoor.raku').spurt('sub MAIN(*@, *%) { }');
+    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'moneymoor.raku',
+        'but the stub wins whenever it exists';
+
+    ok $bin.add('moneymoor').slurp.contains('exec rakudo'),
+        'because the wrapper execs a `rakudo` off PATH, which a bundle has not got';
+};
+
+subtest 'build-site refuses inputs it cannot work with', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $cfg = config();
+
+    throws-like {
+        App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir.add('nope')),
+            :config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
+    }, Exception, message => /'no application source at'/, 'a missing app checkout';
+
+    throws-like {
+        App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir),
+            :config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
+    }, Exception, message => /'no bundled zef at'/,
+        'and a runtime that never unpacked — before anything is downloaded';
+};

@@ -1,0 +1,75 @@
+# Third-party components in this bundle
+
+{{ app_display }} {{ app_version }} for {{ platform }}, built by ariza
+{{ ariza_version }} on {{ built_at }}.
+
+A bundle is self-contained: it carries a Raku runtime and every native
+library the application loads, so that unpacking it is the whole
+installation. That also means it redistributes other people's software.
+This file says what is in here, under what licence, and where the
+authoritative licence text lives.
+
+Licence texts that ship inside the bundle are in this directory
+(`LICENSES/`). Everything else is named with its upstream project, whose
+own distribution carries the full text.
+
+## The application
+
+| Component | Version | Licence | Text |
+|---|---|---|---|
+| {{ app_name }} | {{ app_version }} | {{ app_license }} | `LICENSES/{{ app_license_file }}` |
+
+Its Raku dependencies are installed under `site/` and each carries its
+own metadata; `ariza-manifest.json` lists every one with its version and
+author.
+
+## The Raku runtime
+
+| Component | Version | Licence | Text |
+|---|---|---|---|
+| Rakudo / MoarVM / NQP | {{ rakudo_tag }} | Artistic-2.0 | `LICENSES/rakudo.txt` |
+
+Downloaded unmodified from `rakudo.org`:
+
+    {{ rakudo_url }}
+    sha256 {{ rakudo_sha256 }}
+
+## Native libraries
+{% if notcurses_tag %}
+Staged under `native/Notcurses-Native/{{ notcurses_tag }}/lib`, from the
+Notcurses-Native distribution's prebuilt binary pack. These are upstream
+builds, unmodified.
+{% endif %}
+| Library files | Project | Licence |
+|---|---|---|
+{%- for row in native_rows %}
+| {{ row.files }} | {{ row.project }} | {{ row.license }} |
+{%- endfor %}
+
+> **Note on the FFmpeg family.** notcurses links FFmpeg for image and
+> video rendering, and this pack's FFmpeg is built with `libx264` and
+> `libx265`. Those encoders are GPL-2.0-or-later, which makes the FFmpeg
+> libraries here GPL-licensed builds rather than the LGPL ones FFmpeg
+> ships by default. Redistributing this bundle therefore carries GPL
+> obligations for those files. If that is not wanted, the fix is
+> upstream in Notcurses-Native's pack (an FFmpeg built without the GPL
+> encoders), not here.
+{% if sqlcipher_version %}
+## SQLCipher
+
+| Component | Version | Licence | Source |
+|---|---|---|---|
+| SQLCipher | {{ sqlcipher_version }} | BSD-style (Zetetic LLC) | `{{ sqlcipher_rel }}` |
+
+SQLCipher is SQLite plus an encryption layer; SQLite itself is public
+domain. The build in this bundle links OpenSSL (`libcrypto`,
+Apache-2.0), which is carried alongside it.
+
+    {{ sqlcipher_source }}
+    sha256 {{ sqlcipher_sha256 }}
+{% endif %}
+## Verifying what you have
+
+`ariza-manifest.json` records the exact version, source URL and SHA-256
+of every downloaded component, plus every Raku distribution installed
+into `site/`. `VERSION` is the same information in one screen.

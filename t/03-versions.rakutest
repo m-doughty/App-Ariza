@@ -1,0 +1,146 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Versions;
+
+plan 7;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-versions-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub rm-rf(IO::Path $d) {
+    return unless $d.d;
+    .&rm-rf for $d.dir.grep(*.d);
+    .unlink for $d.dir.grep(*.f);
+    $d.rmdir;
+}
+
+sub write-toml(IO::Path $dir, Str $content --> IO::Path) {
+    my $path = $dir.add('versions.toml');
+    $path.spurt($content);
+    $path;
+}
+
+subtest 'the shipped pin file', {
+    plan 5;
+
+    my $v = App::Ariza::Versions.load;
+
+    is $v.sqlcipher, '4.14.0', 'the SQLCipher version a bundle expects';
+
+    is $v.rakudo-version, '2026.07', 'the bundled runtime version';
+    is $v.rakudo-revision, '01', 'the bundled runtime revision';
+    is $v.rakudo-tag, '2026.07-01', 'rakudo-tag joins the two';
+
+    is-deeply $v.warnings.List, (), 'the shipped file parses without warnings';
+};
+
+subtest 'load reports where it read from', {
+    plan 2;
+    my $v = App::Ariza::Versions.load;
+    ok $v.path.defined, 'path is populated';
+    is $v.path.basename, 'versions.toml', 'and names the file';
+};
+
+subtest 'unknown keys warn, they never die', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $path = write-toml($dir, q:to/TOML/);
+    sqlcipher  = "4.14.0"
+    future-pin = "whatever"
+
+    [rakudo]
+    version   = "2026.07"
+    revision  = "01"
+    codename  = "nautilus"
+    TOML
+
+    my $v = App::Ariza::Versions.load($path);
+    is $v.sqlcipher, '4.14.0', 'the recognised keys still load';
+    is $v.rakudo-tag, '2026.07-01', 'including the nested table';
+    is +$v.warnings, 2, 'both unknown keys warned';
+    ok $v.warnings.first(/"'future-pin'"/), 'the top-level key is named';
+    ok $v.warnings.first(/"'rakudo.codename'"/), 'the nested key is dotted';
+};
+
+subtest '//-prefixed keys are ignored silently', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $path = write-toml($dir, q:to/TOML/);
+    "// note" = "why this pin is stuck"
+    sqlcipher = "4.14.0"
+
+    [rakudo]
+    "// why" = "waiting on a MoarVM fix"
+    version  = "2026.07"
+    revision = "01"
+    TOML
+
+    my $v = App::Ariza::Versions.load($path);
+    is-deeply $v.warnings.List, (), 'no warnings for comment keys';
+    is $v.sqlcipher, '4.14.0', 'and the real keys are unaffected';
+};
+
+subtest 'wrong types die naming the key', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    throws-like { App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = 2026')) },
+        Exception, message => /'sqlcipher must be a string'/,
+        'a bare number where a string belongs';
+
+    throws-like {
+        App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nversion = 2026\n"))
+    }, Exception, message => /'rakudo.version must be a string'/,
+        'the dotted path names the nested key';
+
+    throws-like { App::Ariza::Versions.load(write-toml($dir, 'rakudo = "flat"')) },
+        Exception, message => /'rakudo must be a table'/,
+        'a scalar where a table belongs';
+};
+
+subtest 'missing pins are undefined, not empty', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $v = App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nrevision = \"01\"\n"));
+    is $v.sqlcipher, Str, 'an absent flat pin';
+    is $v.rakudo-version, Str, 'an absent nested pin';
+    is $v.rakudo-tag, Str, 'rakudo-tag needs both halves';
+
+    my $half = App::Ariza::Versions.load(
+        write-toml($dir, "[rakudo]\nversion = \"2026.07\"\n"));
+    is $half.rakudo-tag, Str, 'half an identity names nothing';
+
+    # The other side of the same distinction: a pin that is present but
+    # deliberately blank is the empty string, and stays distinguishable
+    # from one that was never written.
+    my $blank = App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = ""'));
+    is $blank.sqlcipher, '', 'an empty pin is the empty string, not undefined';
+};
+
+subtest 'broken files fail distinguishably', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    throws-like { App::Ariza::Versions.load($dir.add('nope.toml')) },
+        Exception, message => /'no versions file at'/,
+        'a missing file';
+
+    throws-like { App::Ariza::Versions.load(write-toml($dir, "= = =\n")) },
+        Exception, message => /'malformed TOML in'/,
+        'a file that is not TOML';
+
+    my $empty = App::Ariza::Versions.load(write-toml($dir, ''));
+    is $empty.sqlcipher, Str, 'an empty file is a valid, empty pin set';
+};

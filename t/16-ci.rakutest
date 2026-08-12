@@ -1,0 +1,394 @@
+use v6.d;
+use Test;
+
+use App::Ariza::CI;
+use App::Ariza::Config;
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+use App::Ariza::Versions;
+
+plan 10;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-ci-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| A config from TOML text, written and read back the way a real one is.
+sub config(Str $toml --> App::Ariza::Config) {
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    $dir.add('ariza.toml').spurt($toml);
+    App::Ariza::Config.load($dir);
+}
+
+#| Pins as a fixture rather than ariza's own resources/versions.toml: a
+#| golden workflow is a statement about ariza's templates, and it should
+#| fail when one of those changes, not when the Rakudo pin is bumped.
+sub versions(--> App::Ariza::Versions) {
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    $dir.add('versions.toml').spurt(q:to/TOML/);
+    sqlcipher = "4.14.0"
+
+    [rakudo]
+    version  = "2026.07"
+    revision = "01"
+    TOML
+    App::Ariza::Versions.load($dir.add('versions.toml'));
+}
+
+# The same values App-Moneymoor's manifest carries, for the same reason
+# t/15 keeps its own copy: this file is about ariza's templates, not
+# about a sibling app's current platform list.
+my constant MONEYMOOR = q:to/TOML/;
+[app]
+name = "App::Moneymoor"
+exec = "moneymoor"
+display = "Moneymoor"
+
+[bundle]
+platforms = ["macos-arm64", "linux-x86_64-glibc", "windows-x86_64"]
+native = ["notcurses", "sqlcipher"]
+
+[installer]
+repo = "m-doughty/App-Moneymoor"
+TOML
+
+my $CFG  = config(MONEYMOOR);
+my $VERS = versions();
+
+# Pinned rather than read off the running distribution: under `prove6
+# -Ilib` there is no metadata and the answer is 'dev', under `-I.` it is
+# the real version, and a golden file cannot be both.
+my constant ARIZA-VERSION = '0.0.1';
+
+sub ctx(App::Ariza::Config $config = $CFG --> Hash) {
+    App::Ariza::CI.context(:$config, :versions($VERS),
+                           :ariza-version(ARIZA-VERSION))
+}
+
+sub render(Str $template, App::Ariza::Config $config = $CFG --> Str) {
+    App::Ariza::CI.render(:$template, |ctx($config))
+}
+
+my %CTX     = ctx();
+my $RELEASE = render('release.yml.j2');
+my $TEST    = render('test.yml.j2');
+
+sub golden-path(Str $name --> IO::Path) {
+    checkout-root().add('t/golden').add("ci-$name")
+}
+
+subtest 'an app gets one build lane per platform it declares', {
+    plan 8;
+
+    is App::Ariza::CI.lanes-for($CFG).map(*.<job>).List,
+        ('bundle-macos-arm64', 'bundle-linux-x86_64-glibc',
+         'bundle-windows-x86_64'),
+        'three declared platforms, three jobs, in manifest order';
+
+    is App::Ariza::CI.lane-slugs,
+        ('linux-x86_64-glibc', 'macos-arm64', 'windows-x86_64'),
+        'and those are the only three ariza can scaffold a lane for';
+
+    my $one = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64"]
+    TOML
+    is App::Ariza::CI.lanes-for($one).map(*.<job>).List,
+        ('bundle-macos-arm64',), 'a one-platform app gets one lane';
+
+    my $one-release = render('release.yml.j2', $one);
+    ok $one-release.contains('bundle-macos-arm64:'), 'and one build job';
+    nok $one-release.contains('bundle-windows-x86_64'),
+        'with no trace of the platforms it did not ask for';
+    is +$one-release.comb(/ ^^ '      - bundle-' /), 1,
+        'and a needs: list with exactly one entry';
+
+    # A platform ariza cannot build a bundle for at all (rakudo.org
+    # publishes no binary for it) must not quietly vanish from the
+    # workflow: silently dropping it ships a release missing a platform
+    # the author asked for, which is why bundle.platforms rejects an
+    # unknown slug rather than warning.
+    my $unbuildable = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64", "linux-aarch64-musl"]
+    TOML
+    throws-like { App::Ariza::CI.lanes-for($unbuildable) }, Exception,
+        message => /'no CI build lane' .* 'linux-aarch64-musl'/,
+        'a slug with no lane is named, not skipped';
+    throws-like { App::Ariza::CI.lanes-for($unbuildable) }, Exception,
+        message => /'linux-x86_64-glibc, macos-arm64, windows-x86_64'/,
+        'and the message says which slugs do have one';
+};
+
+subtest 'the context carries the app and the pins, not the machine', {
+    plan 9;
+
+    is %CTX<app_name>, 'App::Moneymoor', 'the dist name';
+    is %CTX<app_exec>, 'moneymoor', 'the launcher name';
+    is %CTX<repo>, 'm-doughty/App-Moneymoor', 'where releases are published';
+    is %CTX<rakudo_tag>, '2026.07-01', 'the runtime pin a bundle embeds';
+    is %CTX<rakudo_revision_int>, 1,
+        'as a number, because the release index records it as one';
+    is %CTX<sqlcipher_version>, '4.14.0', 'and the SQLCipher pin';
+    is %CTX<job_names>.List,
+        ('bundle-macos-arm64', 'bundle-linux-x86_64-glibc',
+         'bundle-windows-x86_64'),
+        'the jobs publish will have to wait for';
+    ok %CTX<smoke_installer>,
+        'an app with a Linux bundle and a repo gets the installer smoke';
+
+    # A workflow is read by strangers on GitHub; nothing about the
+    # machine that generated it may survive into one.
+    nok ($RELEASE, $TEST).first(*.contains($*HOME.absolute)),
+        'and no path from the machine that rendered it appears anywhere';
+};
+
+subtest 'the rendered workflows match their golden files', {
+    plan 3;
+
+    # Set ARIZA_REGENERATE_GOLDEN=1 to rewrite these after an intentional
+    # template change; read the diff before you commit it.
+    my $regenerate = ?%*ENV<ARIZA_REGENERATE_GOLDEN>;
+
+    for App::Ariza::CI.workflows -> %w {
+        my $text = render(%w<template>);
+        my $golden = golden-path(%w<output>);
+        ensure-dir($golden.parent);
+        $golden.spurt($text) if $regenerate || !$golden.f;
+
+        # Read as bytes: IO::Handle normalises CRLF to LF in text mode,
+        # and a workflow file is LF whatever machine wrote it.
+        is $text, $golden.slurp(:bin).decode('utf8'),
+            "{%w<output>} renders byte-for-byte as committed";
+    }
+
+    # `${{ ... }}` is GitHub's own syntax and is meant to survive; a bare
+    # `{{` or a `{%` is a template that did not render.
+    nok ($RELEASE, $TEST).first(/ '{%' | <!after '$'> '{{' /),
+        'and no unrendered Jinja2 delimiter survives into either';
+};
+
+subtest 'release.yml is a workflow GitHub will accept', {
+    plan 12;
+
+    ok $RELEASE.contains("\nname: release\n"), 'it is called release';
+    ok $RELEASE.contains("\non:\n"), 'it has triggers';
+    ok $RELEASE.contains("  workflow_dispatch:\n"),
+        'a dispatch trigger, so a lane can be iterated without a tag';
+    ok $RELEASE.contains("      ref:\n"), 'with a ref input to iterate on';
+    ok $RELEASE.contains("  push:\n    tags:\n      - 'v*'\n"),
+        'and a tag trigger, which is the one that publishes';
+
+    ok $RELEASE.contains("\npermissions:\n  contents: write\n"),
+        'it may write releases, and nothing else';
+    ok $RELEASE.contains("\nenv:\n  LANG: en_US.UTF-8\n  LC_ALL: en_US.UTF-8\n"),
+        'and runs under a UTF-8 locale, as every workflow in this tree does';
+
+    # GitHub expression syntax and Jinja2 both spell themselves with
+    # braces; the templates escape the former so the latter leaves it
+    # alone. If that ever stops working these come out empty.
+    ok $RELEASE.contains('ref: ${{ inputs.ref || github.ref }}'),
+        'the dispatch ref reaches checkout intact';
+    ok $RELEASE.contains('tag_name: ${{ github.ref_name }}'),
+        'and the tag reaches the release';
+
+    is +$RELEASE.comb(/ ^^ '  bundle-' \N+ ':' $$ /), 3,
+        'three build jobs';
+    ok $RELEASE.contains("  publish:\n"), 'a publish job';
+    ok $RELEASE.contains("  smoke-installer:\n"),
+        'and a job that installs what was published';
+};
+
+subtest 'nothing is published until a tag says so', {
+    plan 6;
+
+    my @needs = $RELEASE.lines
+        .grep({ .starts-with('      - bundle-') }).map(*.trim.substr(2));
+    is @needs, %CTX<job_names>.List,
+        'publish waits for every build lane, by name';
+
+    is +$RELEASE.comb(/ ^^ '    if: startsWith(github.ref, ' \' 'refs/tags/' \' ')' $$ /), 2,
+        'and both publish and the installer smoke are tag-gated';
+
+    ok $RELEASE.contains('    needs: publish'),
+        'the installer smoke runs after the release exists';
+
+    # A dispatch run must be free to fail: that is the whole point of
+    # having one.
+    ok $RELEASE.contains('workflow_dispatch:')
+        && $RELEASE.contains('startsWith(github.ref'),
+        'so a dispatch run builds and smokes and stops there';
+
+    ok $RELEASE.contains('uses: softprops/action-gh-release@v3'),
+        'the release is cut with the action the rest of this tree uses';
+    ok $RELEASE.contains('sha256sum -c'),
+        'and the digests are checked before they are published';
+};
+
+subtest 'each lane installs what ariza needs on that platform', {
+    plan 11;
+
+    ok $RELEASE.contains("    runs-on: macos-latest\n"), 'macOS lane';
+    ok $RELEASE.contains('brew install sqlcipher'),
+        'takes SQLCipher from Homebrew, which is where ariza looks';
+
+    ok $RELEASE.contains('    container: quay.io/pypa/manylinux_2_28_x86_64'),
+        'the Linux lane builds in manylinux_2_28';
+    ok $RELEASE.contains('dnf install -y python3 tcl openssl-devel'),
+        'with the packages a SQLCipher source build needs';
+    ok $RELEASE.contains('https://rakudo.org/dl/rakudo'),
+        'and installs Rakudo from the release index by hand,';
+    ok $RELEASE.contains('"ver") == "2026.07"')
+        && $RELEASE.contains('"build_rev", -1)) == 1'),
+        'at exactly the version and revision ariza pins';
+    ok $RELEASE.contains('/v4.14.0.tar.gz'),
+        'and builds the pinned SQLCipher rather than a distro package';
+
+    ok $RELEASE.contains("    runs-on: windows-latest\n"), 'the Windows lane';
+    ok $RELEASE.contains('vcpkg install sqlcipher:x64-windows'),
+        'sources SQLCipher from vcpkg';
+    ok $RELEASE.contains('"SQLCIPHER_LIB_DIR=$lib"'),
+        'and names the directory, which is the contract App::Ariza::Native'
+      ~ ' documents for Windows';
+
+    is +$RELEASE.comb(/ 'ariza smoke --archive=' /), 3,
+        'and every lane smokes what it built before uploading it';
+};
+
+subtest 'where the workflows install ariza from', {
+    plan 7;
+
+    ok $RELEASE.contains('run: zef install --/test App::Ariza'),
+        'fez by default';
+    ok $RELEASE.contains('#   run: zef install --/test https://github.com/m-doughty/App-Ariza.git'),
+        'with the repository beside it as a comment, for the bootstrap';
+    ok $RELEASE.contains("Scaffolded by ariza {ARIZA-VERSION}."),
+        'and the version that scaffolded the file, so provenance is visible';
+
+    my $git = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64"]
+    [ci]
+    ariza-source = "https://github.com/m-doughty/App-Ariza.git"
+    TOML
+    is $git.ci-ariza-source, 'https://github.com/m-doughty/App-Ariza.git',
+        'ci.ariza-source is read off the manifest';
+
+    my $from-git = render('release.yml.j2', $git);
+    ok $from-git.contains('run: zef install --/test https://github.com/m-doughty/App-Ariza.git'),
+        'and becomes the command';
+    ok $from-git.contains('#   run: zef install --/test App::Ariza'),
+        'with fez demoted to the comment';
+
+    throws-like {
+        config("[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+             ~ "[bundle]\nplatforms = [\"macos-arm64\"]\n"
+             ~ "[ci]\nariza-source = \"\"\n")
+    }, Exception, message => /'ci.ariza-source must not be empty'/,
+        'and an empty one is refused rather than rendered';
+};
+
+subtest 'the [ci] table follows the house rules', {
+    plan 3;
+
+    my $unknown = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    [bundle]
+    platforms = ["macos-arm64"]
+    [ci]
+    ariza-source = "fez"
+    "// note" = "ignored silently"
+    future-key = "warns"
+    TOML
+    is $unknown.warnings.List, ("unknown key 'ci.future-key' in ariza.toml (ignored)",),
+        'an unrecognised key warns and loading continues';
+    is $unknown.ci-ariza-source, 'fez', 'while the keys it knows are still read';
+
+    throws-like {
+        config("[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+             ~ "[ci]\nariza-source = 3\n")
+    }, Exception, message => /'ci.ariza-source must be a string'/,
+        'and a wrong type dies naming the dotted path';
+};
+
+subtest 'test.yml is the house shape, and says it is yours', {
+    plan 6;
+
+    ok $TEST.contains("\nname: test\n"), 'it is called test';
+    ok $TEST.contains("        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+        'all three runners, as every other test.yml in this tree';
+    ok $TEST.contains('run: prove6 -I. t'),
+        'and runs the suite the same way';
+    ok $TEST.contains('tags-ignore'),
+        'a tag push does not re-run the tests -- release.yml has that covered';
+
+    ok $TEST.contains('written only when it is absent'),
+        'the file says it will not be regenerated';
+    ok $TEST.contains('notcurses, sqlcipher'),
+        'and names the native libraries it deliberately does not install';
+};
+
+subtest 'write puts them in .github/workflows, once', {
+    plan 9;
+    my $app = tmp-dir;
+    LEAVE { rm-rf($app) }
+    my $dir = $app.add('.github/workflows');
+
+    my @first = App::Ariza::CI.write(:out-dir($dir), :config($CFG),
+                                     :versions($VERS),
+                                     :ariza-version(ARIZA-VERSION));
+    is @first.map(*.<output>).List, ('test.yml', 'release.yml'),
+        'both workflows, in write order';
+    is @first.map(*.<action>).List, ('wrote', 'wrote'),
+        'both written into a directory that did not exist';
+    ok $dir.d, 'which was created -- a repository with no CI has no such directory';
+
+    # A hand-maintained test workflow is not ariza's to clobber, and
+    # release.yml is derived from bundle.platforms, so it must follow one.
+    $dir.add('test.yml').spurt("# mine now\n");
+    my @again = App::Ariza::CI.write(:out-dir($dir), :config($CFG),
+                                     :versions($VERS),
+                                     :ariza-version(ARIZA-VERSION));
+    is @again.map(*.<action>).List, ('skipped', 'wrote'),
+        'a second run keeps test.yml and rewrites release.yml';
+    is $dir.add('test.yml').slurp, "# mine now\n", 'the edited file is untouched';
+    is $dir.add('release.yml').slurp, $RELEASE, 'and release.yml is regenerated';
+
+    my @forced = App::Ariza::CI.write(:out-dir($dir), :config($CFG),
+                                      :versions($VERS),
+                                      :ariza-version(ARIZA-VERSION), :force);
+    is @forced.map(*.<action>).List, ('wrote', 'wrote'),
+        'until --force says otherwise';
+    is $dir.add('test.yml').slurp, $TEST, 'which restores the house shape';
+
+    my $bare = config(q:to/TOML/);
+    [app]
+    name = "A"
+    exec = "a"
+    display = "A"
+    TOML
+    throws-like {
+        App::Ariza::CI.write(:out-dir($app.add('none')), :config($bare),
+                             :versions($VERS))
+    }, Exception, message => /'declares no bundle.platforms'/,
+        'an app with no platforms is told there is nothing to build';
+};

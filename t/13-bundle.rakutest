@@ -1,0 +1,200 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Bundle;
+use App::Ariza::Tools;
+
+plan 7;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-bundle-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+#| An app checkout: a META6.json, an ariza.toml, and nothing else. Enough
+#| for everything `build` decides before it touches the network.
+sub fake-app(IO::Path $dir, :$version = '0.2.0', :$meta = True,
+             :@platforms = <macos-arm64 linux-x86_64-glibc>  --> IO::Path) {
+    $dir.add('META6.json').spurt(to-json({
+        name => 'App::Moneymoor', version => $version, license => 'Artistic-2.0',
+    })) if $meta;
+    $dir.add('ariza.toml').spurt(
+        "[app]\nname = \"App::Moneymoor\"\nexec = \"moneymoor\"\n"
+      ~ "display = \"Moneymoor\"\n\n[bundle]\n"
+      ~ "platforms = [{@platforms.map({ "\"$_\"" }).join(', ')}]\n");
+    $dir;
+}
+
+my constant MANIFEST = {
+    'ariza-manifest' => 1,
+    ariza    => '0.1.0',
+    built-at => '2026-08-11T18:43:01Z',
+    platform => 'macos-arm64',
+    app => { name => 'App::Moneymoor', exec => 'moneymoor',
+             display => 'Moneymoor', version => '0.2.0' },
+    components => {
+        rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
+        sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
+        notcurses => { tag => 'binaries-notcurses-3.0.17-r9' },
+    },
+};
+
+subtest 'the bundle is named after the app, its version and its platform', {
+    plan 2;
+    is App::Ariza::Bundle.bundle-name(:exec<moneymoor>, :version<0.2.0>,
+                                      :platform<macos-arm64>),
+        'moneymoor-0.2.0-macos-arm64',
+        'which is the workdir name and the archive stem';
+    is App::Ariza::Bundle.bundle-name(:exec<moneymoor>, :version<0.2.0>,
+                                      :platform<windows-x86_64>),
+        'moneymoor-0.2.0-windows-x86_64', 'per platform, so releases coexist';
+};
+
+subtest 'the version comes from the checkout, and a bad one is named', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    is App::Ariza::Bundle.app-version(fake-app($dir)), '0.2.0',
+        'read from the checkout\'s META6.json';
+
+    throws-like { App::Ariza::Bundle.app-version($dir.add('elsewhere')) },
+        Exception, message => /'no META6.json in'/, 'a directory that is not a dist';
+
+    $dir.add('META6.json').spurt('{ not json');
+    throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
+        message => /'malformed META6.json'/, 'a broken META6';
+
+    $dir.add('META6.json').spurt(to-json({ name => 'App::Moneymoor' }));
+    throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
+        message => /'has no version'/,
+        'and one with no version, rather than naming the bundle "moneymoor--macos-arm64"';
+};
+
+subtest 'a build refuses the wrong platform before it downloads anything', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    fake-app($dir);
+
+    throws-like {
+        App::Ariza::Bundle.build(:app-dir($dir), :platform<macos-aarch64>,
+                                 :out-dir($dir.add('out')), :!verbose)
+    }, Exception, message => /'not a platform ariza knows'/,
+        'a misspelled slug — macos-aarch64 for macos-arm64 — is caught';
+
+    # An app that lists its platforms has said which ones it is tested
+    # on; producing an artefact named after one it never claimed is a
+    # promise ariza has no business making for it.
+    throws-like {
+        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
+                                 :out-dir($dir.add('out')), :!verbose)
+    }, Exception, message => /'does not declare' .* 'windows-x86_64'/,
+        'and a platform the app does not declare';
+
+    throws-like {
+        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
+                                 :out-dir($dir.add('out')), :!verbose)
+    }, Exception, message => /'macos-arm64, linux-x86_64-glibc'/,
+        'naming the ones it does';
+};
+
+subtest 'an app with no declared platforms constrains nothing', {
+    plan 1;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    fake-app($dir, :platforms(()));
+
+    # The build will fail later, at the network — the point is that it
+    # gets past the platform gate rather than being refused on principle.
+    throws-like {
+        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-arm64>,
+                                 :out-dir($dir.add('out')), :!verbose)
+    }, Exception, message => /'publishes no binary build'/,
+        'an unconstrained app reaches the runtime step, and fails there instead';
+};
+
+subtest 'VERSION is one screen a human can quote in a bug report', {
+    plan 7;
+    my $text = App::Ariza::Bundle.version-file(MANIFEST);
+    my @lines = $text.lines;
+
+    is @lines[0], 'Moneymoor 0.2.0 (macos-arm64)',
+        'the headline names the product, the version and the platform';
+    ok @lines.first(/^ 'app' \s+ 'App::Moneymoor 0.2.0'/), 'the distribution';
+    ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
+    ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
+    ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r9'/),
+        'the notcurses build, by the tag it was actually staged under';
+    ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
+    ok $text.contains('Run bin/moneymoor'),
+        'ending with the one thing the reader has to do';
+};
+
+subtest 'the manifest records the SQLCipher that was staged, not the pin', {
+    plan 6;
+
+    # The pin is advisory: the build machine's package manager decides
+    # what is actually bundled, so a manifest quoting the pin would be
+    # quoting a number nobody verified.
+    my %m = App::Ariza::Bundle.sqlcipher-component(%(
+        version => '4.17.0', pinned => '4.14.0',
+        rel => 'rakudo/lib/libsqlcipher.0.dylib', sha256 => 'abc123',
+        origin => 'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
+    ));
+    is %m<version>, '4.17.0', 'the version staged';
+    is %m<pinned>, '4.14.0', 'with the version expected beside it, so a'
+                           ~ ' reader can see the two disagree';
+    is %m<path>, 'rakudo/lib/libsqlcipher.0.dylib', 'where it went';
+    is %m<source>,
+        'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
+        'and where it came from';
+
+    # A library whose bytes did not name a version: still not the pin.
+    my %unknown = App::Ariza::Bundle.sqlcipher-component(%(
+        version => Str, pinned => '4.14.0', rel => 'native/sqlcipher/sqlcipher.dll',
+        sha256 => 'def456', origin => 'SQLCIPHER_LIB_DIR: C:\\vcpkg\\bin\\sqlcipher.dll',
+    ));
+    is %unknown<version>, 'unknown', 'said plainly rather than filled in';
+    is %unknown<pinned>, '4.14.0', 'the pin is still recorded as the expectation';
+};
+
+subtest 'the licence inventory is read off the bundle, not written down', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $lib = ensure-dir($dir.add('lib'));
+    for <libnotcurses.3.dylib libnotcurses-core.3.dylib
+         libnotcurses_native_shim.dylib libnotcurses_native_shim.dylib.srchash
+         libavcodec.62.dylib libswscale.9.dylib libx264.165.dylib
+         libcrypto.3.dylib libthing-nobody-knows.1.dylib> -> $name {
+        $lib.add($name).spurt('x');
+    }
+
+    my @rows = App::Ariza::Bundle.native-inventory($lib);
+    my %by = @rows.map({ .<project> => $_ }).Hash;
+
+    ok %by<FFmpeg><files>.contains('libavcodec.62.dylib')
+        && %by<FFmpeg><files>.contains('libswscale.9.dylib'),
+        'libav* and libsw* are grouped as one FFmpeg row';
+
+    # The pack's FFmpeg is built with x264/x265, which makes it a GPL
+    # build rather than the LGPL one FFmpeg ships by default. Someone
+    # redistributing this needs to see that.
+    ok %by<x264><license>.contains('GPL-2.0'), 'x264 is named as GPL';
+    ok %by<FFmpeg><license>.contains('GPL-2.0'), 'and so is the FFmpeg built with it';
+
+    # Order matters in the prefix table: the shim starts with the same
+    # eleven characters as notcurses itself.
+    ok %by{'Notcurses-Native (this project)'}<files>.contains('_native_shim'),
+        'the shim is attributed separately from notcurses';
+
+    # A library nobody classified is worse than useless if it is silently
+    # dropped: it is a redistributed binary with no attribution at all.
+    ok %by{'(unclassified)'}<files>.contains('libthing-nobody-knows'),
+        'an unrecognised library is listed as unclassified rather than omitted';
+};

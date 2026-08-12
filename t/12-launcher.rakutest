@@ -1,0 +1,222 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Config;
+use App::Ariza::Launcher;
+use App::Ariza::Native;
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+
+plan 7;
+
+my constant SLUGS = 'macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64';
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-launcher-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub config(--> App::Ariza::Config) {
+    my $dir = tmp-dir;
+    $dir.add('ariza.toml').spurt(q:to/TOML/);
+    [app]
+    name = "App::Moneymoor"
+    exec = "moneymoor"
+    display = "Moneymoor"
+    TOML
+    my $cfg = App::Ariza::Config.load($dir);
+    rm-rf($dir);
+    $cfg;
+}
+
+my $CFG = config();
+
+#| The context every golden file was rendered from. Fixed inputs, so a
+#| diff is always a change in the templates and never in the fixture.
+sub ctx(Str $slug --> Hash) {
+    App::Ariza::Launcher.context(
+        :config($CFG), :$slug,
+        :target<site/bin/moneymoor.raku>,
+        :app-version<0.2.0>,
+        :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
+    )
+}
+
+sub golden-path(Str $slug, Str $suffix --> IO::Path) {
+    checkout-root().add('t/golden').add("launcher-$slug$suffix")
+}
+
+subtest 'each platform family gets the scripts it can run', {
+    plan 5;
+    is App::Ariza::Launcher.scripts-for('macos-arm64').map(*.<suffix>).List, ('',),
+        'macOS gets one bare POSIX launcher';
+    is App::Ariza::Launcher.scripts-for('linux-x86_64-glibc').map(*.<template>).List,
+        ('launcher-posix.sh.j2',), 'Linux gets the same template';
+    is App::Ariza::Launcher.scripts-for('windows-x86_64').map(*.<suffix>).List,
+        ('.ps1', '.cmd'),
+        'Windows gets both twins — PowerShell and a batch file for cmd.exe';
+    is App::Ariza::Launcher.scripts-for('macos-arm64')[0]<mode>, 0o755,
+        'and the POSIX one is executable';
+
+    throws-like { App::Ariza::Launcher.scripts-for('plan9-mips') }, Exception,
+        message => /'no launcher template'/, 'an unknown family is named';
+};
+
+subtest 'nothing absolute, and nothing about this machine, gets baked in', {
+    plan 6;
+    for SLUGS -> $slug {
+        my %c = ctx($slug);
+        my @paths = %c<target>, %c<sqlcipher_lib>, %c<sqlcipher_dir>;
+        nok @paths.first(*.starts-with('/')),
+            "$slug: every path in the context is bundle-relative";
+        nok @paths.first(*.contains($*HOME.absolute)),
+            "$slug: and none of them mentions the machine that built it";
+    }
+};
+
+subtest 'the rendered launchers match their golden files', {
+    plan 4;
+
+    # Set ARIZA_REGENERATE_GOLDEN=1 to rewrite these after an
+    # intentional template change; read the diff before you commit it.
+    my $regenerate = ?%*ENV<ARIZA_REGENERATE_GOLDEN>;
+
+    for SLUGS -> $slug {
+        my @rendered = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
+            %( suffix => %s<suffix> || '.sh',
+               text   => App::Ariza::Launcher.render(:template(%s<template>), |ctx($slug)) )
+        });
+
+        for @rendered -> %r {
+            my $golden = golden-path($slug, %r<suffix>);
+            ensure-dir($golden.parent);
+            $golden.spurt(%r<text>) if $regenerate || !$golden.f;
+        }
+
+        # Read as bytes: IO::Handle normalises CRLF to LF in text mode,
+        # so a text slurp would silently agree with an LF-only Windows
+        # launcher — the one thing the golden file is there to catch.
+        my $joined = @rendered.map({ .<text> }).join("\n----\n");
+        my $expected = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
+            golden-path($slug, %s<suffix> || '.sh').slurp(:bin).decode('utf8')
+        }).join("\n----\n");
+
+        is $joined, $expected, "$slug renders byte-for-byte as committed";
+    }
+
+    ok golden-path('windows-x86_64', '.cmd').f,
+       'and the Windows twins are committed even though nothing here runs them';
+};
+
+subtest 'the POSIX launcher does what a bundle needs', {
+    plan 9;
+    my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+                                         |ctx('macos-arm64'));
+
+    ok $sh.starts-with("#!/bin/sh\n"), 'it is a POSIX shell script';
+
+    # readlink -f is a GNU extension: absent on macOS before Monterey and
+    # on the BSDs. A launcher that only resolves symlinks on Linux breaks
+    # the first time someone links it into ~/bin. (Checked against code,
+    # not comments — the template explains why it does not use it.)
+    my @code = $sh.lines.grep({ !.trim.starts-with('#') });
+    nok @code.first(/'readlink -f'/), 'no readlink -f in the code';
+    ok $sh.contains('while [ -L "$ariza_target" ]'),
+        'symlinks are chased with a loop over plain readlink';
+
+    ok $sh.contains('RAKULIB="inst#$BUNDLE_ROOT/site"'),
+        'the bundle is the only module repository';
+    ok $sh.contains('unset PERL6LIB'),
+        "and the user's PERL6LIB cannot get in front of it";
+    ok $sh.contains('NOTCURSES_NATIVE_DATA_DIR="$BUNDLE_ROOT/native"'),
+        'notcurses is found inside the bundle';
+    nok @code.first(/'NOTCURSES_NATIVE_LIB_DIR'/),
+        'never via LIB_DIR, which suppresses the TERMINFO_DIRS setup';
+
+    ok $sh.contains('exec "$ARIZA_RAKU" "$BUNDLE_ROOT/site/bin/moneymoor.raku" "$@"'),
+        'and it execs the bundled interpreter on the installed script';
+
+    # A quoting slip here is a bundle that only works from a path with no
+    # spaces, which is most of macOS and all of Windows. Every expansion
+    # of $BUNDLE_ROOT opens a double-quoted string, directly or after an
+    # `inst#` prefix inside one.
+    is +$sh.comb(/ '$BUNDLE_ROOT' /), +$sh.comb(/ <["\#]> '$BUNDLE_ROOT' /),
+        'every expansion of $BUNDLE_ROOT is inside double quotes';
+};
+
+subtest 'macOS and Linux differ in exactly one place', {
+    plan 5;
+    my $mac   = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+                                            |ctx('macos-arm64'));
+    my $linux = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+                                            |ctx('linux-x86_64-glibc'));
+
+    # macOS stages SQLCipher into rakudo/lib, which the interpreter's own
+    # LC_RPATH already covers; Linux has no such implicit path.
+    nok $mac.contains('LD_LIBRARY_PATH'), 'macOS needs no library path';
+    nok $mac.contains('DBIISH_SQLCIPHER_LIB'), 'and no DBIish hint';
+
+    ok $linux.contains('LD_LIBRARY_PATH="$BUNDLE_ROOT/native/sqlcipher${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'),
+        'Linux prepends the bundle to LD_LIBRARY_PATH, keeping what was there';
+    ok $linux.contains('DBIISH_SQLCIPHER_LIB="$BUNDLE_ROOT/native/sqlcipher/libsqlcipher.so.0"'),
+        'and points DBIish straight at the library';
+
+    my $none = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+        |App::Ariza::Launcher.context(:config($CFG), :slug<linux-x86_64-glibc>,
+                                      :target<site/bin/moneymoor.raku>));
+    nok $none.contains('DBIISH_SQLCIPHER_LIB'),
+        'an app that does not use SQLCipher gets no SQLCipher wiring at all';
+};
+
+subtest 'the POSIX launcher is syntactically valid, and writes where it should', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my @written = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+        :slug<macos-arm64>, :target<site/bin/moneymoor.raku>,
+        :app-version<0.2.0>,
+        :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
+
+    is +@written, 1, 'one launcher for macOS';
+    is @written[0].relative($dir), 'bin/moneymoor', 'at bin/<exec>';
+    # POSIX permission bits, on a platform that has them: a downloaded
+    # launcher that is not executable is a support ticket. Windows has no
+    # such bit to set, so there is nothing to assert there beyond the
+    # file existing, which the line above already did.
+    if $*DISTRO.is-win {
+        ok @written[0].f, 'the file is written (Windows has no executable bit)';
+    }
+    else {
+        ok @written[0].x, 'and executable — a launcher that is not is a support ticket';
+    }
+
+    if have-command('sh') {
+        my ($code, $, $err) = try-run(['sh', '-n', @written[0].absolute]);
+        is $code, 0, 'sh -n accepts it' or diag $err;
+    }
+    else {
+        # No POSIX shell to ask; the golden comparison above still ran.
+        skip 'no sh on this machine to syntax-check with', 1;
+    }
+
+    my @win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+        :slug<windows-x86_64>, :target<site/bin/moneymoor.raku>);
+    is @win.map(*.basename).List, ('moneymoor.ps1', 'moneymoor.cmd'),
+        'and Windows gets both twins';
+};
+
+subtest 'Windows output is CRLF', {
+    plan 3;
+    my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>,
+                                          |ctx('windows-x86_64'));
+    # cmd.exe mis-parses an LF-only batch file in ways that look nothing
+    # like a line-ending problem.
+    ok $cmd.contains("\r\n"), 'the batch file has CRLF line endings';
+    nok $cmd.subst("\r\n", '', :g).contains("\n"), 'and no bare LF anywhere';
+
+    my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+                                         |ctx('macos-arm64'));
+    nok $sh.contains("\r"), 'while the POSIX script has none';
+};

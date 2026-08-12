@@ -1,0 +1,93 @@
+#!/usr/bin/env raku
+use App::Ariza;
+
+my %*SUB-MAIN-OPTS = :named-anywhere;
+
+sub cli(&code) {
+    CATCH {
+        default {
+            note .message;
+            exit 1;
+        }
+    }
+    &code();
+}
+
+multi MAIN("bundle", Str :$app!, Str :$platform, Str :$out-dir,
+           Str :$sqlcipher-archive) {
+    cli { App::Ariza.cmd-bundle(:$app, :$platform, :$out-dir, :$sqlcipher-archive) };
+}
+
+multi MAIN("installers", Str :$app!, Str :$out-dir, Str :$branch = 'main') {
+    cli { App::Ariza.cmd-installers(:$app, :$out-dir, :$branch) };
+}
+
+multi MAIN("scaffold-ci", Str :$app!, Str :$out-dir, Bool :$force = False) {
+    cli { App::Ariza.cmd-scaffold-ci(:$app, :$out-dir, :$force) };
+}
+
+multi MAIN("smoke", Str :$archive!, Bool :$keep = False) {
+    cli {
+        my %r = App::Ariza.cmd-smoke(:$archive, :$keep);
+        exit 1 unless %r<passed>;
+    };
+}
+
+multi MAIN("version") {
+    say App::Ariza.dist-version;
+}
+
+multi MAIN("help") {
+    USAGE();
+}
+
+multi MAIN(Bool :h(:$help)!) {
+    USAGE();
+}
+
+sub USAGE {
+    say q:to/END/;
+    Usage:
+      ariza bundle               build a self-contained bundle: the app,
+                                 a Rakudo runtime, every Raku dependency
+                                 and every native library, in one archive
+            --app=DIR            the application's repository (required)
+            --platform=SLUG      target platform (default: this machine)
+            --out-dir=DIR        where the bundle and archive are written
+                                 (default: the current directory)
+            --sqlcipher-archive=FILE
+                                 stage SQLCipher from a local archive
+                                 instead of from this machine's package
+                                 manager (cross-builds, air-gapped
+                                 builds; SQLCIPHER_LIB_DIR does the same
+                                 with a directory)
+
+      ariza smoke                unpack a built archive somewhere new and
+                                 prove it runs with a clean environment
+            --archive=FILE       the .tar.gz to check (required)
+            --keep               keep the unpacked tree even on success
+
+      ariza installers           render the end-user install/uninstall
+                                 scripts that download, verify and unpack
+                                 a published bundle
+            --app=DIR            the application's repository (required)
+            --out-dir=DIR        write here instead of into the app's own
+                                 repository; the directory must exist
+            --branch=NAME        the branch the curl one-liner names
+                                 (default: main)
+
+      ariza scaffold-ci          write the GitHub Actions workflows that
+                                 build a bundle per declared platform,
+                                 smoke each one, and publish them on a tag
+            --app=DIR            the application's repository (required)
+            --out-dir=DIR        write here instead of into the app's own
+                                 .github/workflows
+            --force              replace test.yml too; by default it is
+                                 written only when absent, while
+                                 release.yml is always regenerated
+
+      ariza version              show ariza's own version
+      ariza help                 show this help
+    END
+    exit 1;
+}

@@ -1,0 +1,219 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Rakudo;
+use App::Ariza::Tools;
+use App::Ariza::Versions;
+
+plan 8;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-rakudo-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+# A miniature of the real index: archives, signatures and checksum files
+# for two revisions on two platforms, in rakudo.org's exact field shapes.
+my @INDEX =
+    { name => 'rakudo', platform => 'src', ver => '2026.07', type => 'archive',
+      format => 'tar.gz', url => 'https://rakudo.org/dl/rakudo/rakudo-2026.07.tar.gz' },
+    { name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+      build_rev => 1, type => 'archive', format => 'tar.gz',
+      url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-clang.tar.gz' },
+    { name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+      build_rev => 1, type => 'sig', format => 'asc',
+      url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-clang.tar.gz.asc' },
+    { name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.06',
+      build_rev => 2, type => 'archive', format => 'tar.gz',
+      url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.06-02-macos-arm64-clang.tar.gz' },
+    { name => 'rakudo', platform => 'linux', arch => 'x86_64', ver => '2026.07',
+      build_rev => 1, type => 'archive', format => 'tar.gz',
+      url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-linux-x86_64-gcc.tar.gz' },
+    { name => 'rakudo', platform => 'win', arch => 'x86_64', ver => '2026.07',
+      build_rev => 1, type => 'archive', format => 'zip',
+      url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-win-x86_64-msvc.zip' },
+;
+
+sub fake-fetch($ --> Str) { to-json(@INDEX) }
+
+subtest 'slugs map to index coordinates, and only four of them can', {
+    plan 5;
+    is-deeply App::Ariza::Rakudo.index-platform('macos-arm64'),
+        { platform => 'macos', arch => 'arm64' }, 'macos-arm64';
+    is-deeply App::Ariza::Rakudo.index-platform('windows-x86_64'),
+        { platform => 'win', arch => 'x86_64' },
+        'windows-x86_64 becomes win/x86_64, which is upstream\'s spelling';
+    is-deeply App::Ariza::Rakudo.fetchable-slugs,
+        ('linux-x86_64-glibc', 'macos-arm64', 'macos-x86_64', 'windows-x86_64'),
+        'the four platforms rakudo.org publishes binaries for';
+
+    # musl and Linux aarch64 are real platforms with no upstream build.
+    throws-like { App::Ariza::Rakudo.index-platform('linux-x86_64-musl') },
+        Exception, message => /'publishes no binary build' .* 'linux-x86_64-musl'/,
+        'a platform with no upstream archive is named, not guessed at';
+    throws-like { App::Ariza::Rakudo.index-platform('linux-x86_64-musl') },
+        Exception, message => /'macos-arm64'/,
+        'and the bundleable set is listed, so the answer is on screen';
+};
+
+subtest 'fetch-index parses, and says so plainly when it cannot', {
+    plan 4;
+    my @entries = App::Ariza::Rakudo.fetch-index(:fetch(&fake-fetch));
+    is +@entries, +@INDEX, 'every entry survives';
+    is @entries[1]<ver>, '2026.07', 'with its fields intact';
+
+    throws-like {
+        App::Ariza::Rakudo.fetch-index(:fetch(-> $ { die 'curl: (6) could not resolve host' }))
+    }, Exception, message => /'could not reach the Rakudo release index'/,
+        'an unreachable host is an honest network error, not a parse error';
+
+    throws-like {
+        App::Ariza::Rakudo.fetch-index(:fetch(-> $ { '<html>404</html>' }))
+    }, Exception, message => /'is not JSON'/, 'and a wrong body says so';
+};
+
+subtest 'select-entry matches the pin exactly', {
+    plan 5;
+    my %e = App::Ariza::Rakudo.select-entry(@INDEX,
+        :slug<macos-arm64>, :version<2026.07>, :revision<01>);
+    ok %e<url>.ends-with('macos-arm64-clang.tar.gz'), 'the archive, not the signature';
+
+    # "01" in the pin file is 1 in the JSON.
+    is %e<build_rev>, 1, 'the revision is compared numerically';
+
+    my %w = App::Ariza::Rakudo.select-entry(@INDEX,
+        :slug<windows-x86_64>, :version<2026.07>, :revision<01>);
+    ok %w<url>.ends-with('.zip'), 'Windows resolves to the zip';
+
+    throws-like {
+        App::Ariza::Rakudo.select-entry(@INDEX,
+            :slug<macos-arm64>, :version<2019.03>, :revision<01>)
+    }, Exception, message => /'no Rakudo 2019.03-01 build' .* '2026.07-01'/,
+        'a stale pin dies listing what that platform does have';
+
+    my @dupes = |@INDEX, {
+        name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+        build_rev => 1, type => 'archive', format => 'tar.gz',
+        url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-gcc.tar.gz',
+    };
+    throws-like {
+        App::Ariza::Rakudo.select-entry(@dupes,
+            :slug<macos-arm64>, :version<2026.07>, :revision<01>)
+    }, Exception, message => /'has 2 archives'/,
+        'two archives for one pin is a pin-file decision, not a tiebreak here';
+};
+
+subtest 'the cache records a digest on the way in and verifies it on the way out', {
+    plan 8;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $cache = $dir.add('cache');
+
+    my $downloads = 0;
+    my &download = -> $url, $dest {
+        $downloads++;
+        ensure-dir($dest.IO.parent);
+        $dest.IO.spurt("pretend archive for $url");
+    };
+
+    my %entry = @INDEX[1];
+    my %first = App::Ariza::Rakudo.fetch-archive(%entry, :cache-dir($cache), :&download);
+    is $downloads, 1, 'the first build downloads';
+    nok %first<cached>, 'and says so';
+    ok %first<sha256> ~~ /^ <[0..9a..f]> ** 64 $/, 'with a digest';
+    ok $cache.add(%first<archive>.basename ~ '.sha256').f,
+        'recorded in a sidecar beside the archive';
+
+    my %second = App::Ariza::Rakudo.fetch-archive(%entry, :cache-dir($cache), :&download);
+    is $downloads, 1, 'the second build downloads nothing';
+    ok %second<cached>, 'and reuses the cached copy';
+
+    # Corruption after the fact — a killed process, a lying disk — is
+    # exactly what recording the digest is for.
+    %first<archive>.spurt('corrupted in place');
+    # The re-download is announced on STDERR; that is the right place for
+    # it in a build, and the wrong place for it in a test transcript.
+    my %third = do {
+        temp $*ERR = open $*SPEC.devnull, :w;
+        LEAVE $*ERR.close;
+        App::Ariza::Rakudo.fetch-archive(%entry, :cache-dir($cache), :&download);
+    };
+    is $downloads, 2, 'a cached archive that fails its digest is re-fetched';
+    nok %third<cached>, 'and reported as a fresh download';
+};
+
+subtest 'an archive with no sidecar is adopted rather than re-fetched', {
+    plan 3;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $cache = ensure-dir($dir.add('cache'));
+
+    my %entry = @INDEX[1];
+    my $name = %entry<url>.split('/').tail;
+    $cache.add($name).spurt('dropped in by hand');
+
+    my $downloads = 0;
+    my %got = App::Ariza::Rakudo.fetch-archive(%entry, :cache-dir($cache),
+        :download(-> $, $ { $downloads++ }));
+
+    is $downloads, 0, 'nothing is downloaded';
+    ok %got<cached>, 'the existing file is used';
+    ok $cache.add($name ~ '.sha256').f,
+        'and its digest is recorded now, so later builds verify it';
+};
+
+subtest 'unpack strips the wrapper directory and replaces what was there', {
+    plan 4;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $src = ensure-dir($dir.add('rakudo-moar-2026.07-01-macos-arm64-clang/bin'));
+    $src.add('raku').spurt("#!/bin/sh\n");
+    my $archive = $dir.add('runtime.tar.gz');
+    run 'tar', '-c', '-z', '-f', $archive.absolute, '-C', $dir.absolute,
+        'rakudo-moar-2026.07-01-macos-arm64-clang';
+
+    my $bundle = ensure-dir($dir.add('bundle'));
+    ensure-dir($bundle.add('rakudo'));
+    $bundle.add('rakudo/stale-file').spurt('from a previous build');
+
+    my $root = App::Ariza::Rakudo.unpack($archive, $bundle);
+    is $root.basename, 'rakudo', 'the runtime lands at <bundle>/rakudo';
+    ok $root.add('bin/raku').f, 'with the wrapper directory stripped';
+    nok $root.add('stale-file').e, 'and an earlier build replaced, not merged';
+    nok $bundle.add('.rakudo-staging').e, 'the staging directory is cleaned up';
+};
+
+subtest 'entry points are named per platform', {
+    plan 4;
+    my $root = '/b/rakudo'.IO;
+    is App::Ariza::Rakudo.raku-bin($root, :slug<macos-arm64>).basename, 'raku',
+        'raku on POSIX';
+    is App::Ariza::Rakudo.raku-bin($root, :slug<windows-x86_64>).basename, 'raku.exe',
+        'raku.exe on Windows';
+
+    my $zef = App::Ariza::Rakudo.zef-bin($root, :slug<macos-arm64>);
+    is $zef.relative($root), 'share/perl6/site/bin/zef',
+       'zef comes from the runtime\'s own site repository';
+    is App::Ariza::Rakudo.zef-bin($root, :slug<windows-x86_64>).basename, 'zef.bat',
+       'and is the batch wrapper on Windows';
+};
+
+subtest 'the cache lives under XDG_CACHE_HOME', {
+    plan 2;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    temp %*ENV;
+    %*ENV<XDG_CACHE_HOME> = $dir.absolute;
+    is App::Ariza::Rakudo.cache-dir.absolute,
+       $dir.add('ariza/rakudo').absolute, 'XDG_CACHE_HOME is honoured';
+
+    %*ENV<XDG_CACHE_HOME>:delete;
+    is App::Ariza::Rakudo.cache-dir.absolute,
+       $*HOME.add('.cache/ariza/rakudo').absolute,
+       'and ~/.cache is the fallback the XDG spec requires';
+};

@@ -1,0 +1,169 @@
+use v6.d;
+use Test;
+
+use App::Ariza;
+use App::Ariza::Resources;
+
+plan 7;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-cli-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub rm-rf(IO::Path $d) {
+    return unless $d.d;
+    .&rm-rf for $d.dir.grep(*.d);
+    .unlink for $d.dir.grep(*.f);
+    $d.rmdir;
+}
+
+my $root = checkout-root();
+my $bin  = $root.add('bin/ariza');
+
+# Mirror this process's own -I flags into the child, rather than
+# hardcoding lib/. `prove6 -Ilib` and `prove6 -I.` resolve the
+# distribution differently — the latter reads META6.json, so
+# $?DISTRIBUTION carries a version and the former does not — and the
+# child has to agree with the parent about which it is.
+my @inc = $*REPO.repo-chain
+    .grep(* ~~ CompUnit::Repository::FileSystem)
+    .map({ .prefix.absolute });
+@inc = ($root.add('lib').absolute,) unless @inc;
+
+#| Run bin/ariza the way a user would, against this checkout.
+sub ariza(*@args) {
+    my @flags = @inc.map({ |('-I', $_) });
+    my $proc = run $*EXECUTABLE, |@flags, $bin.absolute, |@args, :out, :err;
+    my $out = $proc.out.slurp(:close);
+    my $err = $proc.err.slurp(:close);
+    ($proc.exitcode, $out, $err)
+}
+
+subtest 'the distribution knows itself', {
+    plan 3;
+    ok App::Ariza.dist.defined, 'dist is the $?DISTRIBUTION object';
+    ok App::Ariza.dist-version.defined, 'dist-version is defined';
+    isnt App::Ariza.dist-version, '', 'and not empty';
+};
+
+subtest 'bin/ariza is a runnable script', {
+    plan 2;
+    ok $bin.f, 'bin/ariza exists';
+    is $bin.lines.head.trim, '#!/usr/bin/env raku', 'with a raku shebang';
+};
+
+subtest 'ariza version', {
+    plan 2;
+    my ($code, $out, $) = ariza('version');
+    is $code, 0, 'exits clean';
+    is $out.trim, App::Ariza.dist-version,
+       'and prints the same version the facade reports';
+};
+
+subtest 'ariza help', {
+    plan 7;
+    my ($code, $out, $) = ariza('help');
+    isnt $code, 0, 'help exits non-zero, so a bare mistype is a shell error';
+    ok $out.contains('--out-dir'), 'usage lists a verb\'s options';
+    ok $out.contains('ariza version'), 'and the other verbs';
+    ok $out.contains('ariza bundle'), 'including bundle';
+    ok $out.contains('ariza smoke'), 'and smoke';
+    ok $out.contains('ariza installers'), 'and installers';
+    ok $out.contains('ariza scaffold-ci'), 'and scaffold-ci';
+};
+
+subtest 'ariza installers', {
+    plan 5;
+    my $out-dir = tmp-dir;
+    my $app-dir = tmp-dir;
+    LEAVE { rm-rf($out-dir); rm-rf($app-dir) }
+
+    $app-dir.add('ariza.toml').spurt(q:to/TOML/);
+    [app]
+    name = "App::Kelpie"
+    exec = "kelpie"
+    display = "Kelpie"
+    [bundle]
+    platforms = ["macos-arm64", "windows-x86_64"]
+    [installer]
+    repo = "m-doughty/App-Kelpie"
+    TOML
+
+    my ($code, $out, $err) = ariza('installers', "--app={$app-dir.absolute}",
+                                   "--out-dir={$out-dir.absolute}");
+    is $code, 0, 'exits clean';
+    is $out-dir.dir.map(*.basename).sort.List,
+        ('install.ps1', 'install.sh', 'uninstall.ps1', 'uninstall.sh'),
+        'wrote all four scripts';
+    ok $out.contains('rendered 4 installers'), 'and said so';
+    is $err.trim, '', 'with nothing on stderr for a clean manifest';
+
+    # An app with no [installer] table has nowhere to download from, and
+    # is told that rather than handed a script that 404s.
+    $app-dir.add('ariza.toml').spurt(
+        "[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+      ~ "[bundle]\nplatforms = [\"macos-arm64\"]\n");
+    my ($bad, $, $bad-err) = ariza('installers', "--app={$app-dir.absolute}",
+                                   "--out-dir={$out-dir.absolute}");
+    isnt $bad, 0, 'an app with no installer.repo is a non-zero exit, not a stack trace';
+};
+
+subtest 'ariza scaffold-ci', {
+    plan 6;
+    my $app-dir = tmp-dir;
+    LEAVE { rm-rf($app-dir) }
+
+    $app-dir.add('ariza.toml').spurt(q:to/TOML/);
+    [app]
+    name = "App::Kelpie"
+    exec = "kelpie"
+    display = "Kelpie"
+    [bundle]
+    platforms = ["macos-arm64", "windows-x86_64"]
+    [installer]
+    repo = "m-doughty/App-Kelpie"
+    TOML
+
+    my ($code, $out, $err) = ariza('scaffold-ci', "--app={$app-dir.absolute}");
+    is $code, 0, 'exits clean';
+    is $app-dir.add('.github/workflows').dir.map(*.basename).sort.List,
+        ('release.yml', 'test.yml'),
+        'and writes both workflows into the app repository it was given';
+    ok $out.contains('scaffolded 2 of 2 workflows'), 'saying what it did';
+    is $err.trim, '', 'with nothing on stderr for a clean manifest';
+
+    # The second run is the one that matters: a test workflow someone has
+    # edited is not ariza's to overwrite.
+    my ($again, $again-out, $) = ariza('scaffold-ci', "--app={$app-dir.absolute}");
+    is $again, 0, 'a second run exits clean too';
+    ok $again-out.contains('kept') && $again-out.contains('scaffolded 1 of 2'),
+        'keeping test.yml and regenerating release.yml';
+};
+
+subtest 'ariza bundle and ariza smoke fail like commands, not like stack traces', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # The retired installer-script renderer. A verb that no longer exists
+    # is a usage error like any other typo, not a half-working command.
+    my ($retired, $retired-out, $) = ariza('render-legacy');
+    ok $retired != 0 && !$retired-out.contains('render-legacy'),
+       'render-legacy is gone, and the usage does not offer it';
+
+    # `--app` is required, and a missing one is a usage error rather
+    # than an exception from somewhere inside the build.
+    my ($no-app, $, $) = ariza('bundle');
+    isnt $no-app, 0, 'bundle without --app exits non-zero';
+
+    my ($no-dist, $, $err) = ariza('bundle', "--app={$dir.absolute}",
+                                   "--out-dir={$dir.absolute}");
+    isnt $no-dist, 0, 'and a directory that is not an app checkout does too';
+    ok $err.contains('ariza:'), 'reporting it as an ariza error, one line';
+
+    my ($no-archive, $, $smoke-err) = ariza('smoke',
+        "--archive={$dir.add('nothing.tar.gz').absolute}");
+    isnt $no-archive, 0, 'smoke on a missing archive exits non-zero';
+};

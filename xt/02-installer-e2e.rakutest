@@ -1,0 +1,314 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Config;
+use App::Ariza::Installer;
+use App::Ariza::Resources;
+use App::Ariza::Tools;
+
+=begin comment
+
+The generated install.sh, exercised against a real bundle: install,
+re-install, upgrade, prune, uninstall, and the failure paths — with
+C<HOME> pointed at a scratch directory throughout, so nothing here can
+touch the machine it runs on.
+
+It lives in xt/ because it needs a built bundle, which t/ has no way to
+produce in a second. Nothing here touches the network: the installer's
+C<--url> escape hatch takes a plain file path, which is exactly the seam
+this test drives.
+
+    ariza bundle --app=../App-Moneymoor --out-dir=/tmp/dist
+    ARIZA_E2E_ARCHIVE=/tmp/dist/moneymoor-0.2.0-macos-arm64.tar.gz \
+        prove6 -Ilib xt/02-installer-e2e.rakutest
+
+Without C<ARIZA_E2E_ARCHIVE> the whole file skips: there is no honest
+way to fake a bundle, and a green run against a fixture would be worse
+than no run at all.
+
+=end comment
+
+my $ARCHIVE = (%*ENV<ARIZA_E2E_ARCHIVE> // '').trim;
+my $APP     = checkout-root().parent.add('App-Moneymoor');
+
+sub bail(Str $why) {
+    plan 1;
+    skip $why;
+    exit 0;
+}
+
+bail 'set ARIZA_E2E_ARCHIVE to a built bundle archive to run this'
+    unless $ARCHIVE;
+bail "no bundle archive at $ARCHIVE" unless $ARCHIVE.IO.f;
+bail "no App-Moneymoor beside this checkout (looked in $APP)"
+    unless $APP.add('ariza.toml').f;
+
+my $CFG  = App::Ariza::Config.load($APP);
+my $EXEC = $CFG.app-exec;
+
+# The version and platform under test are read off the archive's name,
+# which ariza builds as <exec>-<version>-<slug>: this file asserts that
+# the installed launcher reports its own version, not a number written
+# down here.
+my $STEM = $ARCHIVE.IO.basename.subst(/'.tar.gz' $/, '');
+bail "$STEM is not a $EXEC bundle" unless $STEM.starts-with("$EXEC-");
+my $TAIL = $STEM.substr("$EXEC-".chars);
+my $SLUG = $CFG.bundle-platforms.list.first({ $TAIL.ends-with("-$_") })
+    // bail "$STEM names no platform {$CFG.app-name} declares";
+my $VERSION = $TAIL.substr(0, $TAIL.chars - $SLUG.chars - 1);
+
+# Resolved up front: on macOS $*TMPDIR is a symlink, and comparing a
+# resolved symlink target against an unresolved path would fail for
+# reasons that have nothing to do with the installer.
+my $SCRATCH  = $*TMPDIR.resolve.add("ariza-e2e-{$*PID}-{(^1_000_000).pick}");
+my $HOME     = ensure-dir($SCRATCH.add('home'));
+my $SCRIPTS  = ensure-dir($SCRATCH.add('scripts'));
+my $ARCHIVES = ensure-dir($SCRATCH.add('archives'));
+
+# `with`, not `if …d`: an early `bail` exits before this line has run, and
+# END blocks still fire — on a container that is still the Any default.
+END { rm-rf($_) with $SCRATCH }
+
+my $DATA = $HOME.add('.local/share').add($EXEC);
+my $BIN  = $HOME.add('.local/bin').add($EXEC);
+
+#| Successive versions to upgrade through: the archive's own, then the
+#| next two by bumping its last component.
+sub bumped(Int $by --> Str) {
+    my @parts = $VERSION.split('.');
+    (|@parts.head(*-1), @parts.tail + $by).join('.')
+}
+
+#| The environment an installer run gets: a replacement, not a filter, so
+#| nothing about the machine running the suite can reach it. C<run>'s
+#| C<:env> substitutes the child's whole environment, which is C<env -i>
+#| without needing C<env>.
+sub inst-env(%extra = {} --> Hash) {
+    my %env =
+        HOME   => $HOME.absolute,
+        PATH   => '/usr/bin:/bin',
+        TERM   => 'xterm',
+        TMPDIR => $SCRATCH.absolute,
+    ;
+    %env{$_} = %extra{$_} for %extra.keys;
+    %env
+}
+
+sub install(*@args --> List) {
+    try-run(['sh', $SCRIPTS.add('install.sh').absolute, |@args], :env(inst-env))
+}
+
+sub uninstall(--> List) {
+    try-run(['sh', $SCRIPTS.add('uninstall.sh').absolute], :env(inst-env))
+}
+
+#| Repack a bundle archive as a different version: unpack, rename the one
+#| top-level directory, tar it back up, write the sibling digest. That is
+#| what an upgrade looks like from the installer's side, and the only
+#| honest way to test one without cutting a release.
+sub repack(Str $from, Str $version --> Str) {
+    my $work = ensure-dir($ARCHIVES.add("work-$version"));
+    LEAVE { rm-rf($work) }
+
+    extract-archive($from, $work);
+    my $name = "$EXEC-$version-$SLUG";
+    sole-child($work).rename($work.add($name));
+
+    my $out = $ARCHIVES.add("$name.tar.gz");
+    run-checked(['tar', '-c', '-z', '-f', $out.absolute, '-C', $work.absolute, $name],
+                :what('tar'));
+    $ARCHIVES.add("$name.tar.gz.sha256").spurt(sha256-file($out) ~ "  $name.tar.gz\n");
+    $out.absolute
+}
+
+sub versions-installed(--> List) {
+    return () unless $DATA.add('versions').d;
+    $DATA.add('versions').dir.map(*.basename).sort.List
+}
+
+sub rc-files(--> List) { ($HOME.add('.profile'), $HOME.add('.zshrc')).List }
+
+sub marker-count(--> Int) {
+    rc-files.grep({ .f && .slurp.contains("# >>> $EXEC PATH >>>") }).elems
+}
+
+# Two rc files, with content in them, so "the block was appended without
+# eating anything" is a checkable claim rather than a hope.
+my constant PROFILE-BODY = "# a profile\nexport EDITOR=vi\n";
+.spurt(PROFILE-BODY) for rc-files;
+
+plan 9;
+
+subtest 'the installers render for the app under test', {
+    plan 3;
+    my @written = App::Ariza::Installer.write(:out-dir($SCRIPTS), :config($CFG));
+    is-deeply @written.map(*.basename).sort.List,
+        ('install.ps1', 'install.sh', 'uninstall.ps1', 'uninstall.sh'),
+        'all four scripts';
+    ok $SCRIPTS.add('install.sh').x, 'and install.sh is executable';
+
+    my ($code, $, $err) = try-run(['sh', '-n', $SCRIPTS.add('install.sh').absolute]);
+    is $code, 0, 'sh -n accepts it' or diag $err;
+};
+
+subtest 'installing from a local file', {
+    plan 8;
+
+    my ($code, $out, $err) = install('--url', $ARCHIVE);
+    is $code, 0, 'install.sh --url <file> exits 0' or diag $err ~ $out;
+    ok $out.contains('sha256 verified'),
+        'the sibling .sha256 was found and checked';
+    ok $out.contains("$VERSION installed"), 'and it says what it installed';
+
+    is-deeply versions-installed, ($VERSION,), "versions/$VERSION exists";
+    ok $DATA.add('current').l, 'current is a symlink, not a copy';
+    is $DATA.add('current').resolve.basename, $VERSION, 'pointing at that version';
+
+    ok $BIN.l, "~/.local/bin/$EXEC is a symlink";
+    is $BIN.resolve.absolute,
+       $DATA.add("versions/$VERSION/bin/$EXEC").resolve.absolute,
+       'that resolves through current to the version just installed';
+};
+
+subtest 'PATH is persisted once, without eating the rc file', {
+    plan 3;
+    is marker-count, 2, 'both rc files got the marker block';
+    for rc-files() -> $rc {
+        ok $rc.slurp.starts-with(PROFILE-BODY),
+            "{$rc.basename}: what was already in it is untouched";
+    }
+};
+
+subtest 'the installed launcher runs, and knows its own version', {
+    plan 2;
+
+    # Found on PATH through the ~/.local/bin symlink, with a replaced
+    # environment: this is the whole point of the exercise. A launcher
+    # whose symlink resolution is wrong, or a bundle that quietly needs
+    # something from the developer's shell, fails here.
+    my %env = inst-env({ PATH => "/usr/bin:/bin:{$HOME.add('.local/bin').absolute}" });
+    my ($code, $out, $err) = try-run(['sh', '-c', "exec $EXEC --version"], :%env);
+
+    is $code, 0, "$EXEC --version exits 0" or diag $err;
+    # Standard output only: the launcher's one-line first-run notice goes
+    # to stderr, exactly so that this kind of check is not fighting it.
+    is $out.lines.grep(*.trim).tail, "{$CFG.app-name} $VERSION",
+        'and reports the version the bundle was built from';
+};
+
+subtest 're-running the same version is a no-op that repairs', {
+    plan 4;
+
+    # Delete the two things a user is most likely to lose, then re-run:
+    # the obvious remedy has to be the correct one.
+    $BIN.unlink;
+    .spurt(PROFILE-BODY) for rc-files;
+
+    my ($code, $out, $err) = install('--url', $ARCHIVE);
+    is $code, 0, 'exits 0' or diag $err;
+    ok $out.contains('already installed'), 'and says so rather than reinstalling';
+    ok $BIN.l, 'the missing bin link is back';
+    is marker-count, 2, 'and so is the PATH block';
+};
+
+subtest 'upgrading installs beside the old version and flips current', {
+    plan 5;
+
+    my $next = bumped(1);
+
+    # Driven through the environment variable rather than --url: that is
+    # the other half of the escape hatch, and nothing else exercises it.
+    my ($code, $out, $err) = try-run(
+        ['sh', $SCRIPTS.add('install.sh').absolute],
+        :env(inst-env({ App::Ariza::Installer.env-url($CFG) => repack($ARCHIVE, $next) })));
+
+    is $code, 0, 'the upgrade exits 0' or diag $err;
+    ok $out.contains("$next installed"), 'and reports the new version';
+    is-deeply versions-installed, ($VERSION, $next).sort.List,
+        'the old version is still on disk, to roll back to';
+    is $DATA.add('current').resolve.basename, $next,
+        'while current points at the new one';
+    is $BIN.resolve.absolute, $DATA.add("versions/$next/bin/$EXEC").resolve.absolute,
+        'so the unchanged bin link now reaches the new version';
+};
+
+subtest 'a third version prunes back to one previous', {
+    plan 3;
+
+    my $third = bumped(2);
+    my ($code, $out, $err) = install('--url', repack($ARCHIVE, $third));
+
+    is $code, 0, 'exits 0' or diag $err;
+    ok $out.contains("removed superseded version $VERSION"),
+        'the oldest is removed, and the user is told which';
+    is-deeply versions-installed, (bumped(1), $third).sort.List,
+        'exactly the current version and the one before it are kept';
+};
+
+subtest 'refusing what it cannot verify, without disturbing what is installed', {
+    plan 6;
+
+    my $before = versions-installed;
+
+    my $bare = ensure-dir($SCRATCH.add('bare')).add($ARCHIVE.IO.basename);
+    $ARCHIVE.IO.copy($bare);
+
+    my ($no-digest, $, $err1) = install('--url', $bare.absolute);
+    isnt $no-digest, 0, 'a source with no .sha256 beside it is fatal';
+    ok $err1.contains('cannot be verified'), 'saying why' or diag $err1;
+
+    my $bad = ensure-dir($SCRATCH.add('bad')).add($ARCHIVE.IO.basename);
+    $ARCHIVE.IO.copy($bad);
+    $SCRATCH.add('bad').add($ARCHIVE.IO.basename ~ '.sha256')
+        .spurt('0' x 64 ~ "  {$ARCHIVE.IO.basename}\n");
+
+    my ($mismatch, $, $err2) = install('--url', $bad.absolute);
+    isnt $mismatch, 0, 'a wrong checksum is fatal';
+    ok $err2.contains('checksum mismatch'), 'naming both digests' or diag $err2;
+
+    is-deeply versions-installed, $before,
+        'and neither failure touched the working install';
+
+    # The one documented way past it, and only for a source the user
+    # named themselves.
+    my ($forced, $, $err3) = install('--url', $bare.absolute, '--insecure-no-verify');
+    is $forced, 0, '--insecure-no-verify installs it anyway, loudly' or diag $err3;
+};
+
+subtest 'uninstalling leaves nothing of its own behind', {
+    plan 6;
+
+    my ($code, $, $err) = uninstall;
+    is $code, 0, 'uninstall.sh exits 0' or diag $err;
+
+    nok $DATA.e, 'the data directory is gone';
+    nok $BIN.e || $BIN.l, 'the bin link is gone';
+    is marker-count, 0, 'and the PATH block is out of every rc file';
+    is-deeply rc-files.map(*.slurp).unique.List, (PROFILE-BODY,),
+        'leaving both rc files byte-identical to what they were before';
+
+    # The other end of the same promise: a platform the app does not
+    # publish for is named rather than guessed at.
+    my $elsewhere = ensure-dir($SCRATCH.add('elsewhere'));
+    my $absent = $SLUG.starts-with('macos') ?? 'linux-aarch64-musl' !! 'macos-x86_64';
+    $elsewhere.add('ariza.toml').spurt(qq:to/TOML/);
+    [app]
+    name = "{$CFG.app-name}"
+    exec = "$EXEC"
+    display = "{$CFG.app-display}"
+    [bundle]
+    platforms = ["$absent"]
+    [installer]
+    repo = "{$CFG.installer-repo}"
+    TOML
+
+    my $other = ensure-dir($SCRATCH.add('elsewhere-scripts'));
+    App::Ariza::Installer.write(:out-dir($other),
+        :config(App::Ariza::Config.load($elsewhere)));
+
+    my ($no-bundle, $, $why) = try-run(
+        ['sh', $other.add('install.sh').absolute], :env(inst-env));
+    ok $no-bundle != 0 && $why.contains('no prebuilt'),
+        'an unsupported platform is a clear refusal, not a wrong download'
+        or diag $why;
+};

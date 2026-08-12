@@ -1,0 +1,53 @@
+# Run App::Moneymoor's own test suite on Linux, macOS and Windows.
+#
+# Scaffolded by ariza 0.0.1 (`ariza scaffold-ci`), and yours
+# from here on: this file is written only when it is absent, and never
+# overwritten, because a test workflow grows things no generator can
+# infer from a manifest.
+#
+# One of those things, probably, is this app's native libraries:
+#
+#     notcurses, sqlcipher
+#
+# Nothing below installs them. They are what a *bundle* carries, and
+# whether the *test suite* needs them on the runner is a question only
+# this repository can answer -- add the steps if it does. Selkie's and
+# Vips-Native's test.yml are worked examples.
+
+name: test
+
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+env:
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Install Raku dependencies
+        run: zef install --/test --test-depends --deps-only .
+
+      - name: Install App::Prove6
+        run: zef install --/test App::Prove6
+
+      - name: Run tests
+        run: prove6 -I. t

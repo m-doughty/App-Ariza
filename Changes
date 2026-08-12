@@ -1,0 +1,447 @@
+Revision history for App::Ariza
+
+{{$NEXT}}
+
+0.0.1  2026-08-12T02:13:21+01:00
+    - The Windows release lane caches SQLCipher instead of building it
+      from vcpkg on every run. `actions/cache/restore@v4` restores
+      `C:\vcpkg\installed` under the key `vcpkg-sqlcipher-x64-windows-v1`
+      before the build, and the build step itself is gated on the miss.
+      The save is a separate `actions/cache/save@v4` step immediately
+      after the build, not the combined `actions/cache` action, which
+      only saves in a post step gated on the job succeeding -- a failed
+      smoke later in the same run would otherwise discard a fifteen-
+      minute build every single time. The dll-locating step that writes
+      SQLCIPHER_LIB_DIR stays unconditional, since it has to run whether
+      the library was just built or restored from cache.
+    - The legacy installer machinery is retired. App::Ariza::Legacy, the
+      eight Jinja2 templates and two shell partials under
+      resources/legacy, the per-app configs, the SQLCipher mirror
+      reference material, `ariza render-legacy` and the parity test are
+      all gone. The ruling behind it: apps get retired rather than
+      carried, and an app that is ready to ship ships the way Moneymoor
+      does -- a bundle, four generated installer scripts and two
+      workflows. Keeping a second distribution mechanism alive for one
+      unreleased app meant two ways to install everything, two things to
+      keep true of every pin bump, and a parity gate that could only ever
+      say "the old thing still renders the old bytes".
+    - The absorption was not wasted. The parts of the legacy partials
+      that a bundle installer still needs -- the marker-block PATH
+      persistence, the shell-rc detection -- were adapted into
+      resources/templates/installer-common-{posix.sh,windows.ps1} when
+      `ariza installers` was written, and those stay. What has been
+      deleted is only what drove package managers, refcounted a shared
+      registry and installed a terminal emulator: everything a bundle
+      exists to not do.
+    - versions.toml loses `wezterm`, `wezterm-macos-sha256` and
+      `sqlcipher-release-base`. Each was read by exactly one consumer,
+      the legacy render context, and by nothing else in lib/ or in any
+      live template. `sqlcipher` stays (the advisory pin a bundle is
+      expected to carry), `rakudo-star` stays, and `[rakudo]` -- the
+      runtime a bundle actually embeds -- is untouched. The matching
+      accessors and their tests go with the keys.
+    - `rakudo-star` follows in the same cleanup: the legacy renderer was
+      its only consumer, and with that gone the pin named a Rakudo
+      release nothing in ariza installs on anyone's behalf. `sqlcipher`
+      and `[rakudo]` are unaffected; App::Ariza::Versions drops the
+      accessor and the parse arm, and their tests go with it.
+    - Documentation stops naming the directory it was developed in. The
+      distribution description, the NAME line and the example output
+      paths no longer carry a private path segment, or imply that the
+      apps live together in one tree: ariza is a bundler for Raku
+      terminal applications, not for one person's directory of them. The `releases/latest` URL in the
+      installer section now uses the C<< ... >> Pod form, since the
+      E<lt>/E<gt> escapes rendered literally through C<>.
+    - Phase four: `ariza scaffold-ci`. App::Ariza::CI writes the two
+      GitHub Actions workflows an app needs into its own
+      .github/workflows -- a test.yml in the house shape, and a
+      release.yml that builds one bundle per platform the app declares,
+      smokes each one, and publishes them on a tag. `ariza bundle`
+      builds a bundle on the machine it is standing on; a release needs
+      one per platform, on machines that are actually those platforms,
+      because SQLCipher comes off the build host and there is no
+      cross-build to fall back on. That is a CI problem, so this is CI.
+    - One build lane per declared slug, each installing what ariza needs
+      before running the same three steps (bundle, smoke, upload):
+      macos-latest with `brew install sqlcipher`; ubuntu-latest inside
+      quay.io/pypa/manylinux_2_28_x86_64, so the archive's glibc floor
+      is 2.28 (RHEL 8+, Ubuntu 18.10+, Debian 10+) rather than whatever
+      the runner image ships this month; windows-latest with
+      `vcpkg install sqlcipher:x64-windows` and SQLCIPHER_LIB_DIR
+      pointed at the result, which is the sourcing contract
+      App::Ariza::Native documents for Windows.
+    - The manylinux lane installs Rakudo by hand, out of the same JSON
+      release index App::Ariza::Rakudo reads and at the same [rakudo]
+      pin: Raku/setup-raku installs into the runner's tool cache, which
+      is not in the container's filesystem, and there is no URL pattern
+      to construct because upstream filenames carry a toolchain suffix.
+      It builds SQLCipher from source at the pinned version too --
+      EPEL's package is a 3.34.1-era build with a renamed soname, which
+      ariza can now find but which is years behind the pin.
+    - Every lane's Raku is there to RUN ariza and is not what ends up in
+      the bundle; ariza downloads the pinned runtime for itself. Which
+      is why setup-raku asks for `latest` and nothing in the workflow
+      pretends otherwise.
+    - publish is tag-gated, collects every lane's artefact, recomputes a
+      combined checksums.txt and then checks it against the .sha256
+      sidecars ariza wrote -- a release whose digest refuses its own
+      archive is worse than one with no digest -- before cutting the
+      release with a body that says what a bundle is, which machines
+      each archive runs on, and how to verify a download.
+    - smoke-installer is the job that matters: on a plain ubuntu-latest
+      runner with nothing installed on it, it downloads the archive that
+      was JUST published, installs it with the repository's own
+      committed install.sh, and runs the installed launcher under
+      `env -i`. It is the only check that exercises the artefact a user
+      will actually receive by the path they will actually take, and it
+      reads install.sh out of the checkout rather than from a raw
+      GitHub URL so that it works for the first release.
+    - workflow_dispatch triggers the build lanes and stops there, with
+      an optional `ref` input. That is the iteration loop and the reason
+      the trigger exists: a recipe that has gone stale costs a run and a
+      push to a branch rather than a burnt tag and a deleted release.
+    - release.yml is derived from bundle.platforms and is rewritten in
+      place on every run. test.yml is written only when it is ABSENT --
+      a test workflow acquires system dependencies, extra jobs and skip
+      conditions no generator can infer from a manifest -- unless
+      --force says otherwise, and each generated header says which of
+      the two it is. The scaffolded test.yml names the app's
+      bundle.native libraries and says it is deliberately not installing
+      them: what a bundle carries and what a test run needs on a runner
+      are different questions.
+    - A declared platform with no lane (musl, aarch64 Linux, the Intel
+      Mac, Windows on ARM) is a hard error rather than a skipped job,
+      the same reasoning as an unknown slug in bundle.platforms:
+      silently dropping one produces a release quietly missing a
+      platform the author asked for. The three that do have lanes are
+      the ones with both a GitHub-hosted runner and an official Rakudo
+      build behind them, which is deliberately the same shape as
+      App::Ariza::Rakudo's partial platform map.
+    - ariza.toml gains an optional [ci] table with one key,
+      `ariza-source`: "fez" (the default) or anything zef can install
+      from, for an app whose release workflow has to exist before ariza
+      is published. Whichever is not in use is rendered beside it as a
+      comment, along with the ariza version that scaffolded the file, so
+      switching is an uncomment rather than a remembering exercise. Not
+      a closed set, so only an empty value is an error -- it would
+      render a step that installs nothing and succeeds.
+    - Golden-file tests cover both rendered workflows, with the pins and
+      the ariza version supplied as fixtures so a golden fails when a
+      template changes rather than when a version is bumped, and
+      structural tests assert the things a golden diff would not
+      explain: the job list matches the declared platforms, publish
+      names every lane in `needs:`, both publishing jobs are tag-gated,
+      the container line is there, and no unrendered Jinja2 delimiter
+      survives (GitHub's own `${{ }}` does, which is exactly the
+      collision the templates escape). Verified with actionlint,
+      shellcheck and pyflakes: zero findings on both files.
+    - Sourcing SQLCipher on Linux no longer requires the canonical
+      libsqlcipher.so.0 soname. EPEL's `sqlcipher` package renames it
+      per version -- libsqlcipher-3.34.1.so.0, and nothing literally
+      called libsqlcipher.so.0 at all -- which failed sourcing on every
+      RHEL-family host. The exact canonical name still wins outright
+      when it is present; where it is not, any libsqlcipher*.so* from
+      the same two sources (ldconfig -p, then the standard library
+      directories) is considered, and the newest of several candidates
+      is taken by a numeric-aware comparison rather than a plain string
+      sort, with the manifest's origin naming what was actually found.
+      What lands in the bundle is unaffected either way: stage-sqlcipher
+      always copies to the canonical name, which is safe because
+      `is native('sqlcipher')` dlopens by leaf name through
+      LD_LIBRARY_PATH -- filename, never the file's own DT_SONAME.
+    - The Fedora/RHEL install remedy in the "no SQLCipher on this
+      machine" message now names the real package, `dnf install
+      sqlcipher` -- `sqlcipher-libs` does not exist and was never
+      installable advice.
+    - A Linux bundle now carries its own OpenSSL. It did not, and the
+      audit could not tell: a distro libsqlcipher.so.0 names OpenSSL as a
+      bare `NEEDED libcrypto.so.3` -- no path, no RPATH, nothing in the
+      file to object to -- which at run time means "whatever libcrypto
+      this machine has", and on a user's machine may mean nothing at all.
+      Staging an ELF now does what staging a Mach-O has always done:
+      walks the library's dependencies with ldd (the loader itself, so
+      the answer is the one the machine will really give), copies every
+      non-system one in beside it under its soname, recurses, and runs
+      `patchelf --set-rpath '$ORIGIN'` over the library and every copy.
+      The skiplist -- what stays dynamic -- is Notcurses-Native's
+      bundle-elf.sh list (the loader, libc, libm, libpthread, libdl,
+      librt, libgcc_s, libstdc++ and friends), with one deliberate
+      difference: libcrypto and libssl are NOT on it. That script leaves
+      them dynamic because ffmpeg's use of them is optional. SQLCipher
+      without OpenSSL is SQLite.
+    - The ELF audit grew the two checks that can actually see this, and
+      they only run on a Linux host because both tools answer for the
+      machine they are on: `patchelf --print-rpath` must be
+      $ORIGIN-relative (and present, on any file with a non-system
+      NEEDED), and `ldd` in a REPLACED environment -- bare PATH, i.e.
+      `env -i`, which is the user's view rather than the build's -- must
+      resolve every non-system dependency to a path inside the bundle,
+      with "not found" a finding. From a Mac, cross-inspecting an ELF is
+      the static half and says so rather than pretending to more.
+    - xxt/linux-selfcontain-proof.sh proves the above in a manylinux
+      container rather than asserting it: real SQLCipher, real Rakudo,
+      App::Ariza's whole test suite run on Linux, a real bundle staged
+      and audited through App::Ariza::Native, the result re-checked
+      independently in shell, and three negative controls (a planted
+      absolute NEEDED, a deleted dependency, a stripped rpath) that must
+      each make the audit fail. A proof that only ever passes proves
+      nothing. It is xxt/, so nothing in t/ needs docker.
+    - Binary formats are now read from the file's own magic number
+      instead of shelling out to `file`. A format probe that answers "not
+      a binary" when its helper is missing turns the audit into a loop
+      that checks nothing and passes silently, and `file` is exactly the
+      sort of tool a minimal build image leaves out.
+    - SQLCipher now comes from the build machine's package manager, and
+      there is no mirror to download it from -- the one named by
+      `sqlcipher-release-base` never existed, and standing one up would
+      have been a second piece of release infrastructure with its own
+      signing story, staleness and outages for a library whose ABI moves
+      about once a year. macOS takes the installed Homebrew keg (or, if
+      it is not installed, the bottle `brew fetch` puts in the cache);
+      Linux takes whatever `ldconfig -p` resolves libsqlcipher.so.0 to,
+      falling back to the Debian multiarch, Red Hat and Alpine library
+      directories; Windows takes a vcpkg tree under VCPKG_ROOT. CI
+      installs the distro package before it calls `ariza bundle`.
+    - What makes a package-manager library safe to ship is unchanged and
+      untouched: the self-containment pass still copies every dependency
+      that resolves outside the bundle in beside it, rewrites it to
+      @loader_path, re-signs, and the audit still refuses to package a
+      bundle where anything points off the build machine.
+    - --sqlcipher-archive is unchanged and still beats everything;
+      SQLCIPHER_LIB_DIR joins it as a second explicit override, naming a
+      directory rather than an archive. Both bypass the new cross-build
+      guard, which refuses to hand a `linux-x86_64-glibc` build the
+      macOS keg it is standing on -- a library installed here is built
+      for here, and an artefact made that way fails at dlopen on every
+      machine it was named for. Every "not installed" path dies naming
+      the package to install AND the override to pass.
+    - The `sqlcipher` pin is now advisory. The package manager decides
+      what is installed, so ariza reads the version out of the staged
+      library's own bytes (SQLCipher keeps CIPHER_VERSION as a
+      NUL-terminated X.Y.Z constant; filenames are no use -- a Homebrew
+      keg's real file is libsqlcipher.3.51.3.dylib, which is SQLite's
+      version, and Debian's is libsqlcipher.so.0.8.6, which is libtool's
+      current.revision.age) and warns on a mismatch rather than failing.
+      ariza-manifest.json records the version STAGED, the pin beside it
+      as `pinned`, the digest of the library as it came off the machine,
+      and which keg, bottle or archive it came from. It used to record
+      the pin, which was a number nobody had verified.
+    - Every slug ariza can name can now stage SQLCipher, musl and
+      windows-arm64 included: with the library coming off the machine
+      there is no per-slug publication question left to answer, only
+      "is it installed".
+    - Phase three: `ariza installers`. App::Ariza::Installer renders the
+      four scripts an end user actually runs -- install.sh, install.ps1,
+      uninstall.sh, uninstall.ps1 -- from the app's ariza.toml, into the
+      app's own repository by default, because `curl … | sh` has to be
+      able to fetch them from somewhere.
+    - One POSIX script covers macOS and Linux, rather than the legacy
+      pair. A bundle installer drives no package manager, so the only
+      per-platform decision left is which asset to download, and that is
+      a uname call away at run time: one curl line in a README, and
+      nobody has to work out which of two files applies to them. The
+      Linux branch probes for a ld-musl-*.so.1 loader before choosing
+      between -glibc and -musl, exactly as App::Ariza::Platform does.
+    - Detection produces one of the slugs the app *declares* in
+      bundle.platforms or nothing at all -- never a nearest match, since
+      a glibc bundle does not run on Alpine. An unnamed platform gets
+      "no prebuilt <app> bundle for <uname -s> <uname -m> yet" and a link
+      to the releases page. An app that declares no Windows platform gets
+      no install.ps1 at all.
+    - Versions resolve from the `location:` header of the
+      releases/latest redirect: one HEAD request, no API token and no jq
+      on a machine that may have neither. --version names a tag instead.
+    - Every download is verified against the .sha256 asset published
+      beside it, and a missing or wrong digest is fatal. --url (or
+      <EXEC>_BUNDLE_URL, e.g. MONEYMOOR_BUNDLE_URL) installs from a
+      source the user names and bypasses GitHub entirely -- it takes a
+      plain file path as readily as a URL, which is what makes an
+      air-gapped install and ariza's own network-free end-to-end test
+      possible. --insecure-no-verify applies to that path only; a
+      published release always has a digest, so its absence there stays
+      fatal.
+    - The layout is $XDG_DATA_HOME/<exec>/versions/<version>/ with a
+      `current` symlink and a ~/.local/bin/<exec> link. The new version
+      is unpacked into a staging directory on the same filesystem and
+      renamed into place before anything is flipped, so a failed or
+      interrupted download cannot damage a working install. One previous
+      version is kept to roll back to and anything older is pruned, by
+      name. Version directories are stamped at install time, not build
+      time: tar restores the original mtime, which is identical for every
+      bundle cut from one source tree.
+    - Re-running for a version already installed downloads nothing. It
+      re-points both links, re-checks the PATH block and exits 0 saying
+      "already installed", which makes "run the installer again" the
+      correct advice for the most common breakage.
+    - PATH persistence is the legacy dp_persist_path machinery, adapted
+      into an installer partial rather than sourced whole: a marker block
+      named after the executable (so uninstalling one app never removes
+      the line another needs), added only when ~/.local/bin is not
+      already on PATH, and only once per rc file. The uninstaller removes
+      exactly that block, rewriting through the existing file so its mode
+      and ownership survive, and leaves the state directory and the app's
+      own data alone -- naming them rather than deciding for you.
+    - The generated scripts are curl-pipeable: entirely definitions with
+      a single `main "$@"` on the last line, so a truncated download
+      cannot half-run one, and nothing reads standard input, because when
+      the script arrives *on* standard input there is nothing left to
+      read from.
+    - Windows mirrors all of it in PowerShell: %LOCALAPPDATA%\<Display>\
+      versions\<version>, a `current` junction (a symlink needs
+      administrator rights or Developer Mode, which a per-user install
+      has no business demanding), and ...\current\bin added once to the
+      user PATH in HKCU\Environment -- which means an upgrade needs no
+      PATH change at all. Archives are unpacked with tar.exe, which has
+      shipped since Windows 10 1803 and reads the .tar.gz ariza actually
+      publishes for every platform; Expand-Archive handles a .zip if one
+      is ever pointed at with -Url.
+    - ariza.toml gains an [installer] table with one key, `repo`, the
+      GitHub owner/name releases come from. Optional in the schema and
+      required by `ariza installers`, which says so rather than
+      rendering a script that 404s. Its shape is closed like a platform
+      slug's: a full URL or a bare name is a hard error.
+    - Golden-file tests cover all four rendered scripts, `sh -n` checks
+      the POSIX pair, and a quoting gate walks both with the shell's own
+      quoting rules -- command substitutions and here-documents included
+      -- to prove every path expansion is inside double quotes. A new
+      xt/02-installer-e2e.rakutest drives a real bundle end to end
+      against a scratch HOME: install, launcher runs and reports its own
+      version, re-install repairs, upgrade flips current, a third install
+      prunes to one previous, a missing or wrong digest is refused
+      without disturbing the working install, and uninstall leaves both
+      rc files byte-identical to what they were.
+    - Phase two: `ariza bundle` and `ariza smoke`. A bundle is one
+      directory and one archive containing the app, a Rakudo runtime,
+      every Raku dependency with warm bytecode, and every native library
+      it loads. Nothing is installed, nothing is written outside it (bar
+      a one-line first-run marker under XDG_STATE_HOME), and deleting the
+      directory is the uninstall.
+    - App::Ariza::Rakudo resolves the [rakudo] pin against rakudo.org's
+      JSON release index, downloads the archive once into
+      $XDG_CACHE_HOME/ariza/rakudo and unpacks it into the bundle. The
+      cache records a sha256 on first download and verifies it on every
+      reuse; a mismatch discards the copy and re-fetches rather than
+      baking a bad byte into every bundle built on that machine.
+      rakudo.org publishes binaries for four of ariza's eight slugs, and
+      asking for one of the other four dies naming the four that work.
+    - App::Ariza::Site installs the app and its whole closure into the
+      bundle's own repository using the *bundled* zef, so the bytecode
+      matches the runtime that ships. It then warms the precompilation
+      store, which zef does not do: measured on Moneymoor, a cold bundle
+      spends ~55s compiling on first launch (and again on every launch,
+      if the bundle is somewhere unwritable) against ~0.5s warm. The
+      store is position-independent, so warming it at build time survives
+      being unpacked anywhere, including a path with spaces.
+    - Site checks what it built: the app distribution is present, every
+      installed distribution's dependencies are satisfied from inside the
+      bundle, every module the app provides loads, the precomp store is
+      not empty, and notcurses staged a non-empty library directory under
+      the BINARY_TAG it actually used (read off disk, never hardcoded).
+    - App::Ariza::Native stages SQLCipher — into rakudo/lib on macOS,
+      which is on the bundled interpreter's own LC_RPATH and so resolves
+      `is native('sqlcipher')` with no launcher involvement at all; into
+      native/sqlcipher elsewhere, where the launcher names it explicitly.
+      On macOS the staged library is made self-contained: every absolute
+      dependency (a Homebrew OpenSSL, say) is copied in beside it,
+      rewritten to @loader_path, and everything touched is re-signed,
+      because install_name_tool invalidates the signature and arm64 macOS
+      will not load a library whose signature is wrong.
+    - Native then audits every binary ariza put into the bundle and fails
+      the build if any of them would load a library from outside it:
+      otool -L on Mach-O, readelf -d on ELF, a presence check on PE. The
+      verdict functions are pure and take tool output as text, and the
+      tool call itself is an injectable seam, so every branch — including
+      the Linux and Windows verdicts — is testable from any machine.
+    - App::Ariza::Launcher renders bin/<exec> from a Jinja2 template
+      (plus the .ps1 and .cmd twins for Windows, CRLF). It resolves its
+      own path through a readlink loop rather than `readlink -f`, which
+      is a GNU extension a bundle cannot rely on; exports RAKULIB and
+      NOTCURSES_NATIVE_DATA_DIR (never NOTCURSES_NATIVE_LIB_DIR, which
+      suppresses the terminfo setup) and unsets PERL6LIB; adds
+      LD_LIBRARY_PATH and DBIISH_SQLCIPHER_LIB on Linux only; prints a
+      one-line first-run notice, once, guarded by a sentinel outside the
+      bundle; warns without refusing when TERM is dumb or absent; and
+      quotes every expansion, so a bundle unpacked into a path with
+      spaces works. Golden-file tests cover all three platform slugs.
+    - App::Ariza::Bundle orchestrates the four, then writes VERSION (one
+      screen: app version and component pins), ariza-manifest.json (the
+      same plus every source URL, every sha256, every installed
+      distribution and the smoke commands) and LICENSES/ — the app's
+      licence, Rakudo's, and a COMPONENTS.md whose native inventory is
+      read off the staged libraries rather than written down, including
+      an explicit note that this notcurses pack's FFmpeg is a GPL build.
+      Building a platform the app does not declare in bundle.platforms is
+      an error.
+    - App::Ariza::Smoke unpacks a finished archive into a scratch
+      directory with a space in its name and runs it with a *replaced*
+      environment — PATH, HOME, TERM and nothing else — so a bundle
+      cannot pass by quietly using the developer's system Rakudo or their
+      DBIISH_SQLCIPHER_LIB. It re-runs the native audit over the unpacked
+      tree and reports pass or fail per check, keeping the tree on
+      failure. Smoke commands come from the bundle's own manifest, so an
+      archive can be checked with no access to the app's repository.
+    - bundle.smoke now accepts a list, and each entry may be argv rather
+      than a command line, so a smoke test can carry an entire program
+      with no shell and no quoting layer. Placeholders: {exec}, {raku},
+      {site}, {native}, {bundle}, {tmp}. App-Moneymoor uses this to
+      smoke-test the thing --version never touches: creating, writing and
+      reopening an encrypted database from inside the bundle.
+    - App::Ariza::Tools is the new shell-out layer — run, download,
+      digest, extract — so no other module contains a bare `run` and
+      every failure reads the same way. No new dependencies: ariza
+      fetches three artefacts from static hosts with curl, exactly as
+      every Build.rakumod in this tree already does.
+    - Fixed: current-slug() and detect-slug() died with a type-check
+      failure when ARIZA_PLATFORM was unset, because %*ENV returns Any
+      for a missing key and the parameter is typed Str. That is every
+      machine that has never heard of the variable.
+    - Initial release. Phase one of ariza: the distribution scaffold and
+      the shared machinery a bundler needs, with no bundling yet and no
+      placeholder pretending otherwise — three verbs, all of which do
+      their whole job.
+    - App::Ariza::Platform names the platform an artefact is built for.
+      The eight slugs (macos-arm64, macos-x86_64, linux-{x86_64,aarch64}-
+      {glibc,musl}, windows-{x86_64,arm64}) are Notcurses-Native's,
+      character for character, because a bundle carries that
+      distribution's prebuilt libraries and the two have to agree about
+      what platform they are on. Detection probes $*KERNEL plus, on
+      Linux, the libc: a ld-musl-*.so.1 loader first, then ldd --version
+      for glibc. ARIZA_PLATFORM forces a slug for cross-builds and CI
+      matrices, and is validated against the known set, because an
+      override is the one input that is definitely a human mistake if it
+      is wrong.
+    - App::Ariza::Versions parses resources/versions.toml, the single pin
+      file every artefact is built against. A new [rakudo] section
+      (version 2026.07, revision 01) names the runtime a bundle embeds,
+      which is deliberately not the same pin as rakudo-star: that one is
+      the release an installer tells a package manager to fetch onto the
+      user's machine.
+    - App::Ariza::Config parses the per-app ariza.toml manifest, which
+      lives in the app's own repository so ariza never grows a list of
+      special cases about specific apps. [app] name/exec/display are
+      required; [bundle] declares platforms, native libraries and a smoke
+      command whose {exec} expands to the launcher name.
+    - Unknown keys warn and never die, in both config files, so one
+      manifest can serve several ariza versions; wrong types die naming
+      the dotted path; //-prefixed keys are ignored. The one exception is
+      an unknown platform slug in bundle.platforms, which dies: the
+      supported set is closed, so a typo cannot be a future feature, and
+      ignoring it would ship a release quietly missing a platform.
+    - App::Ariza::Legacy absorbs installers/generate.raku intact — the
+      Jinja2 templates, the per-app configs, the sqlcipher mirror notes
+      and the pin file are all ariza resources now. It renders the eight
+      install/uninstall scripts per app, defaulting to each app's own
+      repository exactly as the old script did, with an --out-dir
+      override so a render can be inspected before it lands.
+    - The absorption is gated by a byte-for-byte parity test: all eight
+      App-Mindmoor scripts are rendered to a scratch directory and
+      compared against the copies committed in that repository, with a
+      unified diff excerpt on any mismatch. Drift in a template, a
+      context key or the Jinja2 dependency fails the suite instead of
+      reaching a user.
+    - App::Ariza::Resources finds ariza's own data through %?RESOURCES
+      when installed and the checkout tree when not, including directory
+      listing, which %?RESOURCES cannot do — installed runs enumerate the
+      distribution manifest, checkouts read the working tree.
+    - bin/ariza: render-legacy [--app] [--out-dir], version, help.
+    - App-Moneymoor gains the first ariza.toml.

@@ -1,0 +1,17 @@
+# Pinned versions of the shared components every ariza artefact is built
+# against. Bump these in lockstep, then re-run `ariza bundle` (and
+# `ariza scaffold-ci`, which quotes the Rakudo pin into the workflows).
+
+# The SQLCipher version a bundle is EXPECTED to carry. Advisory, not
+# enforced: `ariza bundle` takes SQLCipher from the build machine's package
+# manager (brew keg/bottle, the distro package, a vcpkg tree), so what gets
+# staged is whatever is installed there. A mismatch warns; the manifest
+# records the version actually staged, with this one alongside as `pinned`.
+sqlcipher = "4.14.0"
+
+# The Rakudo runtime a self-contained bundle embeds. `revision`
+# disambiguates rebuilds of the same upstream release (a repackaged
+# runtime, a patched MoarVM) without pretending upstream cut a new version.
+[rakudo]
+version  = "2026.07"
+revision = "01"

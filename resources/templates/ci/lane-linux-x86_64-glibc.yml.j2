@@ -1,0 +1,115 @@
+  bundle-linux-x86_64-glibc:
+    name: bundle linux-x86_64-glibc
+    runs-on: ubuntu-latest
+    # Built in manylinux_2_28 (AlmaLinux 8) so the bundle's glibc floor is
+    # 2.28 -- RHEL 8+, Ubuntu 18.10+, Debian 10+ -- rather than whatever
+    # ubuntu-latest happens to ship this month. A bundle cannot be older
+    # than the machine that built it, and this is the oldest still-
+    # maintained baseline worth targeting.
+    #
+    # `container:` rather than `docker run` from the host: glibc 2.28 meets
+    # the floor GitHub's JavaScript actions need, so checkout and
+    # upload-artifact run in here unmodified. (Notcurses-Native drives
+    # docker directly instead, because its musl lane cannot.)
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: {% raw %}${{ inputs.ref || github.ref }}{% endraw %}
+
+      # python3 reads the Rakudo release index below; tcl and openssl-devel
+      # build SQLCipher. The image already has ldd, readelf and patchelf,
+      # which ariza needs to make the staged library self-contained and to
+      # audit the result.
+      - name: Install build dependencies
+        run: dnf install -y python3 tcl openssl-devel
+
+      # Raku/setup-raku does not run in a container -- it installs into the
+      # runner's tool cache, which is outside this filesystem -- so the
+      # official rakudo.org archive is fetched by hand. It is resolved out
+      # of the same JSON release index App::Ariza::Rakudo reads, at the
+      # same pin ({{ rakudo_tag }}), because there is no URL pattern to
+      # construct: upstream filenames carry a toolchain suffix.
+      #
+      # This Raku runs ariza. The runtime that ends up in the bundle is a
+      # second copy ariza downloads for itself.
+      - name: Install Rakudo {{ rakudo_tag }}
+        run: |
+          set -euo pipefail
+          # rakudo.org rejects urllib's default user agent, so: curl.
+          curl -fsSL -A 'ariza-ci' https://rakudo.org/dl/rakudo \
+            -o /tmp/rakudo-index.json
+          url=$(python3 - <<'PY'
+          import json
+          index = json.load(open("/tmp/rakudo-index.json"))
+          want = [x for x in index
+                  if x.get("platform") == "linux" and x.get("arch") == "x86_64"
+                  and x.get("type") == "archive" and x.get("backend") == "moar"
+                  and x.get("ver") == "{{ rakudo_version }}"
+                  and int(x.get("build_rev", -1)) == {{ rakudo_revision_int }}]
+          if len(want) != 1:
+              raise SystemExit(
+                  "expected exactly one Rakudo {{ rakudo_tag }} linux/x86_64 "
+                  "archive in the release index, found %d" % len(want))
+          print(want[0]["url"])
+          PY
+          )
+          echo "rakudo: $url"
+          curl -fsSL "$url" -o /tmp/rakudo.tar.gz
+          mkdir -p /opt/rakudo
+          tar xzf /tmp/rakudo.tar.gz -C /opt/rakudo --strip-components=1
+          echo /opt/rakudo/bin >> "$GITHUB_PATH"
+          echo /opt/rakudo/share/perl6/site/bin >> "$GITHUB_PATH"
+
+      - name: Install ariza
+        run: {{ ariza_install }}
+{%- for line in ariza_install_note %}
+        # {{ line }}
+{%- endfor %}
+
+      # SQLCipher is built from source at the version ariza pins
+      # ({{ sqlcipher_version }}), against this image's OpenSSL, and
+      # installed where `ldconfig` will find it. ariza then copies the
+      # library into the bundle along with the libcrypto it needs, and
+      # points both at $ORIGIN.
+      #
+      # Not the distribution package: EPEL's is a 3.34.1-era build with a
+      # renamed soname, years behind the pin. ariza can find it -- it looks
+      # for libsqlcipher*.so* when the canonical name is absent -- but
+      # shipping it to users is a different question from being able to
+      # stage it.
+      - name: Build and install SQLCipher {{ sqlcipher_version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v{{ sqlcipher_version }}.tar.gz" \
+            -o /tmp/sqlcipher.tar.gz
+          mkdir -p /tmp/sqlcipher-src
+          tar xzf /tmp/sqlcipher.tar.gz -C /tmp/sqlcipher-src --strip-components=1
+          cd /tmp/sqlcipher-src
+          ./configure --prefix=/usr/local --enable-tempstore=yes \
+            CFLAGS="-DSQLITE_HAS_CODEC" LDFLAGS="-lcrypto"
+          make -j"$(nproc)"
+          make install
+          ldconfig
+          ldconfig -p | grep -i sqlcipher
+
+      - name: Build the bundle
+        run: ariza bundle --app=. --platform=linux-x86_64-glibc --out-dir=dist-out
+
+      # Unpacks the archive somewhere new, with a replaced environment,
+      # and runs {{ app_name }}'s own bundle.smoke commands against it.
+      - name: Smoke the bundle
+        run: |
+          set -euo pipefail
+          archive=$(ls dist-out/*.tar.gz)
+          ariza smoke --archive="$archive"
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-x86_64-glibc
+          path: |
+            dist-out/*.tar.gz
+            dist-out/*.tar.gz.sha256
+          if-no-files-found: error

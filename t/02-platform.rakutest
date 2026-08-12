@@ -1,0 +1,166 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Platform;
+
+plan 7;
+
+# Every test that exercises detection passes `:override(Str)` explicitly,
+# so a developer with ARIZA_PLATFORM set in their shell gets the same
+# result as CI.
+
+sub rm-rf(IO::Path $d) {
+    return unless $d.d;
+    .&rm-rf for $d.dir.grep(*.d);
+    .unlink for $d.dir.grep(*.f);
+    $d.rmdir;
+}
+
+subtest 'the known set', {
+    plan 6;
+
+    is-deeply known-slugs(), (
+        'linux-aarch64-glibc',
+        'linux-aarch64-musl',
+        'linux-x86_64-glibc',
+        'linux-x86_64-musl',
+        'macos-arm64',
+        'macos-x86_64',
+        'windows-arm64',
+        'windows-x86_64',
+    ), 'the eight supported slugs, sorted and deduplicated';
+
+    is +known-platform-keys(), 10,
+       'ten probe keys map onto those eight slugs (win32/mswin32 aliases)';
+
+    ok known-slug('macos-arm64'),    'accepts a real slug';
+    nok known-slug('macos-aarch64'), 'rejects a plausible typo';
+    nok known-slug(''),              'rejects the empty string';
+    nok known-slug(Str),             'rejects an undefined Str';
+};
+
+subtest 'platform keys', {
+    plan 3;
+    is platform-key(:os<darwin>, :hardware<arm64>, :libc(Str)), 'darwin-arm64',
+       'no libc axis off Linux';
+    is platform-key(:os<linux>, :hardware<x86_64>, :libc<glibc>),
+       'linux-x86_64-glibc', 'Linux keys carry the libc';
+    is platform-key(:os<mswin32>, :hardware<aarch64>, :libc(Str)),
+       'mswin32-aarch64', 'Windows keys are os-hardware';
+};
+
+subtest 'every platform maps to its slug', {
+    my @cases =
+        ('darwin',  'arm64',   Str,     'macos-arm64'),
+        ('darwin',  'x86_64',  Str,     'macos-x86_64'),
+        ('linux',   'x86_64',  'glibc', 'linux-x86_64-glibc'),
+        ('linux',   'x86_64',  'musl',  'linux-x86_64-musl'),
+        ('linux',   'aarch64', 'glibc', 'linux-aarch64-glibc'),
+        ('linux',   'aarch64', 'musl',  'linux-aarch64-musl'),
+        ('win32',   'x86_64',  Str,     'windows-x86_64'),
+        ('win32',   'aarch64', Str,     'windows-arm64'),
+        ('mswin32', 'x86_64',  Str,     'windows-x86_64'),
+        ('mswin32', 'aarch64', Str,     'windows-arm64'),
+    ;
+    plan +@cases;
+
+    for @cases -> ($os, $hardware, $libc, $expected) {
+        is current-slug(:$os, :$hardware, :$libc, :override(Str)), $expected,
+           "$os/$hardware" ~ ($libc.defined ?? "/$libc" !! '') ~ " -> $expected";
+    }
+};
+
+subtest 'platforms with no slug', {
+    plan 4;
+
+    is detect-slug(:os<haiku>, :hardware<x86_64>, :libc(Str), :override(Str)), Str,
+       'detect-slug returns an undefined Str rather than dying';
+    is detect-slug(:os<linux>, :hardware<x86_64>, :libc(Str), :override(Str)), Str,
+       'a Linux box with no detectable libc has no slug';
+
+    throws-like { current-slug(:os<haiku>, :hardware<x86_64>, :libc(Str), :override(Str)) },
+        Exception, message => /'unsupported platform' .* 'haiku-x86_64'/,
+        'current-slug dies naming the probed key';
+    throws-like { current-slug(:os<haiku>, :hardware<x86_64>, :libc(Str), :override(Str)) },
+        Exception, message => /'ARIZA_PLATFORM'/,
+        'and points at the override that would force the issue';
+};
+
+subtest 'the ARIZA_PLATFORM override', {
+    plan 8;
+
+    is current-slug(:os<darwin>, :hardware<arm64>, :override<linux-x86_64-musl>),
+       'linux-x86_64-musl', 'a valid override wins over detection';
+    is detect-slug(:os<haiku>, :hardware<x86_64>, :override<windows-arm64>),
+       'windows-arm64', 'it rescues an otherwise-unnameable platform';
+
+    is current-slug(:os<darwin>, :hardware<arm64>, :libc(Str), :override('')),
+       'macos-arm64', 'an empty override is treated as unset';
+    is current-slug(:os<darwin>, :hardware<arm64>, :libc(Str), :override("  \t ")),
+       'macos-arm64', 'a whitespace-only override is treated as unset';
+    is current-slug(:os<darwin>, :hardware<arm64>, :override("  macos-x86_64 ")),
+       'macos-x86_64', 'an override is trimmed before it is validated';
+
+    throws-like { current-slug(:override<macos-aarch64>) }, Exception,
+        message => /'ARIZA_PLATFORM' .* 'macos-aarch64' .* 'not a platform'/,
+        'a misspelled override dies rather than being ignored';
+    throws-like { detect-slug(:override<nonsense>) }, Exception,
+        message => /'nonsense'/,
+        'detect-slug validates it too, despite never dying on detection';
+
+    {
+        temp %*ENV<ARIZA_PLATFORM> = 'linux-aarch64-musl';
+        is current-slug(:os<darwin>, :hardware<arm64>), 'linux-aarch64-musl',
+           'it is read from the environment by default';
+    }
+};
+
+subtest 'libc detection', {
+    plan 7;
+
+    # The real probe, on whatever host is running the suite: it must
+    # never throw, whether `ldd` is absent (macOS, Windows), present and
+    # glibc, or present and musl (where it exits non-zero).
+    lives-ok { detect-glibc-version() }, 'the live ldd probe never throws';
+
+    is detect-libc(:os<darwin>),  Str, 'no libc axis on macOS';
+    is detect-libc(:os<mswin32>), Str, 'no libc axis on Windows';
+
+    my $tmp = $*TMPDIR.add("ariza-libc-{$*PID}-{(^1_000_000).pick}");
+    LEAVE { rm-rf($tmp) }
+
+    my $musl-dir = $tmp.add('musl');
+    $musl-dir.mkdir;
+    $musl-dir.add('ld-musl-x86_64.so.1').spurt('');
+    is detect-libc(:os<linux>, :lib-dirs($musl-dir.absolute,)), 'musl',
+       'a musl loader on disk is conclusive';
+
+    my $empty-dir = $tmp.add('empty');
+    $empty-dir.mkdir;
+    is detect-libc(:os<linux>, :lib-dirs($empty-dir.absolute,),
+                   :glibc-probe({ Version.new('2.39') })), 'glibc',
+       'no musl loader plus a parseable ldd version means glibc';
+    is detect-libc(:os<linux>, :lib-dirs($empty-dir.absolute,),
+                   :glibc-probe({ Version })), Str,
+       'neither loader nor ldd means no libc, not a guess';
+    is detect-libc(:os<linux>, :lib-dirs($tmp.add('nope').absolute,),
+                   :glibc-probe({ Version })), Str,
+       'a nonexistent lib dir is skipped rather than fatal';
+};
+
+subtest 'detection works with no ARIZA_PLATFORM set at all', {
+    plan 3;
+
+    # `%*ENV<ARIZA_PLATFORM>` is `Any` when unset, and binding that to a
+    # `Str :$override` parameter is a type-check failure — so the *only*
+    # way to call these with no override in the environment is for the
+    # default to coerce. This is the regression: `ariza bundle` on a
+    # machine that has never heard of ARIZA_PLATFORM.
+    temp %*ENV;
+    %*ENV<ARIZA_PLATFORM>:delete;
+
+    lives-ok { current-slug() }, 'current-slug() works with no override set';
+    lives-ok { detect-slug() }, 'and so does detect-slug()';
+    ok known-slug(current-slug()) || !detect-slug().defined,
+        'and what comes back is a slug ariza knows, or nothing at all';
+};

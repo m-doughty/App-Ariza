@@ -1,0 +1,99 @@
+use v6.d;
+use Test;
+use JSON::Fast;
+
+use App::Ariza::Resources;
+
+plan 4;
+
+subtest 'checkout-root', {
+    plan 4;
+    my $root = checkout-root();
+    ok $root.defined, 'found the distribution root';
+    ok $root.add('META6.json').f, 'it has a META6.json';
+    ok $root.add('resources').d, 'it has a resources directory';
+
+    # The distribution this test file belongs to, and not some parent of
+    # it. Compared as a path rather than by name: a checkout is not
+    # obliged to be called App-Ariza, and one that has been copied
+    # somewhere else — a container, a build directory — is still this
+    # distribution.
+    is $root.absolute, $?FILE.IO.resolve.parent(2).absolute,
+        'it is this distribution, not a directory above it';
+};
+
+subtest 'resource() finds every shipped file', {
+    plan 8;
+
+    my $versions = resource('versions.toml');
+    ok $versions.f, 'versions.toml';
+    ok $versions.slurp.contains('sqlcipher'), 'versions.toml has its content';
+
+    ok resource('templates/launcher-posix.sh.j2').f, 'a top-level template';
+    ok resource('templates/ci/release.yml.j2').f, 'a nested template';
+    ok resource('templates/installer-common-posix.sh').f, 'the POSIX partial';
+    ok resource('templates/installer-common-windows.ps1').f,
+       'the Windows partial';
+
+    # The two halves of the packaging invariant, checked against the
+    # working tree rather than against a number that has to be edited
+    # every time a resource is added:
+    #
+    #   * every entry in META6 resolves — one that does not is a file
+    #     that will simply be missing from the installed distribution;
+    #   * every file in resources/ is declared — one that is not is a
+    #     file that works in a checkout and vanishes once installed,
+    #     which is the harder bug to find.
+    my $root = checkout-root().add('resources');
+    my @declared = from-json(checkout-root().add('META6.json').slurp)<resources>.list;
+    my @unresolvable = @declared.grep({ !(try resource($_).f) });
+    is-deeply @unresolvable.List, (), 'every declared resource resolves';
+
+    my @on-disk = gather {
+        my @queue = $root;
+        while @queue {
+            my $d = @queue.shift;
+            for $d.dir -> $e { $e.d ?? @queue.push($e) !! take $e }
+        }
+    }.map({ .absolute.substr($root.absolute.chars + 1) }).sort;
+    is-deeply @on-disk.grep({ !@declared.first($_) }).List, (),
+        'and every file in resources/ is declared in META6';
+};
+
+subtest 'a missing resource is loud', {
+    plan 3;
+    throws-like { resource('no/such/resource.txt') }, Exception,
+        message => /'missing resource'/,
+        'dies naming the resource it could not find';
+
+    # A directory is not a resource. Installed, Distribution::Resources
+    # answers any key at all with a path that degrades to the resource
+    # store directory, so a prefix that happens to exist must still fail
+    # here rather than surfacing later as "malformed TOML in .../resources".
+    throws-like { resource('templates/ci') }, Exception,
+        message => /'missing resource'/,
+        'a directory prefix is not a resource';
+    throws-like { resource('templates') }, Exception,
+        message => /'missing resource'/,
+        'nor is a top-level resource directory';
+};
+
+subtest 'resource-list', {
+    plan 4;
+    is-deeply resource-list('templates/ci'),
+       ('templates/ci/lane-linux-x86_64-glibc.yml.j2',
+        'templates/ci/lane-macos-arm64.yml.j2',
+        'templates/ci/lane-windows-x86_64.yml.j2',
+        'templates/ci/release.yml.j2',
+        'templates/ci/test.yml.j2'),
+       'returns sorted distribution-relative paths';
+
+    my @templates = resource-list('templates');
+    ok @templates.grep('templates/launcher-posix.sh.j2'),
+       'finds the templates directly under a prefix';
+    nok @templates.grep(*.contains('/ci/')),
+       'does not descend into subdirectories';
+
+    is-deeply resource-list('templates/nothing-here'), (),
+       'an empty prefix is an empty list, not a failure';
+};
