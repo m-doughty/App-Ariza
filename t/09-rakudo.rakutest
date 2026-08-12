@@ -201,8 +201,8 @@ subtest 'entry points are named per platform', {
     my $zef = App::Ariza::Rakudo.zef-bin($root, :slug<macos-arm64>);
     is $zef.relative($root).subst('\\', '/', :g), 'share/perl6/site/bin/zef',
        'zef comes from the runtime\'s own site repository';
-    is App::Ariza::Rakudo.zef-bin($root, :slug<windows-x86_64>).basename, 'zef.bat',
-       'and is the batch wrapper on Windows';
+    is App::Ariza::Rakudo.zef-bin($root, :slug<windows-x86_64>).basename, 'zef.raku',
+       'and is the run-script stub on Windows, where there is no zef.bat to exec';
 };
 
 subtest 'the cache lives under XDG_CACHE_HOME', {

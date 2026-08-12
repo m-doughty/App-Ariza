@@ -189,13 +189,19 @@ method raku-bin(IO() $root, Str:D :$slug --> IO::Path) {
 
 #| The bundled C<zef> inside an unpacked runtime.
 #|
-#| This is the shell (or batch) wrapper shipped in the runtime's own site
+#| On POSIX this is the shell wrapper shipped in the runtime's own site
 #| repository, not a Raku script: it locates its sibling C<raku>
 #| relocatably and execs it. Run it B<directly>. Handing it to
 #| C<bin/raku> as a script is a syntax error, because it is C<sh>.
+#|
+#| The official Windows zip ships no C<zef.bat> at all — only C<zef.exe>
+#| and C<zef.raku> (plus C<-m>/C<-j>/C<-js> variants) — so on Windows
+#| this returns C<zef.raku> instead, meant to be run under the bundled
+#| C<raku> rather than exec'd. See L<App::Ariza::Site> for how the two
+#| shapes are invoked.
 method zef-bin(IO() $root, Str:D :$slug --> IO::Path) {
     my $bin = $root.add('share').add('perl6').add('site').add('bin');
-    $bin.add($slug.starts-with('windows') ?? 'zef.bat' !! 'zef')
+    $bin.add($slug.starts-with('windows') ?? 'zef.raku' !! 'zef')
 }
 
 #| Resolve, download, cache and unpack the pinned runtime into a bundle.
@@ -232,7 +238,7 @@ method provision(
     my $zef  = self.zef-bin($root, :$slug);
     die "ariza: the unpacked runtime has no interpreter at $raku"
         unless $raku.f;
-    die "ariza: the unpacked runtime has no zef wrapper at $zef"
+    die "ariza: the unpacked runtime has no zef entry point at $zef"
         unless $zef.f;
 
     {
@@ -382,11 +388,20 @@ replaced, so a rebuild into the same workdir is clean.
 =head2 raku-bin(IO() $root, :$slug --> IO::Path) / zef-bin(IO() $root, :$slug --> IO::Path)
 
 The interpreter and the C<zef> entry point inside an unpacked runtime
-(C<.exe> / C<.bat> on Windows).
+(C<raku.exe> on Windows).
 
-C<zef-bin> is a B<shell wrapper>, not a Raku script — it finds its
-sibling C<raku> relocatably and execs it. Run it directly. Passing it to
-C<bin/raku> as a script is a syntax error, because it is C<sh>.
+On POSIX, C<zef-bin> is a B<shell wrapper>, not a Raku script — it finds
+its sibling C<raku> relocatably and execs it. Run it directly. Passing it
+to C<bin/raku> as a script is a syntax error, because it is C<sh>.
+
+The official Windows zip ships no C<zef.bat>, so on Windows C<zef-bin>
+returns C<zef.raku> instead — the C<.raku> stub every zef install ships
+(C<sub MAIN(*@, *%) { CompUnit::RepositoryRegistry.run-script("zef") }>),
+byte-identical across platforms. It has to be run I<under> the bundled
+C<raku>, not exec'd; L<App::Ariza::Site> is where that invocation is
+built. The zip also ships a compiled C<zef.exe>, but a compiled wrapper's
+raku-discovery behaviour inside a relocated bundle is unverified, while
+the run-script stub depends on nothing but the raku it is handed.
 
 =head2 cache-dir(--> IO::Path) / fetchable-slugs(--> List) / index-platform(Str --> Hash)
 

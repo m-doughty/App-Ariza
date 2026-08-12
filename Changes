@@ -2,6 +2,34 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.0.4  2026-08-12T10:05:02+01:00
+    - Fixed: bundling for Windows died before it got near zef --
+      `App::Ariza::Rakudo.zef-bin` assumed a `zef.bat` in the runtime's
+      site `bin/`, and the official Windows zip ships no such thing --
+      only `zef.exe`, `zef.raku` and the `-m`/`-j`/`-js` variants.
+      `zef-bin` now returns `zef.raku` on Windows: the `.raku` stub
+      (`sub MAIN(*@, *%) { CompUnit::RepositoryRegistry.run-script("zef") }`)
+      is byte-identical across every platform zef ships for, so running it
+      under the bundled `raku` resolves zef purely out of that raku's own
+      site repository, with no assumption about a wrapper's format.
+      `zef.exe` would work too, but a compiled wrapper's own
+      raku-discovery behaviour inside a relocated bundle is unverified.
+      App::Ariza::Site gained `zef-cmd`, the pure function that decides
+      how to invoke whichever `zef` it is handed -- exec the shell wrapper
+      directly on POSIX (unchanged), or run the `.raku` stub under `raku`
+      on Windows -- read off the file itself, not off a platform slug.
+    - Fixed: the Linux release lane's SQLCipher build step died on its
+      own last line. `ldconfig -p | grep -i sqlcipher` ran under
+      `set -euo pipefail` after a build that had fully succeeded, and
+      exited 1 -- `ldconfig` indexes by SONAME, which
+      `--dll-basename=libsqlcipher --soname=legacy` deliberately sets to
+      `libsqlite3.so.0`, so the grep can never match. This is the exact
+      trap xxt/linux-selfcontain-proof.sh's `find-sqlcipher-lib` already
+      worked around; the CI template's sanity check now asks the
+      filesystem the same way (`test -f
+      /usr/local/lib/libsqlcipher.so.0` + `ls -l`) instead of the linker
+      cache.
+
 0.0.3  2026-08-12T09:38:21+01:00
     - `scaffold-ci` now gives every declared platform with a GitHub-hosted
       runner its own clean-machine installer smoke, not just Linux:

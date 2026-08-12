@@ -202,7 +202,9 @@ jobs:
           make install
           echo /usr/local/lib > /etc/ld.so.conf.d/local.conf
           ldconfig
-          ldconfig -p | grep -i sqlcipher
+          # ldconfig -p is soname-keyed and the soname deliberately says libsqlite3, so ask the filesystem, not the linker cache (same rule as the proof script).
+          test -f /usr/local/lib/libsqlcipher.so.0
+          ls -l /usr/local/lib/libsqlcipher*
 
       - name: Build the bundle
         run: ariza bundle --app=. --platform=linux-x86_64-glibc --out-dir=dist-out

@@ -7,7 +7,7 @@ use App::Ariza::Config;
 use App::Ariza::Site;
 use App::Ariza::Tools;
 
-plan 6;
+plan 7;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-site-{$*PID}-{(^1_000_000).pick}");
@@ -148,6 +148,31 @@ subtest 'exec-target prefers the .raku stub over the sh wrapper', {
 
     ok $bin.add('moneymoor').slurp.contains('exec rakudo'),
         'because the wrapper execs a `rakudo` off PATH, which a bundle has not got';
+};
+
+subtest 'zef-cmd execs the POSIX wrapper but runs the Windows stub under raku', {
+    plan 3;
+    my $raku = '/b/rakudo/bin/raku'.IO;
+
+    # POSIX: the shell wrapper App::Ariza::Rakudo.zef-bin returns for
+    # every non-Windows slug.
+    my $posix-zef = '/b/rakudo/share/perl6/site/bin/zef'.IO;
+    is-deeply App::Ariza::Site.zef-cmd($posix-zef, $raku, 'install', '--/test'),
+        ($posix-zef.absolute, 'install', '--/test').List,
+        'the wrapper is exec\'d directly, unchanged';
+
+    # Windows: the zip ships no zef.bat, so zef-bin returns zef.raku
+    # instead — the run-script stub, which has to be run under raku
+    # rather than exec'd.
+    my $win-raku = '/b/rakudo/bin/raku.exe'.IO;
+    my $win-zef  = '/b/rakudo/share/perl6/site/bin/zef.raku'.IO;
+    is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku, 'install', '--/test'),
+        ($win-raku.absolute, $win-zef.absolute, 'install', '--/test').List,
+        'the run-script stub is run under raku.exe, not exec\'d';
+
+    is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku),
+        ($win-raku.absolute, $win-zef.absolute).List,
+        'and works with no trailing arguments too';
 };
 
 subtest 'build-site refuses inputs it cannot work with', {

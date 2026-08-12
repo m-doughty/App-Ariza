@@ -81,7 +81,7 @@ method build-site(
     my $native = ensure-dir(self.native-dir($bundle-dir));
     my %env    = self.child-env($bundle-dir);
 
-    self!zef-install($zef, $site, $app-source, %env, $attempts, $verbose);
+    self!zef-install($zef, $raku, $site, $app-source, %env, $attempts, $verbose);
 
     my @dists = self.installed-dists($bundle-dir);
     my %app = @dists.first({ .<name> eq $config.app-name })
@@ -115,10 +115,33 @@ method build-site(
     }
 }
 
-method !zef-install(IO::Path $zef, IO::Path $site, IO::Path $app-source,
+#| The command line to invoke C<zef> with, given the runtime's C<zef> and
+#| C<raku> paths and the arguments to hand it.
+#|
+#| POSIX: C<$zef> is the shell wrapper C<App::Ariza::Rakudo.zef-bin>
+#| returns — exec it directly, unchanged from how ariza has always done
+#| it.
+#|
+#| Windows: the official zip ships no C<zef.bat>, so C<$zef> is
+#| C<zef.raku> — C<zef-bin> returns that on Windows for exactly this
+#| reason — and it has to be run I<under> C<$raku>, not exec'd. It works
+#| because C<zef.raku> is byte-identical on every platform
+#| (C<sub MAIN(*@, *%) { CompUnit::RepositoryRegistry.run-script("zef") }>),
+#| so handing it to the bundled C<raku> resolves zef purely out of that
+#| raku's own site repository — no assumption about a wrapper's format is
+#| needed. The zip also ships C<zef.exe>, but a compiled wrapper's
+#| raku-discovery behaviour inside a relocated bundle is unverified, while
+#| the run-script stub depends on nothing but the raku it is handed.
+method zef-cmd(IO() $zef, IO() $raku, *@args --> List) {
+    $zef.extension eq 'raku'
+        ?? ($raku.absolute, $zef.absolute, |@args).List
+        !! ($zef.absolute, |@args).List
+}
+
+method !zef-install(IO::Path $zef, IO::Path $raku, IO::Path $site, IO::Path $app-source,
                     %env, Int $attempts, Bool $verbose) {
-    my @cmd = $zef.absolute, 'install', '--/test',
-              '--to=inst#' ~ $site.absolute, $app-source.absolute;
+    my @cmd = self.zef-cmd($zef, $raku, 'install', '--/test',
+              '--to=inst#' ~ $site.absolute, $app-source.absolute);
 
     my $last-err = '';
     for 1..max($attempts, 1) -> $try {
@@ -360,11 +383,25 @@ system repository, no C<~/.raku>. This module fills it.
 
 =head2 The install has to run under the bundled runtime
 
-C<zef> is invoked as C<< <bundle>/rakudo/share/perl6/site/bin/zef >>: the
-copy that came down inside the runtime archive. That wrapper is a
-B<shell script> which locates its sibling C<raku> relocatably and execs
-it, so it is run directly — feeding it to C<bin/raku> as if it were a
-Raku script is a syntax error.
+On POSIX, C<zef> is invoked as
+C<< <bundle>/rakudo/share/perl6/site/bin/zef >>: the copy that came down
+inside the runtime archive. That wrapper is a B<shell script> which
+locates its sibling C<raku> relocatably and execs it, so it is run
+directly — feeding it to C<bin/raku> as if it were a Raku script is a
+syntax error.
+
+The official Windows zip ships no equivalent C<zef.bat>: only C<zef.exe>
+and C<zef.raku> (plus C<-m>/C<-j>/C<-js> variants). C<zef-cmd> handles
+that by running C<zef.raku> — which C<App::Ariza::Rakudo.zef-bin>
+returns on Windows for this exact reason — I<under> the bundled C<raku>,
+rather than exec'ing it: C<< <bundle>\rakudo\bin\raku.exe >>
+C<< <bundle>\rakudo\share\perl6\site\bin\zef.raku >> C<install …>.
+C<zef.raku> is byte-identical on every platform zef ships for
+(C<sub MAIN(*@, *%) { CompUnit::RepositoryRegistry.run-script("zef") }>),
+so this depends only on the raku it is handed, not on any assumption
+about a wrapper's format. C<zef.exe> would work too, but a compiled
+wrapper's own raku-discovery behaviour inside a relocated bundle is
+unverified, so it is left alone.
 
 Using the I<system> zef instead would work, and would produce a bundle
 that recompiles its entire closure on first launch, because precompiled
@@ -477,6 +514,15 @@ target.
 The script the launcher hands to the interpreter: the C<.raku> stub if
 zef installed one, else the plain C<bin/E<lt>execE<gt>> file. Dies
 listing what C<bin/> does contain when neither exists.
+
+=head2 zef-cmd(IO() $zef, IO() $raku, *@args --> List)
+
+The argv to run C<zef> with. On POSIX, C<$zef> (the shell wrapper) is
+exec'd directly with C<@args>. On Windows, C<$zef> is C<zef.raku> — the
+run-script stub, not the wrapper the zip does not ship — so the command
+is C<$raku>, C<$zef>, C<@args>: run under the bundled interpreter rather
+than exec'd. Which shape applies is read off C<$zef> itself (its
+extension), not off a platform slug.
 
 =head2 closure-gaps(@dists --> List)
 
