@@ -1,6 +1,9 @@
 Revision history for App::Ariza
 
 {{$NEXT}}
+
+0.2.0  2026-08-13T22:49:37+01:00
+    - Publish runner-v2
     - Added opt-in managed-install update prompts. Apps enable them with
       `[updates] enabled = true`; eligible interactive launches check the
       configured GitHub repository at most once a week and offer `Install &
