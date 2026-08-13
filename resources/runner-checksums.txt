@@ -29,5 +29,5 @@
 # download or a hash mismatch fails the build, because from that point
 # on a bundle without a verified runner is a regression rather than a
 # stage of bootstrapping.
-54102bde11dfac5537c49809e9a3b4ad50748b9204f8911bcac69e73d185de1f  ariza-runner-windows-x86_64.exe
-c9a5d66f44c04317b432dca5d1e697545b451cacb6faf14747a1e0f47042a575  ariza-runner-windows-aarch64.exe
+0137253bf0476e5b017e5c43c7d33c09b9cdb9b29c852ba99c44c429e875f229  ariza-runner-windows-x86_64.exe
+e1f0e7ac3d8f898a24a80b6e883d85a70958d4a4e26c5f30f1be02b96c3e2af7  ariza-runner-windows-aarch64.exe

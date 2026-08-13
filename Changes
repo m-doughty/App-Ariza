@@ -2,6 +2,14 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.2.1  2026-08-13T23:28:11+01:00
+    - Correct the runner-v2 checksums shipped in 0.2.0. Windows bundle
+      builds now accept the published x86_64 and ARM64 runners while still
+      refusing any binary whose bytes do not match the embedded pin.
+    - Verify the pinned runner release, its published checksum document and
+      both actual binaries during Mi6's pre-upload distribution tests. A stale
+      or incomplete runner pin can no longer reach Zef through `mi6 release`.
+
 0.2.0  2026-08-13T22:49:37+01:00
     - Publish runner-v2
     - Added opt-in managed-install update prompts. Apps enable them with

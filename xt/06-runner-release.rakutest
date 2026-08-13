@@ -1,0 +1,82 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Resources;
+use App::Ariza::Runner;
+use App::Ariza::Tools;
+
+=begin comment
+
+This is the live half of the runner pin.  The unit suite proves that a
+download is rejected when its bytes do not match resources/runner-checksums.txt;
+this test proves that the resource itself still describes the immutable assets
+published under resources/RUNNER_VERSION.
+
+It deliberately has no offline skip and no alternate URL or local-file
+override.  mi6 runs xt/ before UploadToZef, so a missing release, a partial
+release, stale embedded pins, or changed bytes must stop publication.
+
+    prove6 -Ilib xt/06-runner-release.rakutest
+
+=end comment
+
+plan 5;
+
+my @artifacts =
+    'ariza-runner-windows-aarch64.exe',
+    'ariza-runner-windows-x86_64.exe';
+my %slug-for =
+    'ariza-runner-windows-aarch64.exe' => 'windows-arm64',
+    'ariza-runner-windows-x86_64.exe'  => 'windows-x86_64';
+
+my $work = $*TMPDIR.add("ariza-runner-release-{$*PID}-{(^1_000_000).pick}");
+ensure-dir($work);
+END { rm-rf($work) }
+
+my $tag = App::Ariza::Runner.tag;
+ok $tag.defined && $tag ~~ /^ 'runner-v' <[0..9]>+ $/,
+    'resources/RUNNER_VERSION is an exact runner-vN tag';
+
+my %embedded = strict-pins(
+    App::Ariza::Resources::resource('runner-checksums.txt'));
+is-deeply %embedded.keys.sort.List, @artifacts.List,
+    'the distribution embeds exactly the two runner artefact pins';
+
+my $release-base = App::Ariza::Runner::RELEASE-BASE;
+my $published-file = http-download(
+    "$release-base/$tag/checksums.txt",
+    $work.add('checksums.txt'));
+my %published = strict-pins($published-file);
+
+is-deeply %published.keys.sort.List, @artifacts.List,
+    'the pinned release publishes checksums for exactly those two artefacts';
+is-deeply %published, %embedded,
+    'the published checksums are identical to the embedded pins';
+
+subtest 'both published executables have the advertised bytes', {
+    plan +@artifacts;
+
+    for @artifacts -> $artifact {
+        my $slug = %slug-for{$artifact};
+        my $binary = http-download(
+            App::Ariza::Runner.url(:$slug, :$tag),
+            $work.add($artifact));
+        is sha256-file($binary), %published{$artifact},
+            "$artifact matches its published sha256";
+    }
+};
+
+# Runner.pins is the production parser: every non-comment line must be one
+# complete `<sha256>  <artefact>` entry.  A repeated filename would otherwise
+# collapse in the returned Hash, so additionally require a one-to-one mapping
+# between parsed lines and keys; a checksum manifest with duplicate claims is
+# not an exact two-artefact release.
+sub strict-pins(IO::Path:D $path --> Hash) {
+    my @entries = $path.slurp.lines
+        .map(*.trim)
+        .grep({ .chars && !.starts-with('#') });
+    my %pins = App::Ariza::Runner.pins($path);
+    die "ariza: {$path.basename} contains duplicate artefact entries"
+        unless +%pins == +@entries;
+    %pins
+}
