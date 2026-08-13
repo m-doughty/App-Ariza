@@ -51,7 +51,8 @@ add_library(ariza_runner_core STATIC
 	src/strings.c
 	src/config.c
 	src/env.c
-	src/cmdline.c)
+	src/cmdline.c
+	src/handoff.c)
 target_include_directories(ariza_runner_core PUBLIC include)
 set_target_properties(ariza_runner_core PROPERTIES
 	C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -60,6 +61,7 @@ target_compile_options(ariza_runner_core PRIVATE ${ARIZA_RUNNER_C_WARNINGS})
 if(WIN32)
 	add_executable(ariza_runner src/main_win32.c)
 	target_link_libraries(ariza_runner PRIVATE ariza_runner_core)
+	target_link_libraries(ariza_runner PRIVATE bcrypt)
 	set_target_properties(ariza_runner PROPERTIES
 		C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
 		# The release lanes rename this to
@@ -108,7 +110,7 @@ if(ARIZA_RUNNER_BUILD_TESTS)
 		"${CMAKE_CURRENT_SOURCE_DIR}/../t/golden/launcher-windows-x86_64.ariza"
 		ABSOLUTE)
 
-	foreach(t IN ITEMS config env cmdline)
+	foreach(t IN ITEMS config env cmdline handoff)
 		add_executable(test_${t} tests/test_${t}.c)
 		target_compile_definitions(test_${t} PRIVATE
 			ARIZA_GOLDEN_SIDECAR="${ARIZA_GOLDEN_SIDECAR}")

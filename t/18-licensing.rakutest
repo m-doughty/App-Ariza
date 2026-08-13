@@ -160,8 +160,8 @@ subtest 'the runtime data file is complete, and every text it cites ships', {
     # A `condition` ariza cannot decide would silently drop a row, and a
     # dropped row is a notice not given.
     my @conditions = @c.map({ .<condition> }).grep(*.defined).unique.sort;
-    is @conditions.List, ('runner', 'sqlcipher'),
-        'and the only conditional rows are the two facts a build knows';
+    is @conditions.List, ('runner', 'sqlcipher', 'updater'),
+        'and the only conditional rows are the three facts a build knows';
 };
 
 subtest 'runtime rows are substituted, conditional, and can name what they cover', {

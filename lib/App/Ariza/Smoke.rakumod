@@ -1,6 +1,7 @@
 use JSON::Fast;
 
 use App::Ariza::Native;
+use App::Ariza::Runner;
 use App::Ariza::Site;
 use App::Ariza::Tools;
 
@@ -222,14 +223,23 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
     if $win {
         my $runner  = $root.add('bin').add("$exec.exe");
         my $sidecar = $root.add('bin').add("$exec.ariza");
+        my $required = so (%manifest<updates> // {})<enabled>;
+        my $tag = %manifest<components><runner><tag> // Str;
+        my $capable = !$required
+            || App::Ariza::Runner.update-handoff-capable($tag);
         @checks.push({
             name => 'runner',
-            ok => (!$runner.f || $sidecar.f),
+            ok => $capable
+                && (($runner.f && $sidecar.f) || (!$required && !$runner.f)),
             detail => $runner.f
-                ?? ($sidecar.f
+                ?? (!$capable
+                    ?? "update-enabled bundle requires runner-v2+ (manifest has {$tag // '(none)'})"
+                    !! $sidecar.f
                     ?? "bin/$exec.exe with bin/$exec.ariza beside it"
                     !! "bin/$exec.exe has no bin/$exec.ariza to read")
-                !! "no bin/$exec.exe — this bundle launches from bin/$exec.cmd",
+                !! ($required
+                    ?? "update-enabled bundle is missing required bin/$exec.exe"
+                    !! "no bin/$exec.exe — this bundle launches from bin/$exec.cmd"),
         });
     }
 
@@ -248,6 +258,43 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
         detail => $target.f ?? ~(%manifest<launcher><target>)
                             !! "missing {%manifest<launcher><target> // '(none recorded)'}",
     });
+
+    with %manifest<updates> -> $updates {
+        my @problems;
+        if $updates !~~ Associative {
+            @problems.push('updates is not an object');
+        }
+        else {
+            @problems.push('updates.enabled is not true')
+                unless $updates<enabled> === True;
+            @problems.push('updates.protocol is not 1')
+                unless ($updates<protocol> // 0) == 1;
+            my $repo = $updates<repository> // '';
+            @problems.push('updates.repository is not owner/name')
+                unless $repo ~~ /^ <[A..Za..z0..9_.-]>+ '/'
+                                <[A..Za..z0..9_.-]>+ $/;
+
+            for <coordinator installer application-target> -> $key {
+                my $rel = $updates{$key};
+                unless self!safe-bundle-rel($rel) {
+                    @problems.push("updates.$key is not a safe bundle-relative path");
+                    next;
+                }
+                @problems.push("updates.$key is missing ($rel)")
+                    unless $root.add($rel).f;
+            }
+            @problems.push('launcher.target is not the update coordinator')
+                unless ($updates<coordinator> // '')
+                    eq (%manifest<launcher><target> // '');
+        }
+        @checks.push({
+            name => 'updates',
+            ok => !@problems,
+            detail => @problems
+                ?? @problems.join('; ')
+                !! "protocol 1 resources and application target are present",
+        });
+    }
 
     my $site    = self.site-dir($root, %manifest);
     my $precomp = $site.add('precomp');
@@ -282,6 +329,13 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
     }
 
     @checks.List
+}
+
+method !safe-bundle-rel(Mu $value --> Bool:D) {
+    return False unless $value ~~ Str && $value.chars;
+    return False if $value.starts-with('/') || $value.contains('\\');
+    my @parts = $value.split('/');
+    !@parts.first({ $_ eq '' || $_ eq '.' || $_ eq '..' })
 }
 
 method !audit-check(IO::Path $root, %manifest --> List) {

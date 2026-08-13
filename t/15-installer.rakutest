@@ -295,7 +295,8 @@ subtest 'what the installer promises about the machine it lands on', {
         'a missing checksum is fatal';
     ok $SH.contains('checksum mismatch'), 'and so is a wrong one';
 
-    ok $SH.contains('ln -sfn "versions/$1"'),
+    ok $SH.contains('ln -s "versions/$1" "$_new"')
+        && $SH.contains('ariza_replace_link "$_new" "$_link"'),
         'current points at a relative target, so the data directory can be moved';
     ok $SH.contains('mv "$_top" "$_dest"'),
         'the new version is renamed into place complete, never assembled in place';
@@ -389,7 +390,7 @@ subtest 'the uninstaller removes what it made and nothing else', {
     ok $UNSH.contains('ariza_unpersist_path'), 'and the PATH block goes';
 
     ok $UNSH.contains('XDG_STATE_HOME'),
-        'while the state directory it never created is named, not deleted';
+        'while launcher state outside the managed install is named, not deleted';
 
     # Both scripts have to agree about the marker or the block outlives
     # the app; they are built from the executable name in both.

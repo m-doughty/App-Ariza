@@ -6,8 +6,10 @@ rem inside the directory above it; nothing outside the bundle is read, and
 rem nothing is installed.
 
 setlocal enableextensions
-
-rem %~dp0 is this script's directory with a trailing backslash, already
+{% if updates_enabled %}"%~dp0{{ app_exec }}.exe" %*
+exit /b %ERRORLEVEL%
+{% else %}
+{% endif %}rem %~dp0 is this script's directory with a trailing backslash, already
 rem resolved, so the bundle root is one level up.
 for %%I in ("%~dp0..") do set "BUNDLE_ROOT=%%~fI"
 

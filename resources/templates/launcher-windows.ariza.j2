@@ -33,6 +33,9 @@ app-display {{ app_display }}
 set RAKULIB=inst#{root}\{{ site_win }}
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
+{%- if updates_enabled %}
+set ARIZA_UPDATES_ENABLED=1
+{%- endif %}
 {%- if sqlcipher %}
 prepend-path {root}\{{ sqlcipher_dir_win }}
 set DBIISH_SQLCIPHER_LIB={root}\{{ sqlcipher_lib_win }}

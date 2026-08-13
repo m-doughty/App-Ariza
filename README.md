@@ -344,6 +344,9 @@ smoke     = "{exec} --version"     # command(s) `ariza smoke` runs
 repo = "m-doughty/App-Moneymoor"   # owner/name the releases live under
 warm = "--version"                 # run once at install time; false skips it
 
+[updates]
+enabled = true                     # weekly managed-install update prompt
+
 [ci]
 ariza-source = "fez"               # how the workflows install ariza itself
 
@@ -373,7 +376,9 @@ spdx-license = "Artistic-2.0"
 
   * **`installer.warm`** is what the generated installers run the freshly installed launcher with, once, before they print the parting message. It defaults to `--version` — the same canary `bundle.smoke` uses, chosen because it is the one invocation every bundled app answers and **returns from**. `false` skips the step; a string is a command line split on whitespace; an array is taken word for word. An **empty** value is an error rather than either of the things it might mean: a launcher run with no arguments starts the application, which does not return, and the installers impose no timeout on purpose. See **The generated installers**, below, for what happens when it fails.
 
-  * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. The default resolves `App::Ariza:ver<0.1.2+>:auth<zef:apogee>`, pinning both the compatibility floor and the publisher identity. Whichever source is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
+  * **`updates.enabled`** opts a bundle into managed-install update prompts. It defaults to `false`, must be a TOML boolean, and requires `installer.repo` because that exact repository is the only release source the generated coordinator will trust. See **Managed-install update prompts**, below.
+
+  * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. The default resolves `App::Ariza:ver<0.1.4+>:auth<zef:apogee>`, pinning both the compatibility floor and the publisher identity. Whichever source is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
 
   * **`[licensing]`** is optional in every part. An app that writes none of it still gets a complete `THIRD-PARTY.md`, because everything in that document is read out of the bundle rather than declared. The table is for the two things that cannot be: how strict to be about a payload nobody attributed, and what the app itself ships that ariza cannot see. See **Licensing**, below.
 
@@ -580,6 +585,36 @@ That is what a release pipeline can gate on without parsing prose: `unknown` abo
 
 The document itself is **deterministic**: rows are ordered by kind, then by name, then by id, and nothing in it is a timestamp or a path from the build machine. Two builds of the same inputs produce byte-identical output, so it can be diffed across releases.
 
+MANAGED-INSTALL UPDATE PROMPTS
+==============================
+
+An app may add this to `ariza.toml`:
+
+```toml
+[updates]
+enabled = true
+```
+
+The bundle then carries a generated, core-only Raku coordinator and an exact snapshot of its platform installer. On an eligible startup the launcher asks GitHub's `releases/latest` endpoint for `installer.repo`, at most once every seven days. It accepts only a final redirect for that same repository whose tag is exactly three non-empty ASCII decimal components — `1.2.3` and `01.002.0003` are releases; `v1.2.3`, `1.2`, `1.2.3-rc1` and `1.2.3+build` are not. Components compare numerically without a machine-word limit.
+
+The check runs only for an interactive launcher reached through the installer managed `current` pointer. A portable archive, a retained version launched directly, redirected input or output, `CI`, `--help`, `--version`, a guarded post-update relaunch, `ARIZA_NO_UPDATE_CHECK=1`, or a launch whose private challenge could not be created dispatches the application without discovery or update-state mutation.
+
+When a newer version exists, the choices are deliberately the whole policy:
+
+```text
+1. Install & use
+2. Ask next time
+3. Don't ask again for this version
+```
+
+`Ask next time` keeps the candidate pending, so the next eligible launch asks again without another network request. `Don't ask again` records that exact version only; a later stable release may be offered. State is bounded and atomically replaced under the managed install's `.ariza/update-v1` directory, and a non-blocking lock makes concurrent launches dispatch rather than prompt twice.
+
+`Install & use` invokes only the trusted installer snapshot already inside the old bundle. Its private interface derives the exact GitHub asset URL, requires the published SHA-256, rejects public `--url`, `--version` and `--insecure-no-verify` controls, and validates the extracted manifest's app, version, repository, protocol and bundle-relative paths before switching `current`. The launcher accepts success only through a per-launch 256-bit nonce and a path-free protocol record; an application's unrelated exit status 75 is returned normally. A valid handoff performs one user-requested relaunch with the original argv and sets a guard so the new process cannot check again.
+
+Windows update-enabled bundles require the native `runner-v2` protocol. Ariza refuses to build one with runner-v1, no pinned runner, or only the `.cmd`/`.ps1` launchers. The transparent scripts delegate to the native runner in opted-in bundles, because only that process can own and authenticate the handoff without losing Windows argument fidelity.
+
+An update-enabled release must use a bare `X.Y.Z` Git tag. The generated publish job enforces that before collecting artefacts, so a release the coordinator can never recognize is not published accidentally.
+
 THE GENERATED INSTALLERS
 ========================
 
@@ -616,7 +651,7 @@ What it does:
 
 A warm-up that fails **warns and finishes**; it never fails the install and never changes the exit code. By the time it runs, the bundle has been downloaded, checksummed and put in place, so a warm-up that fails on one machine is far likelier to be that machine — no terminal, a sandbox, an over-eager scanner — than a bad release, and refusing to finish would take a working program away from somebody who has one. The message says what failed and that the app is installed and worth trying.
 
-  * Keeps one previous version to roll back to, prunes anything older, and says which.
+  * Keeps exactly the newly installed version and the physical version that was `current` immediately before the switch, points `previous` at that exact rollback target, and prunes anything else. Windows records bounded deferred cleanup when the running bundle is still locked, and retries later without following reparse points or deleting `current`, `previous`, or the version that initiated the update.
 
   * Needs no root, no compiler, no package manager and no Raku.
 

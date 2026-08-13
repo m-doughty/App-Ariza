@@ -1,0 +1,264 @@
+use v6.d;
+use Test;
+use JSON::Fast;
+
+use App::Ariza::Bundle;
+use App::Ariza::CI;
+use App::Ariza::Config;
+use App::Ariza::Launcher;
+use App::Ariza::Licensing;
+use App::Ariza::Site;
+use App::Ariza::Tools;
+use App::Ariza::Update;
+use App::Ariza::Versions;
+
+plan 6;
+
+sub temp-dir(Str $leaf --> IO::Path) {
+    ensure-dir($*TMPDIR.add("ariza-update-integration-{$*PID}-{(^1_000_000).pick}")
+        .add($leaf))
+}
+
+my $scratch = temp-dir('root');
+END { rm-rf($scratch) }
+
+sub config(Str $leaf, Bool :$enabled = False,
+           :@platforms = <macos-arm64 windows-x86_64> --> App::Ariza::Config) {
+    my $dir = ensure-dir($scratch.add($leaf));
+    $dir.add('ariza.toml').spurt(
+        "[app]\nname = \"App::ExampleApp\"\nexec = \"exampleapp\"\n"
+      ~ "display = \"Example App\"\n[bundle]\nplatforms = ["
+      ~ @platforms.map({ "\"$_\"" }).join(', ') ~ "]\n"
+      ~ "[installer]\nrepo = \"example-org/App-ExampleApp\"\n"
+      ~ ($enabled ?? "[updates]\nenabled = true\n" !! ''));
+    App::Ariza::Config.load($dir)
+}
+
+my $disabled = config('disabled');
+my $enabled  = config('enabled', :enabled);
+my $site-target = App::Ariza::Site.site-rel('.') ~ '/bin/exampleapp.raku';
+
+subtest 'bundle assembly stages only opted-in update resources', {
+    plan 13;
+    my $off = ensure-dir($scratch.add('bundle-off'));
+    is-deeply App::Ariza::Bundle.stage-updater(
+        :work($off), :config($disabled), :version<1.2.3>,
+        :platform<macos-arm64>, :application-target($site-target)), %(),
+        'disabled bundles stage nothing';
+    nok $off.add('libexec').e, 'and retain the old layout';
+
+    my $on = ensure-dir($scratch.add('bundle-on'));
+    my %u = App::Ariza::Bundle.stage-updater(
+        :work($on), :config($enabled), :version<1.2.3>,
+        :platform<macos-arm64>, :application-target($site-target));
+    is %u<coordinator-rel>, 'libexec/ariza/update.raku',
+        'the coordinator has the frozen location';
+    is %u<installer-rel>, 'libexec/ariza/install.sh',
+        'POSIX gets its local installer snapshot';
+    ok %u<coordinator>.f && %u<installer>.f, 'both files are staged';
+    ok %u<installer>.x, 'the local POSIX installer is executable';
+    ok %u<coordinator>.slurp.contains("has Str \$.app-version   = '1.2.3'"),
+        'the coordinator bakes the exact version';
+    ok %u<installer>.slurp.contains('--ariza-update-candidate'),
+        'the snapshot carries private exact-candidate mode';
+
+    my %m = App::Ariza::Bundle.updates-component(%u);
+    is %m<protocol>, 1, 'manifest protocol is fixed at one';
+    ok %m<enabled>, 'manifest records explicit enablement';
+    is %m<repository>, 'example-org/App-ExampleApp', 'and release repository';
+    is %m<coordinator>, 'libexec/ariza/update.raku', 'with a relative coordinator';
+    is %m<application-target>, $site-target,
+        'while preserving the real app target for validation';
+}
+
+subtest 'update-enabled launchers target and supervise the coordinator', {
+    plan 12;
+    my %posix = App::Ariza::Launcher.context(
+        :config($enabled), :slug<macos-arm64>,
+        :target(App::Ariza::Update.coordinator-rel), :app-version<1.2.3>);
+    my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>, |%posix);
+    ok %posix<updates_enabled>, 'enablement reaches the renderer';
+    ok $sh.contains('"$BUNDLE_ROOT/libexec/ariza/update.raku" "$@"'),
+        'the coordinator receives the original argv';
+    ok $sh.contains('ARIZA_STATUS') && $sh.contains('"$ARIZA_STATUS" -eq 75'),
+        'the launcher supervises the reserved status';
+    ok $sh.contains("printf 'protocol=1\\nnonce=%s\\ncandidate=%s\\n'"),
+        'handoff bytes are compared against the private nonce and candidate';
+    ok $sh.contains('ARIZA_UPDATE_RELAUNCHED=1'), 'the handoff is one hop';
+
+    my %win = App::Ariza::Launcher.context(
+        :config($enabled), :slug<windows-x86_64>,
+        :target(App::Ariza::Update.coordinator-rel), :app-version<1.2.3>);
+    my $side = App::Ariza::Launcher.render(
+        :template<launcher-windows.ariza.j2>, |%win);
+    ok $side.contains("target libexec\\ariza\\update.raku"),
+        'the native runner targets the coordinator';
+    ok $side.contains('set ARIZA_UPDATES_ENABLED=1'),
+        'and receives explicit update enablement';
+    my $ps = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>, |%win);
+    my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>, |%win);
+    ok $ps.contains("Join-Path \$PSScriptRoot 'exampleapp.exe'"),
+        'PowerShell delegates to the native runner';
+    ok $cmd.contains('"%~dp0exampleapp.exe" %*'),
+        'as does CMD';
+    ok $ps.index('$ArizaRunner') < $ps.index('& $ArizaRaku'),
+        'PowerShell delegates before its disabled-mode implementation';
+    ok $cmd.index('"%~dp0exampleapp.exe"') < $cmd.index('"%ARIZA_RAKU%"'),
+        'CMD delegates before its disabled-mode implementation';
+    ok $side.contains("\r\n"), 'Windows update output remains CRLF';
+}
+
+subtest 'update-enabled Windows refuses an unauthenticated script-only build', {
+    plan 4;
+    my $dir = ensure-dir($scratch.add('windows-launchers'));
+    throws-like {
+        App::Ariza::Launcher.write(
+            :bundle-dir($dir), :config($enabled), :slug<windows-x86_64>,
+            :target(App::Ariza::Update.coordinator-rel),
+            :stage-runner(-> | { %() }))
+    }, Exception, message => /'require updater-capable runner-v2+'/,
+        'no runner is a hard build failure';
+
+    throws-like {
+        App::Ariza::Launcher.write(
+            :bundle-dir($dir), :config($enabled), :slug<windows-x86_64>,
+            :target(App::Ariza::Update.coordinator-rel),
+            :stage-runner(-> :$bundle-dir, :$exec, *% {
+                my $path = $bundle-dir.IO.add('bin').add("$exec.exe");
+                $path.spurt('MZ');
+                %( :$path, tag => 'runner-v1' )
+            }));
+    }, Exception, message => /'runner-v2+'/,
+       'the old pinned runner is rejected even when its file exists';
+
+    my %written = App::Ariza::Launcher.write(
+        :bundle-dir($dir), :config($enabled), :slug<windows-x86_64>,
+        :target(App::Ariza::Update.coordinator-rel),
+        :stage-runner(-> :$bundle-dir, :$exec, *% {
+            my $path = $bundle-dir.IO.add('bin').add("$exec.exe");
+            $path.spurt('MZ');
+            %( :$path, tag => 'runner-v2', artifact => 'runner.exe',
+               url => 'https://example.invalid/runner.exe', sha256 => 'a' x 64 )
+        }));
+    ok %written<runner><path>.f, 'a staged runner satisfies the requirement';
+    is %written<written>.tail.basename, 'exampleapp.exe',
+        'and is part of the launcher inventory';
+}
+
+subtest 'POSIX authenticated handoff preserves argv and false 75 does not relaunch', {
+    plan 7;
+    if $*DISTRO.is-win || !have-command('sh') {
+        skip 'POSIX launcher execution needs sh', 7;
+    }
+    else {
+        my $root = ensure-dir($scratch.add('managed'));
+        my $versions = ensure-dir($root.add('versions'));
+        my $old = ensure-dir($versions.add('1.2.3'));
+        my $new = ensure-dir($versions.add('1.2.4'));
+        ensure-dir($old.add('bin'));
+        ensure-dir($old.add('rakudo/bin'));
+        ensure-dir($old.add('libexec/ariza')).add('update.raku').spurt("# fixture\n");
+        ensure-dir($new.add('bin')).add('exampleapp').spurt(q:to/SH/);
+#!/bin/sh
+printf 'relaunch-guard=%s\n' "${ARIZA_UPDATE_RELAUNCHED:-}"
+printf 'arg=<%s>\n' "$@"
+SH
+        $new.add('bin/exampleapp').chmod(0o755);
+
+        my $raku = $old.add('rakudo/bin/raku');
+        $raku.spurt(q:to/SH/);
+#!/bin/sh
+case ${ARIZA_TEST_MODE:-natural} in
+  install)
+    install_root=$(dirname "$(dirname "$(dirname "$ARIZA_UPDATE_HANDOFF")")")
+    rm -f "$install_root/current"
+    ln -s "versions/1.2.4" "$install_root/current"
+    printf 'protocol=1\nnonce=%s\ncandidate=1.2.4\n' \
+      "$ARIZA_UPDATE_NONCE" >"$ARIZA_UPDATE_HANDOFF"
+    ;;
+esac
+exit 75
+SH
+        $raku.chmod(0o755);
+        my %ctx = App::Ariza::Launcher.context(
+            :config($enabled), :slug<macos-arm64>,
+            :target(App::Ariza::Update.coordinator-rel), :app-version<1.2.3>);
+        my $launcher = $old.add('bin/exampleapp');
+        $launcher.spurt(App::Ariza::Launcher.render(
+            :template<launcher-posix.sh.j2>, |%ctx));
+        $launcher.chmod(0o755);
+
+        sub point-current(Str $version) {
+            $root.add('current').unlink if $root.add('current').e || $root.add('current').l;
+            run-checked(['ln', '-s', "versions/$version", $root.add('current').absolute],
+                        :what<ln>);
+        }
+        point-current('1.2.3');
+        my %env = PATH => '/usr/bin:/bin', HOME => $scratch.absolute,
+                  TERM => 'xterm-256color', ARIZA_TEST_MODE => 'natural';
+        my ($natural, $, $natural-err) = try-run(
+            [$launcher.absolute, 'not-an-update'], :%env);
+        is $natural, 75, 'an ordinary status 75 is returned unchanged'
+            or diag $natural-err;
+        is $root.add('current').resolve.basename, '1.2.3',
+            'and cannot switch current without a handoff';
+
+        point-current('1.2.3');
+        %env<ARIZA_TEST_MODE> = 'install';
+        my ($code, $out, $err) = try-run(
+            [$launcher.absolute, 'one two', q{$(literal)}, '"quoted"'], :%env);
+        is $code, 0, 'a valid committed handoff relaunches successfully'
+            or diag $err;
+        is $root.add('current').resolve.basename, '1.2.4',
+            'only the validated managed candidate is selected';
+        ok $out.contains('relaunch-guard=1'), 'the next launcher is guarded';
+        ok $out.contains("arg=<one two>\narg=<\$(literal)>\narg=<\"quoted\">") ,
+            'the original argv survives the handoff exactly' or diag $out;
+        nok $root.add('.ariza/update-v1').dir.grep(*.basename.starts-with('handoff')),
+            'challenge and expected-record files are cleaned up';
+    }
+}
+
+subtest 'only opted-in CI gets the exact bare tag preflight', {
+    plan 4;
+    my $pin = ensure-dir($scratch.add('pins')).add('versions.toml');
+    $pin.spurt("sqlcipher = \"4.14.0\"\n[rakudo]\nversion = \"2026.07\"\nrevision = \"01\"\n");
+    my $versions = App::Ariza::Versions.load($pin);
+    my $off = App::Ariza::CI.render(:template<release.yml.j2>,
+        |App::Ariza::CI.context(:config(config('ci-off',
+                                               :platforms(['macos-arm64']))),
+                                :$versions, :ariza-version<test>));
+    my $on = App::Ariza::CI.render(:template<release.yml.j2>,
+        |App::Ariza::CI.context(:config(config('ci-on', :enabled,
+                                               :platforms(['macos-arm64']))),
+                                :$versions, :ariza-version<test>));
+    nok $off.contains('Require an exact bare update version tag'),
+        'disabled workflow remains unchanged';
+    ok $on.contains('Require an exact bare update version tag'),
+        'opted-in workflow has a named preflight';
+    ok $on.contains('^[0-9]+\.[0-9]+\.[0-9]+$'), 'the grammar is exact X.Y.Z';
+    ok $on.contains('bare X.Y.Z tag'), 'failure explains the release contract';
+}
+
+subtest 'licensing inventory accounts for generated updater files', {
+    plan 4;
+    my %p =
+        'rakudo-version' => '2026.07', 'rakudo-tag' => '2026.07-01',
+        'rakudo-url' => 'https://example.invalid/rakudo',
+        'sqlcipher-version' => '', 'sqlcipher-source' => '',
+        'runner-tag' => '', 'runner-url' => '',
+        'app-exec' => 'exampleapp', 'ariza-version' => '0.1.3';
+    my @plain = App::Ariza::Licensing.runtime-rows(:placeholders(%p));
+    nok @plain.first(*.<id> eq 'ariza-updater'), 'disabled inventory has no row';
+    my @with = App::Ariza::Licensing.runtime-rows(
+        :placeholders(%p), :conditions(['updater']),
+        :files({ 'ariza-updater' => <libexec/ariza/update.raku libexec/ariza/install.sh> }));
+    my $row = @with.first(*.<id> eq 'ariza-updater');
+    ok $row.defined, 'enabled inventory includes generated update support';
+    is $row<spdx>, 'Artistic-2.0', 'under App-Ariza licensing';
+    is-deeply $row<files>.List,
+        <libexec/ariza/update.raku libexec/ariza/install.sh>,
+        'and names both staged resources';
+}
+
+done-testing;

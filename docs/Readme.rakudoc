@@ -510,6 +510,9 @@ smoke     = "{exec} --version"     # command(s) `ariza smoke` runs
 repo = "m-doughty/App-Moneymoor"   # owner/name the releases live under
 warm = "--version"                 # run once at install time; false skips it
 
+[updates]
+enabled = true                     # weekly managed-install update prompt
+
 [ci]
 ariza-source = "fez"               # how the workflows install ariza itself
 
@@ -563,12 +566,18 @@ run with no arguments starts the application, which does not return, and
 the installers impose no timeout on purpose. See B<The generated
 installers>, below, for what happens when it fails.
 
+=item1 B<C<updates.enabled>> opts a bundle into managed-install update
+prompts. It defaults to C<false>, must be a TOML boolean, and requires
+C<installer.repo> because that exact repository is the only release source
+the generated coordinator will trust. See B<Managed-install update prompts>,
+below.
+
 =item1 B<C<ci.ariza-source>> is read only by C<ariza scaffold-ci>, and
 says where the generated workflows install ariza from: C<"fez"> (the
 default) or anything C<zef install> accepts, such as a repository URL
 for an app whose release workflow has to exist before ariza is
 published. The default resolves
-C«App::Ariza:ver<0.1.2+>:auth<zef:apogee>», pinning both
+C«App::Ariza:ver<0.1.4+>:auth<zef:apogee>», pinning both
 the compatibility floor and the publisher identity. Whichever source is
 not in use is rendered beside it as a comment. This is not a closed set,
 so only an B<empty> value is an error — it would render a step that
@@ -932,6 +941,70 @@ by name, then by id, and nothing in it is a timestamp or a path from the
 build machine. Two builds of the same inputs produce byte-identical
 output, so it can be diffed across releases.
 
+=head1 MANAGED-INSTALL UPDATE PROMPTS
+
+An app may add this to C<ariza.toml>:
+
+=begin code :lang<toml>
+
+[updates]
+enabled = true
+
+=end code
+
+The bundle then carries a generated, core-only Raku coordinator and an exact
+snapshot of its platform installer. On an eligible startup the launcher asks
+GitHub's C<releases/latest> endpoint for C<installer.repo>, at most once every
+seven days. It accepts only a final redirect for that same repository whose
+tag is exactly three non-empty ASCII decimal components — C<1.2.3> and
+C<01.002.0003> are releases; C<v1.2.3>, C<1.2>, C<1.2.3-rc1> and
+C<1.2.3+build> are not. Components compare numerically without a machine-word
+limit.
+
+The check runs only for an interactive launcher reached through the installer
+managed C<current> pointer. A portable archive, a retained version launched
+directly, redirected input or output, C<CI>, C<--help>, C<--version>, a guarded
+post-update relaunch, C<ARIZA_NO_UPDATE_CHECK=1>, or a launch whose private
+challenge could not be created dispatches the application without discovery
+or update-state mutation.
+
+When a newer version exists, the choices are deliberately the whole policy:
+
+=begin code :lang<text>
+
+1. Install & use
+2. Ask next time
+3. Don't ask again for this version
+
+=end code
+
+C<Ask next time> keeps the candidate pending, so the next eligible launch asks
+again without another network request. C<Don't ask again> records that exact
+version only; a later stable release may be offered. State is bounded and
+atomically replaced under the managed install's C<.ariza/update-v1> directory,
+and a non-blocking lock makes concurrent launches dispatch rather than prompt
+twice.
+
+C<Install & use> invokes only the trusted installer snapshot already inside
+the old bundle. Its private interface derives the exact GitHub asset URL,
+requires the published SHA-256, rejects public C<--url>, C<--version> and
+C<--insecure-no-verify> controls, and validates the extracted manifest's app,
+version, repository, protocol and bundle-relative paths before switching
+C<current>. The launcher accepts success only through a per-launch 256-bit
+nonce and a path-free protocol record; an application's unrelated exit status
+75 is returned normally. A valid handoff performs one user-requested relaunch
+with the original argv and sets a guard so the new process cannot check again.
+
+Windows update-enabled bundles require the native C<runner-v2> protocol.
+Ariza refuses to build one with runner-v1, no pinned runner, or only the
+C<.cmd>/C<.ps1> launchers. The transparent scripts delegate to the native
+runner in opted-in bundles, because only that process can own and authenticate
+the handoff without losing Windows argument fidelity.
+
+An update-enabled release must use a bare C<X.Y.Z> Git tag. The generated
+publish job enforces that before collecting artefacts, so a release the
+coordinator can never recognize is not published accidentally.
+
 =head1 THE GENERATED INSTALLERS
 
 A bundle is self-contained, so "installing" it is unpacking it somewhere
@@ -997,8 +1070,12 @@ sandbox, an over-eager scanner — than a bad release, and refusing to
 finish would take a working program away from somebody who has one. The
 message says what failed and that the app is installed and worth trying.
 
-=item1 Keeps one previous version to roll back to, prunes anything
-older, and says which.
+=item1 Keeps exactly the newly installed version and the physical version that
+was C<current> immediately before the switch, points C<previous> at that exact
+rollback target, and prunes anything else. Windows records bounded deferred
+cleanup when the running bundle is still locked, and retries later without
+following reparse points or deleting C<current>, C<previous>, or the version
+that initiated the update.
 
 =item1 Needs no root, no compiler, no package manager and no Raku.
 

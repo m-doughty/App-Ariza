@@ -34,12 +34,19 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <stdlib.h>
 
 #include "ariza_runner.h"
 
 /* What the .cmd exits with when it cannot find the interpreter. */
 #define ARZ_EXIT_LAUNCH_FAILURE 1
+#define ARZ_EXIT_UPDATE_HANDOFF 75
+
+#define ARZ_ENV_UPDATES_ENABLED L"ARIZA_UPDATES_ENABLED"
+#define ARZ_ENV_HANDOFF L"ARIZA_UPDATE_HANDOFF"
+#define ARZ_ENV_NONCE L"ARIZA_UPDATE_NONCE"
+#define ARZ_ENV_RELAUNCHED L"ARIZA_UPDATE_RELAUNCHED"
 
 static void write_err(const wchar_t *text)
 {
@@ -326,6 +333,253 @@ static void env_set(const wchar_t *name, const wchar_t *value)
 	fatal(L"ariza: could not set ", name, L" for the application.");
 }
 
+static int env_is_one(const wchar_t *name)
+{
+	wchar_t *value = env_get(name);
+	int yes = value != NULL && value[0] == L'1' && value[1] == L'\0';
+
+	free(value);
+	return yes;
+}
+
+static int make_dir(const wchar_t *path)
+{
+	DWORD attrs;
+
+	if (!CreateDirectoryW(path, NULL) &&
+	    GetLastError() != ERROR_ALREADY_EXISTS)
+		return 0;
+	attrs = GetFileAttributesW(path);
+	return attrs != INVALID_FILE_ATTRIBUTES &&
+	       (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+	       (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+static int random_nonce(wchar_t out[65])
+{
+	unsigned char bytes[32];
+	static const wchar_t hex[] = L"0123456789abcdef";
+	size_t i;
+
+	if (BCryptGenRandom(NULL, bytes, sizeof(bytes),
+	    BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+		return 0;
+	for (i = 0; i < sizeof(bytes); i++) {
+		out[i * 2] = hex[bytes[i] >> 4];
+		out[i * 2 + 1] = hex[bytes[i] & 15];
+	}
+	out[64] = L'\0';
+	SecureZeroMemory(bytes, sizeof(bytes));
+	return 1;
+}
+
+/* Create a runner-owned challenge directory below the managed application
+ * root.  The updater receives only the result-file path and the nonce; it
+ * atomically writes that file after the install transaction commits. */
+static wchar_t *handoff_challenge(const arz_config *cfg, wchar_t nonce[65],
+	wchar_t **challenge_dir)
+{
+	wchar_t *base = env_get(L"LOCALAPPDATA");
+	wchar_t *app = NULL;
+	wchar_t *ariza = NULL;
+	wchar_t *state = NULL;
+	wchar_t *leaf = NULL;
+	wchar_t pid[24];
+	wchar_t *path = NULL;
+
+	*challenge_dir = NULL;
+	if (base == NULL || !random_nonce(nonce))
+		goto done;
+	app = arz_path_join(base, cfg->app_display);
+	ariza = app != NULL ? arz_path_join(app, L".ariza") : NULL;
+	state = ariza != NULL ? arz_path_join(ariza, L"update-v1") : NULL;
+	if (app == NULL || ariza == NULL || state == NULL ||
+	    !make_dir(app) || !make_dir(ariza) || !make_dir(state))
+		goto done;
+	number_to_wide((unsigned long)GetCurrentProcessId(), pid,
+		sizeof(pid) / sizeof(pid[0]));
+	leaf = arz_cat(L"handoff-", pid, L"-");
+	if (leaf != NULL) {
+		wchar_t *with_nonce = arz_cat(leaf, nonce, NULL);
+		free(leaf);
+		leaf = with_nonce;
+	}
+	*challenge_dir = leaf != NULL ? arz_path_join(state, leaf) : NULL;
+	if (*challenge_dir == NULL || !CreateDirectoryW(*challenge_dir, NULL)) {
+		free(*challenge_dir);
+		*challenge_dir = NULL;
+		goto done;
+	}
+	path = arz_path_join(*challenge_dir, L"result");
+
+done:
+	free(base);
+	free(app);
+	free(ariza);
+	free(state);
+	free(leaf);
+	return path;
+}
+
+static void remove_challenge(const wchar_t *path, const wchar_t *dir)
+{
+	if (path != NULL)
+		DeleteFileW(path);
+	if (dir != NULL)
+		RemoveDirectoryW(dir);
+}
+
+static wchar_t *final_dir_path(const wchar_t *path)
+{
+	HANDLE h;
+	DWORD cap = 512;
+
+	h = CreateFileW(path, 0,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+		OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return NULL;
+	for (;;) {
+		wchar_t *out = malloc((size_t)cap * sizeof(*out));
+		DWORD n;
+
+		if (out == NULL) {
+			CloseHandle(h);
+			return NULL;
+		}
+		n = GetFinalPathNameByHandleW(h, out, cap,
+			FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+		if (n > 0 && n < cap) {
+			CloseHandle(h);
+			return out;
+		}
+		free(out);
+		if (n == 0 || n > 65535) {
+			CloseHandle(h);
+			return NULL;
+		}
+		cap = n + 1;
+	}
+}
+
+static int wide_equal_ci(const wchar_t *a, const wchar_t *b)
+{
+	if (a == NULL || b == NULL)
+		return 0;
+	return CompareStringOrdinal(a, -1, b, -1, TRUE) == CSTR_EQUAL;
+}
+
+/* Only a launcher reached through the managed `current` junction may create
+ * an update challenge.  Portable archives use the same sidecar, but must not
+ * acquire update state merely because their build opted into the feature. */
+static int is_managed_current(const arz_config *cfg, const wchar_t *root)
+{
+	wchar_t *base = env_get(L"LOCALAPPDATA");
+	wchar_t *app = NULL;
+	wchar_t *current = NULL;
+	wchar_t *root_final = NULL;
+	wchar_t *current_final = NULL;
+	int matches = 0;
+
+	if (base == NULL)
+		goto done;
+	app = arz_path_join(base, cfg->app_display);
+	current = app != NULL ? arz_path_join(app, L"current") : NULL;
+	root_final = final_dir_path(root);
+	current_final = final_dir_path(current);
+	matches = wide_equal_ci(root_final, current_final);
+
+done:
+	free(base);
+	free(app);
+	free(current);
+	free(root_final);
+	free(current_final);
+	return matches;
+}
+
+/* Validate the candidate by comparing resolved directory identities.  The
+ * handoff record cannot redirect execution: it names a version only, and the
+ * runner launches the entry point it derives below managed `current`. */
+static wchar_t *validated_current_exe(const arz_config *cfg,
+	const arz_handoff *handoff)
+{
+	wchar_t *base = env_get(L"LOCALAPPDATA");
+	wchar_t *app = NULL;
+	wchar_t *current = NULL;
+	wchar_t *versions = NULL;
+	wchar_t *candidate = NULL;
+	wchar_t *current_final = NULL;
+	wchar_t *candidate_final = NULL;
+	wchar_t *bin = NULL;
+	wchar_t *name = NULL;
+	wchar_t *exe = NULL;
+
+	if (base == NULL)
+		goto done;
+	app = arz_path_join(base, cfg->app_display);
+	current = app != NULL ? arz_path_join(app, L"current") : NULL;
+	versions = app != NULL ? arz_path_join(app, L"versions") : NULL;
+	candidate = versions != NULL
+		? arz_path_join(versions, handoff->candidate) : NULL;
+	current_final = final_dir_path(current);
+	candidate_final = final_dir_path(candidate);
+	if (!wide_equal_ci(current_final, candidate_final))
+		goto done;
+	bin = arz_path_join(current, L"bin");
+	name = arz_cat(cfg->app_exec, L".exe", NULL);
+	exe = bin != NULL && name != NULL ? arz_path_join(bin, name) : NULL;
+	if (!file_exists(exe)) {
+		free(exe);
+		exe = NULL;
+	}
+
+done:
+	free(base);
+	free(app);
+	free(current);
+	free(versions);
+	free(candidate);
+	free(current_final);
+	free(candidate_final);
+	free(bin);
+	free(name);
+	return exe;
+}
+
+static wchar_t *exe_cmdline(const wchar_t *exe, const wchar_t *tail)
+{
+	wchar_t *quoted = arz_quote_arg(exe);
+	wchar_t *out;
+
+	if (quoted == NULL)
+		return NULL;
+	out = tail == NULL || tail[0] == L'\0'
+		? arz_dup(quoted) : arz_cat(quoted, L" ", tail);
+	free(quoted);
+	return out;
+}
+
+static int spawn_and_wait(const wchar_t *application, wchar_t *command,
+	DWORD *code)
+{
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	ZeroMemory(&pi, sizeof(pi));
+	if (!CreateProcessW(application, command, NULL, NULL, TRUE, 0, NULL,
+	    NULL, &si, &pi))
+		return 0;
+	WaitForSingleObject(pi.hProcess, INFINITE);
+	if (!GetExitCodeProcess(pi.hProcess, code))
+		*code = ARZ_EXIT_LAUNCH_FAILURE;
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+	return 1;
+}
+
 /* The sidecar's environment directives, in file order.
  *
  * Order is the contract, not an implementation detail: two
@@ -448,9 +702,11 @@ int wmain(int argc, wchar_t **argv)
 	wchar_t *target;
 	const wchar_t *tail;
 	wchar_t *cmdline;
-	STARTUPINFOW si;
-	PROCESS_INFORMATION pi;
 	DWORD code = 0;
+	wchar_t nonce[65];
+	wchar_t *handoff_path = NULL;
+	wchar_t *handoff_dir = NULL;
+	int update_challenge = 0;
 
 	(void)argc;
 	(void)argv;
@@ -526,6 +782,29 @@ int wmain(int argc, wchar_t **argv)
 	 * this program. */
 	apply_env_ops(&cfg, root);
 
+	/* Update-disabled bundles pay no state or randomness cost.  The generated
+	 * sidecar enables this through the existing generic `set` directive, so
+	 * the fail-closed sidecar grammar does not change. */
+	update_challenge = env_is_one(ARZ_ENV_UPDATES_ENABLED) &&
+		!env_is_one(ARZ_ENV_RELAUNCHED) &&
+		is_managed_current(&cfg, root);
+	if (update_challenge) {
+		handoff_path = handoff_challenge(&cfg, nonce, &handoff_dir);
+		if (handoff_path != NULL) {
+			env_set(ARZ_ENV_HANDOFF, handoff_path);
+			env_set(ARZ_ENV_NONCE, nonce);
+		} else {
+			/* Without an authenticated challenge the coordinator simply
+			 * skips updating; launching the application is still safe. */
+			env_set(ARZ_ENV_HANDOFF, NULL);
+			env_set(ARZ_ENV_NONCE, NULL);
+			update_challenge = 0;
+		}
+	} else {
+		env_set(ARZ_ENV_HANDOFF, NULL);
+		env_set(ARZ_ENV_NONCE, NULL);
+	}
+
 	first_run_notice(&cfg);
 
 	/* The arguments, exactly as the user's shell produced them: find
@@ -537,18 +816,13 @@ int wmain(int argc, wchar_t **argv)
 
 	SetConsoleCtrlHandler(ctrl_handler, TRUE);
 
-	ZeroMemory(&si, sizeof(si));
-	si.cb = sizeof(si);
-	ZeroMemory(&pi, sizeof(pi));
-
 	/* lpApplicationName names the interpreter exactly, so no search
 	 * path decides which raku.exe runs; lpCommandLine still opens with
 	 * it, because that is what the child reads as its own argv[0].
 	 * Handles are inherited and no creation flag is passed, so the
 	 * child shares this console: a TUI needs the real one, and a
 	 * redirected run needs the pipes. */
-	if (!CreateProcessW(raku, cmdline, NULL, NULL, TRUE, 0, NULL, NULL,
-		&si, &pi)) {
+	if (!spawn_and_wait(raku, cmdline, &code)) {
 		wchar_t buf[24];
 
 		number_to_wide((unsigned long)GetLastError(), buf,
@@ -560,11 +834,53 @@ int wmain(int argc, wchar_t **argv)
 		ExitProcess(ARZ_EXIT_LAUNCH_FAILURE);
 	}
 
-	WaitForSingleObject(pi.hProcess, INFINITE);
-	if (!GetExitCodeProcess(pi.hProcess, &code))
-		code = ARZ_EXIT_LAUNCH_FAILURE;
-	CloseHandle(pi.hThread);
-	CloseHandle(pi.hProcess);
+	if (code == ARZ_EXIT_UPDATE_HANDOFF && update_challenge &&
+	    handoff_path != NULL) {
+		const wchar_t *handoff_why = L"";
+		wchar_t *handoff_text = read_utf8_file(handoff_path, &handoff_why);
+		arz_handoff handoff;
+		int authenticated = 0;
+		int launched = 0;
+
+		if (handoff_text != NULL && arz_len(handoff_text) <= 4096 &&
+		    arz_handoff_parse(handoff_text, &handoff) == ARZ_OK &&
+		    arz_handoff_nonce_matches(&handoff, nonce)) {
+			wchar_t *next = validated_current_exe(&cfg, &handoff);
+			wchar_t *next_cmd = next != NULL ? exe_cmdline(next, tail) : NULL;
+
+			authenticated = 1;
+			if (next != NULL && next_cmd != NULL) {
+				env_set(ARZ_ENV_RELAUNCHED, L"1");
+				env_set(ARZ_ENV_HANDOFF, NULL);
+				env_set(ARZ_ENV_NONCE, NULL);
+				launched = spawn_and_wait(next, next_cmd, &code);
+			}
+			free(next_cmd);
+			free(next);
+			arz_handoff_free(&handoff);
+		}
+		free(handoff_text);
+
+		/* A fully authenticated record means installation committed.  If
+		 * the new entry point cannot be resolved or created, say so and run
+		 * the old physical bundle once instead; `current` remains new for
+		 * the next launch, but this invocation is not lost. */
+		if (authenticated && !launched) {
+			wchar_t *old_cmd;
+
+			err_line(cfg.app_display,
+				L": the update installed, but its launcher could not start;",
+				L" continuing with the previous version.");
+			env_set(ARZ_ENV_RELAUNCHED, L"1");
+			env_set(ARZ_ENV_HANDOFF, NULL);
+			env_set(ARZ_ENV_NONCE, NULL);
+			old_cmd = arz_child_cmdline(raku, target, tail);
+			if (old_cmd == NULL || !spawn_and_wait(raku, old_cmd, &code))
+				code = ARZ_EXIT_LAUNCH_FAILURE;
+			free(old_cmd);
+		}
+	}
+	remove_challenge(handoff_path, handoff_dir);
 
 	free(cmdline);
 	free(raku);
@@ -574,6 +890,8 @@ int wmain(int argc, wchar_t **argv)
 	free(exe_path);
 	free(bin_dir);
 	free(root);
+	free(handoff_path);
+	free(handoff_dir);
 	arz_config_free(&cfg);
 
 	return (int)code;

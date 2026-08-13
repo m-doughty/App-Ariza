@@ -1,0 +1,50 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Update;
+
+plan 3;
+
+subtest 'the private handoff protocol is fixed', {
+    plan 3;
+
+    is UPDATE-PROTOCOL-VERSION, 1, 'protocol v1';
+    is UPDATE-HANDOFF-EXIT, 75, 'the reserved handoff status';
+    is UPDATE-CHECK-INTERVAL, 604_800, 'checks are weekly';
+};
+
+subtest 'update release versions are exactly three ASCII components', {
+    plan 8;
+
+    ok valid-update-version('0.0.0'), 'zero is a release version';
+    ok valid-update-version('01.002.0003'), 'leading zeroes are accepted';
+    nok valid-update-version('v1.2.3'), 'a GitHub-style v prefix is not accepted';
+    nok valid-update-version('1.2'), 'two components are not accepted';
+    nok valid-update-version('1.2.3.4'), 'four components are not accepted';
+    nok valid-update-version('1.2.3-rc1'), 'a prerelease suffix is not accepted';
+    nok valid-update-version('1.2.3+build'), 'a build suffix is not accepted';
+    nok valid-update-version("1.2.\x[0663]"), 'Unicode decimal digits are not ASCII digits';
+};
+
+subtest 'versions compare numerically without an integer-size limit', {
+    plan 6;
+
+    is compare-update-versions('01.002.0003', '1.2.3'), Same,
+        'leading zeroes do not change a version';
+    is compare-update-versions('1.2.3', '1.2.4'), Less,
+        'a larger patch is newer';
+    is compare-update-versions('1.10.0', '1.2.99'), More,
+        'components compare numerically rather than lexically';
+
+    my $long = '9' x 1_000;
+    my $next = '1' ~ ('0' x 1_000);
+    is compare-update-versions("1.$long.0", "1.$next.0"), Less,
+        'components longer than host integers still compare exactly';
+
+    throws-like { compare-update-versions('v1.2.3', '1.2.3') }, Exception,
+        message => /'must match X.Y.Z'/,
+        'the left operand is validated';
+    throws-like { compare-update-versions('1.2.3', '1.2.3-rc1') }, Exception,
+        message => /'must match X.Y.Z'/,
+        'and so is the right operand';
+};

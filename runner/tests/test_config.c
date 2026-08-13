@@ -54,7 +54,8 @@ static void test_golden_sidecar(void)
 	T_CHECK(arz_config_parse(t_u8(bytes), &cfg, &line) == ARZ_OK);
 	T_CHECK(line == 0);
 	T_CHECK(arz_config_missing(&cfg) == ARZ_KEY_NONE);
-	T_EQ(cfg.target, "site\\bin\\exampleapp.raku");
+	T_EQ(cfg.target,
+		"rakudo\\share\\perl6\\vendor\\bin\\exampleapp.raku");
 	T_EQ(cfg.app_display, "Example App");
 	T_EQ(cfg.app_exec, "exampleapp");
 
@@ -63,7 +64,8 @@ static void test_golden_sidecar(void)
 	 * have to produce the same environment, and this is the half of
 	 * that a test can hold still. */
 	T_CHECK(cfg.op_count == 5);
-	check_op(&cfg, 0, ARZ_OP_SET, "RAKULIB", "inst#{root}\\site");
+	check_op(&cfg, 0, ARZ_OP_SET, "RAKULIB",
+		"inst#{root}\\rakudo\\share\\perl6\\vendor");
 	check_op(&cfg, 1, ARZ_OP_UNSET, "PERL6LIB", NULL);
 	check_op(&cfg, 2, ARZ_OP_SET, "NOTCURSES_NATIVE_DATA_DIR",
 		"{root}\\native");

@@ -456,8 +456,11 @@ The download unpacks into `$XDG_DATA_HOME/<exec>/versions/<version>/`,
 beside whatever is already there, and only then is the `current` symlink
 flipped and `~/.local/bin/<exec>` linked at it. A failed or interrupted
 download cannot damage a working install. One previous version is kept,
-so a bad release can be rolled back by hand, and anything older is
-pruned with a line saying which.
+so a bad release can be rolled back by hand. “Previous” is the physical
+bundle that `current` resolved to immediately before the switch, not whichever
+directory has the newest mtime: rollback A, then install C must retain A, not
+the abandoned B. Pointer changes are journaled and recoverable; after a commit,
+anything other than the new current and that exact predecessor is pruned.
 
 `~/.local/bin` goes on `PATH` **only if it is not there already**,
 through one marked block appended to each shell rc file that exists.
@@ -556,6 +559,56 @@ administrator rights or Developer Mode, and a per-user install has no
 business demanding either — and `...\current\bin` added once to the user
 `PATH` in `HKCU\Environment`. Because the PATH entry points through the
 junction, an upgrade needs no PATH change at all.
+
+### 6.8 Startup update prompts are generated policy, not application code
+
+Managed update prompts are opt-in through `[updates] enabled = true`. They are
+implemented by a generated, core-only Raku coordinator inside each bundle,
+not by the application: cadence, stable-release grammar, prompt state,
+installer selection and relaunch behavior are distribution policy shared by
+every app ariza bundles. The app supplies only its identity, current version
+and the existing `installer.repo`, all baked into the generated program.
+
+The check is before application dispatch, but only after the launcher proves
+this is an interactive run through the installer-managed `current`. Portable
+archives, retained versions invoked directly, redirected sessions, CI,
+help/version requests, an explicit `ARIZA_NO_UPDATE_CHECK=1`, and the guarded
+post-update hop all dispatch immediately. A timestamp is written before the
+bounded network request, so an offline machine waits the full weekly cadence
+instead of paying for the same failure at every startup. A non-blocking file
+lock makes two simultaneous launches choose “one checker, one ordinary
+launch”, never two prompts.
+
+Discovery follows only the configured repository's `releases/latest` redirect
+and accepts only a bare ASCII `X.Y.Z` tag. No API response, channel list or
+semver prerelease policy is involved. Components compare as normalized decimal
+strings rather than machine integers, so the grammar has no accidental word-
+size limit and leading zeroes remain accepted as decided.
+
+The three prompt outcomes are persisted literally: install and use now; keep
+the candidate pending and ask next eligible launch; or ignore exactly this
+version. Ignoring `1.2.3` says nothing about `1.2.4`. Choosing install invokes
+the trusted installer snapshot already in the old bundle through a private
+interface that has no URL, version or insecure override. It derives the exact
+GitHub asset, requires its checksum, and validates the extracted manifest's
+application, candidate, repository, protocol and bundle-relative updater paths
+before a pointer moves.
+
+Reserved exit 75 alone is not success: an application is entitled to return
+any status. The launcher creates a 256-bit nonce and a private result path,
+the installer writes an exact path-free record only after the switch commits,
+and the launcher compares the complete record and resolves `current` against
+`versions/<candidate>` before honoring it. Only then does the explicitly chosen
+“Install & use” perform one relaunch with the original argv. POSIX can own that
+protocol in its shell launcher. Windows needs the native process to preserve
+the raw argument tail and own the challenge, so update-enabled Windows bundles
+require runner-v2 or later and the `.cmd`/`.ps1` twins delegate to it.
+
+Windows cannot remove the bundle whose executable is still running. Retention
+there therefore records bounded cleanup work and retries it on a later install,
+after checking that every target remains a physical child of `versions` and is
+not current, previous, the running expected-current, or a reparse point. A
+failed cleanup is disk usage, never authority to widen deletion.
 
 ---
 
@@ -1264,5 +1317,6 @@ Everything a bundle downloads is now traceable to something published.
 | unreleased | 2026-08-12 | The redistributable gate: an MSVC-built dependency is a clean-machine failure, so the CI lane takes UCRT and the audit refuses the alternative. |
 | unreleased | 2026-08-12 | Windows launches from a compiled runner of ariza's own, pinned by digest; its sidecar carries ordered env directives, so a bundle's dependencies are the renderer's business and never the executable's. |
 | unreleased | 2026-08-13 | The install pays the first launch: the installers warm the app up under a visible line, and a warm-up that fails warns rather than failing an install that has already been verified. |
+| unreleased | 2026-08-13 | Weekly managed-update prompts are generated launcher policy: exact stable GitHub tags, three persisted choices, transactional exact-candidate install, exact-predecessor retention, and a nonce-authenticated one-hop handoff (runner-v2 on Windows). |
 | unreleased | 2026-08-12 | A bundle says what it redistributes, out of four sources it reads rather than a table it remembers; a Raku distribution with no licence fails the build, an unattributed native pack is a visible row and, on request, a failure. |
 | unreleased | 2026-08-12 | `NOASSERTION` is a declaration an app makes after looking, never a gap ariza fills: not from a distribution's own metadata, not about the app itself, and not at all under `licensing.strict`. |

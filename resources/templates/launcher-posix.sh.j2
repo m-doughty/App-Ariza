@@ -98,4 +98,92 @@ case "${TERM:-}" in
         ;;
 esac
 
-exec "$ARIZA_RAKU" "$BUNDLE_ROOT/{{ target }}" "$@"
+{% if updates_enabled %}# The update coordinator returns 75 only after its private installer has
+# committed a new managed `current` and written an authenticated handoff.
+# A natural application exit 75 has no matching record and is returned unchanged.
+unset ARIZA_UPDATE_HANDOFF ARIZA_UPDATE_NONCE || :
+ARIZA_UPDATE_RECORD=
+ARIZA_UPDATE_EXPECTED=
+
+ariza_update_cleanup() {
+    [ -z "$ARIZA_UPDATE_RECORD" ] || rm -f -- "$ARIZA_UPDATE_RECORD" 2>/dev/null || :
+    [ -z "$ARIZA_UPDATE_EXPECTED" ] || rm -f -- "$ARIZA_UPDATE_EXPECTED" 2>/dev/null || :
+}
+trap ariza_update_cleanup EXIT
+
+# Only an installer-managed physical version gets a challenge. Portable
+# bundles still run the coordinator (which dispatches the app) but never
+# create update state beside themselves.
+if [ "${ARIZA_UPDATE_RELAUNCHED:-}" != 1 ]; then
+    ARIZA_INSTALL_ROOT=$(dirname -- "$(dirname -- "$BUNDLE_ROOT")")
+    ARIZA_CURRENT="$ARIZA_INSTALL_ROOT/current"
+    ARIZA_CURRENT_ROOT=
+    if [ -L "$ARIZA_CURRENT" ]; then
+        ARIZA_CURRENT_ROOT=$(ariza_resolve "$ARIZA_CURRENT" 2>/dev/null || :)
+    fi
+    if [ "$ARIZA_CURRENT_ROOT" = "$BUNDLE_ROOT" ]; then
+        ARIZA_NONCE=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null \
+            | tr -d ' \n' 2>/dev/null || :)
+        case $ARIZA_NONCE in
+            *[!0-9a-f]*|'') ARIZA_NONCE= ;;
+        esac
+        if [ "$(printf '%s' "$ARIZA_NONCE" | wc -c)" -eq 64 ]; then
+            ARIZA_STATE="$ARIZA_INSTALL_ROOT/.ariza/update-v1"
+            ARIZA_OLD_UMASK=$(umask)
+            umask 077
+            if [ ! -L "$ARIZA_INSTALL_ROOT/.ariza" ] \
+                && [ ! -L "$ARIZA_STATE" ] \
+                && mkdir -p -- "$ARIZA_STATE" 2>/dev/null; then
+                ARIZA_UPDATE_RECORD="$ARIZA_STATE/handoff.$$.$ARIZA_NONCE"
+                ARIZA_UPDATE_EXPECTED="$ARIZA_UPDATE_RECORD.expected"
+                if [ ! -e "$ARIZA_UPDATE_RECORD" ] && [ ! -L "$ARIZA_UPDATE_RECORD" ]; then
+                    ARIZA_UPDATE_HANDOFF=$ARIZA_UPDATE_RECORD
+                    ARIZA_UPDATE_NONCE=$ARIZA_NONCE
+                    export ARIZA_UPDATE_HANDOFF ARIZA_UPDATE_NONCE
+                fi
+            fi
+            umask "$ARIZA_OLD_UMASK"
+        fi
+    fi
+fi
+
+set +e
+"$ARIZA_RAKU" "$BUNDLE_ROOT/{{ target }}" "$@"
+ARIZA_STATUS=$?
+set -e
+
+if [ "$ARIZA_STATUS" -eq 75 ] \
+    && [ -n "$ARIZA_UPDATE_RECORD" ] \
+    && [ -f "$ARIZA_UPDATE_RECORD" ] \
+    && [ ! -L "$ARIZA_UPDATE_RECORD" ] \
+    && [ "$(wc -c <"$ARIZA_UPDATE_RECORD" 2>/dev/null || printf 99999)" -le 4096 ]; then
+    ARIZA_CANDIDATE=$(sed -n '3s/^candidate=//p' "$ARIZA_UPDATE_RECORD")
+    case $ARIZA_CANDIDATE in
+        *[!0-9.]*|.*|*..*|*.) ARIZA_CANDIDATE= ;;
+    esac
+    if [ -n "$ARIZA_CANDIDATE" ] \
+        && [ "$(printf '%s' "$ARIZA_CANDIDATE" | awk -F. '{ print NF }')" -eq 3 ]; then
+        printf 'protocol=1\nnonce=%s\ncandidate=%s\n' \
+            "$ARIZA_NONCE" "$ARIZA_CANDIDATE" >"$ARIZA_UPDATE_EXPECTED"
+        if cmp -s -- "$ARIZA_UPDATE_EXPECTED" "$ARIZA_UPDATE_RECORD"; then
+            ARIZA_CANDIDATE_ROOT="$ARIZA_INSTALL_ROOT/versions/$ARIZA_CANDIDATE"
+            ARIZA_CURRENT_ROOT=$(ariza_resolve "$ARIZA_INSTALL_ROOT/current" 2>/dev/null || :)
+            ARIZA_NEXT_ROOT=$(ariza_resolve "$ARIZA_CANDIDATE_ROOT" 2>/dev/null || :)
+            if [ -n "$ARIZA_NEXT_ROOT" ] \
+                && [ "$ARIZA_CURRENT_ROOT" = "$ARIZA_NEXT_ROOT" ] \
+                && [ -x "$ARIZA_NEXT_ROOT/bin/{{ app_exec }}" ]; then
+                ariza_update_cleanup
+                ARIZA_UPDATE_RECORD=
+                ARIZA_UPDATE_EXPECTED=
+                unset ARIZA_UPDATE_HANDOFF ARIZA_UPDATE_NONCE || :
+                ARIZA_UPDATE_RELAUNCHED=1
+                export ARIZA_UPDATE_RELAUNCHED
+                trap - EXIT
+                exec "$ARIZA_NEXT_ROOT/bin/{{ app_exec }}" "$@"
+            fi
+        fi
+    fi
+fi
+
+exit "$ARIZA_STATUS"
+{% endif %}exec "$ARIZA_RAKU" "$BUNDLE_ROOT/{{ target }}" "$@"

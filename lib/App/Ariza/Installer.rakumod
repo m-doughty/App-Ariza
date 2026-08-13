@@ -120,6 +120,7 @@ method context(
         # and the shell has no way to spell "expand the variable this
         # other variable names" without `eval`.
         env_url_expr => "\"\$\{$env-url:-\}\"",
+        env_url_unset_expr => "\"\$\{$env-url-\}\"",
         lib_posix   => resource("{TEMPLATE-PREFIX}/installer-common-posix.sh").slurp,
         lib_windows => resource("{TEMPLATE-PREFIX}/installer-common-windows.ps1").slurp,
     ).Hash
@@ -137,6 +138,20 @@ method render(Str:D :$template!, *%ctx --> Str) {
     $template.contains('windows')
         ?? $out.subst("\r\n", "\n", :g).subst("\n", "\r\n", :g)
         !! $out
+}
+
+#| Render the trusted installer snapshot staged inside an update-enabled
+#| bundle.  Bundle assembly owns where the returned bytes are written; keeping
+#| this tiny API here makes the published installer and its local snapshot the
+#| same template, rather than two security-sensitive implementations that can
+#| drift.
+method snapshot(App::Ariza::Config:D :$config!, Str:D :$family! --> Str) {
+    my $template = do given $family {
+        when 'posix'   { 'install-posix.sh.j2' }
+        when 'windows' { 'install-windows.ps1.j2' }
+        default { die "ariza: no installer snapshot family '$family'" }
+    };
+    self.render(:$template, |self.context(:$config))
 }
 
 #| Render every installer this app gets into C<:$out-dir>, and return the
@@ -254,8 +269,10 @@ already>, through one marked block appended to each shell rc file that
 exists. Re-running never duplicates it; the uninstaller removes exactly
 that block and nothing else.
 
-=item1 Keeps B<one> previous version, so a bad release can be rolled
-back to by hand, and prunes anything older, saying which.
+=item1 Keeps the newly installed version and the exact physical version that
+was current before the switch, points C<previous> at that rollback target, and
+prunes anything else. Windows defers a locked directory safely and retries it
+on a later install.
 
 =item1 Needs no root, no compiler, no package manager and no Raku.
 

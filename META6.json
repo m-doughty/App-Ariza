@@ -30,6 +30,7 @@
     "App::Ariza::Site": "lib/App/Ariza/Site.rakumod",
     "App::Ariza::Smoke": "lib/App/Ariza/Smoke.rakumod",
     "App::Ariza::Tools": "lib/App/Ariza/Tools.rakumod",
+    "App::Ariza::Update": "lib/App/Ariza/Update.rakumod",
     "App::Ariza::Versions": "lib/App/Ariza/Versions.rakumod"
   },
   "resources": [
@@ -71,6 +72,7 @@
     "templates/launcher-windows.ps1.j2",
     "templates/uninstall-posix.sh.j2",
     "templates/uninstall-windows.ps1.j2",
+    "templates/update-coordinator.raku.j2",
     "versions.toml"
   ],
   "source-url": "https://github.com/m-doughty/App-Ariza.git",

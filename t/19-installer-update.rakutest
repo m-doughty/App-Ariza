@@ -1,0 +1,210 @@
+use v6.d;
+use Test;
+use JSON::Fast;
+
+use App::Ariza::Config;
+use App::Ariza::Installer;
+use App::Ariza::Platform;
+use App::Ariza::Tools;
+
+sub temp-dir(Str $leaf --> IO::Path) {
+    ensure-dir($*TMPDIR.add("ariza-update-installer-{$*PID}-{(^1_000_000).pick}").add($leaf))
+}
+
+my $scratch = temp-dir('root');
+END { rm-rf($scratch) }
+
+my $app = ensure-dir($scratch.add('app'));
+$app.add('ariza.toml').spurt(q:to/TOML/);
+[app]
+name = "App::ExampleApp"
+exec = "exampleapp"
+display = "Example App"
+[bundle]
+platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64-glibc", "linux-aarch64-glibc"]
+warm = ["--version"]
+[installer]
+repo = "example-org/App-ExampleApp"
+TOML
+my $config = App::Ariza::Config.load($app);
+my $script = $scratch.add('install.sh');
+$script.spurt(App::Ariza::Installer.snapshot(:$config, :family<posix>));
+$script.chmod(0o755);
+
+subtest 'snapshot rendering is the published installer implementation', {
+    plan 3;
+    is App::Ariza::Installer.snapshot(:$config, :family<posix>), $script.slurp,
+        'POSIX snapshot renders from the install template';
+    ok App::Ariza::Installer.snapshot(:$config, :family<windows>)
+        .contains('[string] $ArizaUpdateCandidate'),
+        'Windows snapshot exposes the frozen private parameter';
+    throws-like { App::Ariza::Installer.snapshot(:$config, :family<plan9>) },
+        Exception, message => /"no installer snapshot family 'plan9'"/,
+        'unknown snapshot families fail closed';
+}
+
+subtest 'private syntax and public escape hatches are separated', {
+    plan 8;
+    my $text = $script.slurp;
+    ok $text.contains('--ariza-update-candidate'), 'candidate argument is present';
+    ok $text.contains('--ariza-handoff'), 'handoff argument is present';
+    ok $text.contains('--ariza-nonce'), 'nonce argument is present';
+    ok $text.contains('--ariza-expected-current'), 'expected-current argument is present';
+    ok $text.contains('public version/insecure options are forbidden'),
+        'private mode rejects public policy controls';
+    ok $text.contains('protocol=1\nnonce=%s\ncandidate=%s\n'),
+        'handoff is the bounded line protocol, without an executable path';
+    ok $text.contains('ariza_validate_private_manifest'),
+        'the extracted bundle identity is validated';
+    ok $text.contains('[ "$ARIZA_PRIVATE" -eq 1 ] && exit 0'),
+        'private installs return before public warm-up and reporting';
+}
+
+subtest 'private exact-candidate install commits and retains exact pre-switch', {
+    plan 11;
+    my $home = ensure-dir($scratch.add('home'));
+    my $data-home = ensure-dir($scratch.add('data'));
+    my $root = ensure-dir($data-home.add('exampleapp'));
+    my $versions = ensure-dir($root.add('versions'));
+    my $old = ensure-dir($versions.add('1.0.0'));
+    ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+    $old.add('bin/exampleapp').chmod(0o755);
+    run-checked(['ln', '-s', 'versions/1.0.0', $root.add('current').absolute], :what<ln>);
+
+    # A stale newest-by-mtime directory proves retention is identity-based.
+    my $stale = ensure-dir($versions.add('9.9.9'));
+    ensure-dir($stale.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+    $stale.add('bin/exampleapp').chmod(0o755);
+
+    my $candidate = '1.1.0';
+    my $slug = current-slug();
+    my $name = "exampleapp-$candidate-$slug";
+    my $pack = ensure-dir($scratch.add('pack'));
+    my $top = ensure-dir($pack.add($name));
+    ensure-dir($top.add('bin')).add('exampleapp').spurt(
+        q:to/SH/);
+#!/bin/sh
+printf ran >"${ARIZA_TEST_WARM_MARKER:?}"
+SH
+    $top.add('bin/exampleapp').chmod(0o755);
+    ensure-dir($top.add('libexec/ariza'));
+    $top.add('libexec/ariza/update.raku').spurt("say 'update'\n");
+    $top.add('libexec/ariza/install.sh').spurt("#!/bin/sh\n");
+    ensure-dir($top.add('site/bin')).add('application').spurt("say 'app'\n");
+    $top.add('ariza-manifest.json').spurt(to-json({
+        'ariza-manifest' => 1,
+        app => { name => 'App::ExampleApp', exec => 'exampleapp', version => $candidate },
+        updates => {
+            protocol => 1, enabled => True,
+            repository => 'example-org/App-ExampleApp',
+            coordinator => 'libexec/ariza/update.raku',
+            installer => 'libexec/ariza/install.sh',
+            'application-target' => 'site/bin/application',
+        },
+    }, :sorted-keys) ~ "\n");
+    my $archive = $scratch.add("$name.tar.gz");
+    run-checked(['tar', '-c', '-z', '-f', $archive.absolute,
+                 '-C', $pack.absolute, $name], :what<tar>);
+    my $digest = $scratch.add("$name.tar.gz.sha256");
+    $digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
+
+    my $mock = ensure-dir($scratch.add('mock-bin'));
+    my $curl = $mock.add('curl');
+    $curl.spurt(qq:to/SH/);
+#!/bin/sh
+dest=''
+url=''
+while [ \$# -gt 0 ]; do
+    case \$1 in
+        -o) shift; dest=\$1 ;;
+        http*) url=\$1 ;;
+    esac
+    shift
+done
+case \$url in
+    *.sha256) cp '{ $digest.absolute }' "\$dest" ;;
+    *) cp '{ $archive.absolute }' "\$dest" ;;
+esac
+SH
+    $curl.chmod(0o755);
+
+    my $handoff-dir = ensure-dir($root.add('.ariza/update-v1'));
+    my $nonce = 'a' x 64;
+    my $challenge = ensure-dir($handoff-dir.add("handoff-{$*PID}-$nonce"));
+    my $handoff = $challenge.add('result');
+    my $warm-marker = $scratch.add('private-warmed');
+    my %env =
+        HOME => $home.absolute,
+        XDG_DATA_HOME => $data-home.absolute,
+        PATH => "{$mock.absolute}:/usr/bin:/bin",
+        ARIZA_TEST_WARM_MARKER => $warm-marker.absolute,
+    ;
+    my ($code, $out, $err) = try-run([
+        'sh', $script.absolute,
+        '--ariza-update-candidate', $candidate,
+        '--ariza-handoff', $handoff.absolute,
+        '--ariza-nonce', $nonce,
+        '--ariza-expected-current', $old.absolute,
+    ], :%env);
+
+    is $code, 0, 'private installer commits successfully' or diag $err ~ $out;
+    ok $out.contains('sha256 verified'), 'mandatory checksum was verified';
+    is $root.add('current').resolve.basename, $candidate, 'current switched to candidate';
+    is $root.add('previous').resolve.absolute, $old.resolve.absolute,
+        'previous is the exact physical pre-switch bundle';
+    is-deeply $versions.dir.map(*.basename).sort.List, ('1.0.0', '1.1.0'),
+        'retention is exactly new plus exact pre-switch, not newest-by-mtime';
+    is $handoff.slurp,
+        "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
+        'authenticated handoff record has the exact protocol bytes';
+    nok $handoff.slurp.contains($root.absolute), 'handoff contains no target path';
+    nok $warm-marker.e, 'private install never warms the application';
+    nok $root.add('.ariza/update-v1/transaction').e,
+        'transaction journal is cleared after commit';
+    ok $root.add('current').l && $root.add('previous').l,
+        'both managed pointers are links';
+    ok $err eq '' || !$err.contains('error'), 'no installer error was reported' or diag $err;
+}
+
+subtest 'private argument boundary fails before download or mutation', {
+    plan 8;
+    my $home = ensure-dir($scratch.add('negative-home'));
+    my $data-home = ensure-dir($scratch.add('negative-data'));
+    my $root = ensure-dir($data-home.add('exampleapp'));
+    my $versions = ensure-dir($root.add('versions'));
+    my $old = ensure-dir($versions.add('2.0.0'));
+    ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+    $old.add('bin/exampleapp').chmod(0o755);
+    run-checked(['ln', '-s', 'versions/2.0.0', $root.add('current').absolute], :what<ln>);
+    my $state = ensure-dir($root.add('.ariza/update-v1'));
+    my %env = HOME => $home.absolute, XDG_DATA_HOME => $data-home.absolute,
+              PATH => '/usr/bin:/bin';
+
+    sub attempt(Str $candidate, Str $nonce = 'b' x 64,
+                IO::Path $handoff = $state.add('handoff.bad') --> List) {
+        try-run(['sh', $script.absolute,
+            '--ariza-update-candidate', $candidate,
+            '--ariza-handoff', $handoff.absolute,
+            '--ariza-nonce', $nonce,
+            '--ariza-expected-current', $old.absolute], :%env)
+    }
+
+    my ($vcode, $, $verr) = attempt('v2.1.0');
+    isnt $vcode, 0, 'v-prefixed private candidate is rejected';
+    ok $verr.contains('bare ASCII x.y.z'), 'candidate error names the exact grammar';
+
+    my ($ncode, $, $nerr) = attempt('2.1.0', 'B' x 64);
+    isnt $ncode, 0, 'uppercase nonce is rejected';
+    ok $nerr.contains('64 lowercase hexadecimal'), 'nonce error names the exact grammar';
+
+    my ($hcode, $, $herr) = attempt('2.1.0', 'b' x 64,
+                                    $root.add('handoff-outside-state'));
+    isnt $hcode, 0, 'handoff outside update-v1 state is rejected';
+    ok $herr.contains('inside update-v1 state'), 'handoff containment is explained';
+
+    is $root.add('current').resolve.absolute, $old.resolve.absolute,
+        'all argument failures leave current untouched';
+    nok $state.add('handoff.bad').e, 'and none can forge a handoff record';
+}
+
+done-testing;

@@ -7,8 +7,15 @@
 $ErrorActionPreference = 'Stop'
 
 $ArizaDisplay = '{{ app_display }}'
-
-# $PSScriptRoot is already the resolved directory of this script, so
+{% if updates_enabled %}$ArizaRunner = Join-Path $PSScriptRoot '{{ app_exec }}.exe'
+if (-not (Test-Path -LiteralPath $ArizaRunner)) {
+    [Console]::Error.WriteLine("${ArizaDisplay}: this update-enabled bundle is incomplete - no native runner at $ArizaRunner")
+    exit 1
+}
+& $ArizaRunner @args
+exit $LASTEXITCODE
+{% else %}
+{% endif %}# $PSScriptRoot is already the resolved directory of this script, so
 # there is no symlink chasing to do — the POSIX twin's job here is done
 # for us by PowerShell.
 $BundleRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

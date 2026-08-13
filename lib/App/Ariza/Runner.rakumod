@@ -24,6 +24,16 @@ my constant %ARCH =
 # four platforms should say it once, not four times.
 my $bootstrap-warned = False;
 
+# runner-v2 is the first native launcher that understands the authenticated
+# update handoff protocol.  A staged executable is not sufficient evidence:
+# runner-v1 launches the coordinator but would simply return its reserved 75
+# after a successful install instead of relaunching managed `current`.
+method update-handoff-capable(Mu $tag --> Bool:D) {
+    return False unless $tag.defined;
+    my $match = $tag ~~ /^ 'runner-v' (<[0..9]>+) $/;
+    $match.defined && +$match[0] >= 2
+}
+
 #| The architecture a slug's runner is built for, or the undefined
 #| C<Str> for a platform that has none.
 method arch-for(Str:D $slug --> Str) { %ARCH{$slug} // Str }
@@ -314,6 +324,13 @@ two tags never share a file).
 C<windows-x86_64> is C<x86_64> and C<windows-arm64> is C<aarch64>;
 everything else is the undefined C<Str>, which is how "this platform has
 no runner" is spelled everywhere in this module.
+
+=head2 update-handoff-capable(Mu $tag --> Bool)
+
+True only for an exact C<runner-vN> tag whose numeric C<N> is at least 2.
+C<runner-v2> is the first native launcher that can create, validate and honor
+the authenticated managed-update handoff; an update-enabled Windows build
+must not infer capability merely because some executable was staged.
 
 =head1 SEE ALSO
 

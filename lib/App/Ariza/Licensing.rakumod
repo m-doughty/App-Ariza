@@ -25,7 +25,7 @@ my constant @KINDS = <application runtime native module other>;
 # The facts a runtime-data row is allowed to be conditional on. A closed
 # set: a `condition` ariza does not know cannot be evaluated, and a row
 # quietly dropped because of a typo is a notice not given.
-my constant @CONDITIONS = <sqlcipher runner>;
+my constant @CONDITIONS = <sqlcipher runner updater>;
 
 # How far below `native/<pack>` a licensing kit is looked for. The
 # notcurses pack keeps its kit one level down, beside the libraries

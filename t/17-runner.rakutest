@@ -5,7 +5,7 @@ use App::Ariza::Resources;
 use App::Ariza::Runner;
 use App::Ariza::Tools;
 
-plan 8;
+plan 9;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-runner-{$*PID}-{(^1_000_000).pick}");
@@ -81,6 +81,22 @@ subtest 'the tag and the URL come from the shipped resources', {
         'the URL is an App-Ariza release asset — the runner is ariza\'s own';
     ok $url.ends-with("/$tag/ariza-runner-windows-x86_64.exe"),
         'at the pinned tag, named for the architecture';
+};
+
+subtest 'only runner-v2 and later can authenticate update handoffs', {
+    plan 6;
+    nok App::Ariza::Runner.update-handoff-capable(Str),
+        'an absent tag is not capable';
+    nok App::Ariza::Runner.update-handoff-capable('runner-v1'),
+        'the original runner predates the handoff';
+    ok App::Ariza::Runner.update-handoff-capable('runner-v2'),
+        'runner-v2 introduces it';
+    ok App::Ariza::Runner.update-handoff-capable('runner-v12'),
+        'and later numeric protocol-capable runners retain it';
+    nok App::Ariza::Runner.update-handoff-capable('runner-v2-beta'),
+        'prerelease-like tags are not inferred to be capable';
+    nok App::Ariza::Runner.update-handoff-capable('v2'),
+        'nor tags outside the runner release namespace';
 };
 
 subtest 'the pin file is read strictly, because a skipped pin is an unverified download', {

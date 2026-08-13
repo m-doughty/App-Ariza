@@ -12,6 +12,7 @@ has      $.bundle-native = ();
 has      $.bundle-smoke;
 has Str  $.installer-repo;
 has      $.installer-warm;
+has Bool $.updates-enabled = False;
 has Str  $.ci-ariza-source;
 has Bool $.licensing-strict = False;
 has      $.licensing-app = {};
@@ -176,6 +177,23 @@ my sub parse-installer($value, %attrs, @warnings) {
     }
 }
 
+my sub parse-updates($value, %attrs, @warnings) {
+    my %obj = as-hash('updates', $value);
+    for %obj.kv -> $key, $v {
+        next if $key.starts-with('//');
+        given $key {
+            when 'enabled' {
+                die-with-key('updates.enabled', 'true or false')
+                    unless $v.defined && $v ~~ Bool;
+                %attrs<updates-enabled> = $v;
+            }
+            default {
+                @warnings.push("unknown key 'updates.$key' in ariza.toml (ignored)");
+            }
+        }
+    }
+}
+
 my sub parse-ci($value, %attrs, @warnings) {
     my %obj = as-hash('ci', $value);
     for %obj.kv -> $key, $v {
@@ -327,6 +345,7 @@ method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
             when 'app'       { parse-app($value, %attrs, @warnings); }
             when 'bundle'    { parse-bundle($value, %attrs, @warnings); }
             when 'installer' { parse-installer($value, %attrs, @warnings); }
+            when 'updates'   { parse-updates($value, %attrs, @warnings); }
             when 'ci'        { parse-ci($value, %attrs, @warnings); }
             when 'licensing' { parse-licensing($value, %attrs, @warnings); }
             default {
@@ -339,6 +358,9 @@ method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
         my $attr = $required.subst('.', '-');
         die "ariza: $required is required in $path" unless %attrs{$attr}.defined;
     }
+
+    die "ariza: updates.enabled requires installer.repo in $path"
+        if %attrs<updates-enabled> && !%attrs<installer-repo>.defined;
 
     App::Ariza::Config.new(|%attrs, :$path, :warnings(@warnings.List));
 }
@@ -434,6 +456,7 @@ say $cfg.app-display;         # Moneymoor
 say $cfg.bundle-platforms;    # (macos-arm64 linux-x86_64-glibc windows-x86_64)
 say $cfg.bundle-native;       # (notcurses sqlcipher)
 say $cfg.installer-repo;      # m-doughty/App-Moneymoor
+say $cfg.updates-enabled;     # False unless [updates] opts in
 say $cfg.ci-ariza-source;     # fez  (or a URL zef can install from)
 say $cfg.smoke-command;       # moneymoor --version
 say $cfg.licensing-strict;    # False
@@ -472,6 +495,9 @@ smoke = "{exec} --version"   # command template run by ariza smoke
 [installer]
 repo = "m-doughty/App-Moneymoor"   # where the releases live
 warm = "--version"                 # run once at install time; false skips it
+
+[updates]
+enabled = true                     # weekly managed-install prompt
 
 [ci]
 ariza-source = "fez"         # how the scaffolded workflows install ariza
@@ -615,6 +641,17 @@ A placeholder that nothing supplies is an error, not an empty string: a
 smoke command with a hole in it does not fail, it silently runs
 something else.
 
+=head2 [updates]
+
+C<enabled> is a boolean and defaults to C<false>. When true, bundles carry the
+managed-install update coordinator and trusted local installer snapshot
+described by L<App::Ariza::Update>. The coordinator checks at most weekly and
+offers the user install-now, ask-next-time and ignore-this-version choices.
+
+Enabling updates requires C<installer.repo>. The repository is not duplicated
+in this table: discovery and the private exact-candidate installer must use the
+same GitHub release identity as the public generated installers.
+
 =head2 [ci]
 
 One key, optional, read only by L<App::Ariza::CI> when it scaffolds an
@@ -623,7 +660,7 @@ app's GitHub Actions workflows.
 =item1 C<ariza-source> — where the generated C<release.yml> installs
 ariza itself from. C<"fez"> (the default) renders
 C«zef install --/test
-'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'»; the version
+'App::Ariza:ver<0.1.4+>:auth<zef:apogee>'»; the version
 floor prevents an older bundler from silently rebuilding a release and
 the author qualifier prevents a same-named distribution from satisfying
 it. Anything else is passed to C<zef> verbatim, which is how a repository

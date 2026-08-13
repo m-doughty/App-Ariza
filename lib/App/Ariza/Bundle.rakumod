@@ -1,6 +1,7 @@
 use JSON::Fast;
 
 use App::Ariza::Config;
+use App::Ariza::Installer;
 use App::Ariza::Launcher;
 use App::Ariza::Licensing;
 use App::Ariza::Native;
@@ -9,6 +10,7 @@ use App::Ariza::Rakudo;
 use App::Ariza::Resources;
 use App::Ariza::Site;
 use App::Ariza::Tools;
+use App::Ariza::Update;
 use App::Ariza::Versions;
 
 unit class App::Ariza::Bundle;
@@ -110,9 +112,14 @@ method build(
         :extra(%sqlcipher<staged> // ()));
     note "ariza: audited {%audit<checked>} native binaries" if $verbose;
 
+    my %updates = self.stage-updater(
+        :$work, :$config, :$version, :$platform,
+        :application-target(%site<target-rel>));
+
+    my $launcher-target = %updates<coordinator-rel> // %site<target-rel>;
     my %launchers = App::Ariza::Launcher.write(
         :bundle-dir($work), :$config, :slug($platform),
-        :target(%site<target-rel>), :site(%site<site-rel>),
+        :target($launcher-target), :site(%site<site-rel>),
         :app-version($version),
         :sqlcipher-rel(%sqlcipher<rel> // Str));
     my @launchers = %launchers<written>.list;
@@ -122,14 +129,14 @@ method build(
     # whose summary can disagree with the document beside it.
     my %licensing = self!licensing(
         :$work, :$config, :$app-dir, :$version, :$platform,
-        :%rakudo, :%sqlcipher, :runner(%launchers<runner>));
+        :%rakudo, :%sqlcipher, :%updates, :runner(%launchers<runner>));
     note "ariza: $_" for %licensing<warnings>.list;
     note "ariza: {%licensing<summary><rows>} licensing rows,"
        ~ " {%licensing<summary><unknown>} unattributed" if $verbose;
 
     my %manifest = self!manifest(
         :$config, :$versions, :$version, :$platform, :$work,
-        :%rakudo, :%site, :%sqlcipher, :@launchers,
+        :%rakudo, :%site, :%sqlcipher, :%updates, :@launchers,
         :runner(%launchers<runner>), :licensing(%licensing<summary>));
 
     $work.add('ariza-manifest.json').spurt(to-json(%manifest, :sorted-keys) ~ "\n");
@@ -157,7 +164,8 @@ method build(
 method !manifest(
     App::Ariza::Config:D :$config!, App::Ariza::Versions:D :$versions!,
     Str:D :$version!, Str:D :$platform!, IO::Path:D :$work!,
-    :%rakudo!, :%site!, :%sqlcipher!, :@launchers!, :%runner!, :%licensing!,
+    :%rakudo!, :%site!, :%sqlcipher!, :%updates!, :@launchers!,
+    :%runner!, :%licensing!,
     --> Hash
 ) {
     my %m =
@@ -174,7 +182,7 @@ method !manifest(
         },
         launcher => {
             scripts => @launchers.map({ .relative($work).subst('\\', '/', :g) }).List,
-            target  => %site<target-rel>,
+            target  => %updates<coordinator-rel> // %site<target-rel>,
             # The repository the launcher points RAKULIB at. Recorded
             # rather than assumed so that anything checking a bundle
             # after the fact — `ariza smoke` above all — reads the
@@ -212,8 +220,55 @@ method !manifest(
 
     %m<components><sqlcipher> = self.sqlcipher-component(%sqlcipher) if %sqlcipher;
     %m<components><runner> = self.runner-component(%runner, $work) if %runner;
+    %m<updates> = self.updates-component(%updates) if %updates;
 
     %m
+}
+
+#| Stage the generated coordinator and an exact copy of the platform's local
+#| installer implementation. Nothing is added for the default, disabled mode.
+method stage-updater(
+    IO::Path:D :$work!, App::Ariza::Config:D :$config!, Str:D :$version!,
+    Str:D :$platform!, Str:D :$application-target!,
+    --> Hash
+) {
+    return %() unless $config.updates-enabled;
+
+    my $repo = $config.installer-repo
+        // die "ariza: update-enabled bundles require installer.repo";
+    my %written = App::Ariza::Update.write(
+        :bundle-dir($work), :app-name($config.app-name),
+        :app-exec($config.app-exec), :app-display($config.app-display),
+        :app-version($version), :$repo, :slug($platform));
+
+    my $family = $platform.starts-with('windows-') ?? 'windows' !! 'posix';
+    my $installer = %written<installer>;
+    ensure-dir($installer.parent);
+    $installer.spurt(App::Ariza::Installer.snapshot(:$config, :$family));
+    $installer.chmod($family eq 'posix' ?? 0o755 !! 0o644);
+
+    %(
+        protocol           => 1,
+        repository         => $repo,
+        coordinator        => %written<coordinator>,
+        installer          => $installer,
+        'coordinator-rel'  => App::Ariza::Update.coordinator-rel,
+        'installer-rel'    => App::Ariza::Update.installer-rel($platform),
+        'application-target' => $application-target,
+    )
+}
+
+#| Public, serialisable form of the updater metadata. Physical build paths do
+#| not enter the manifest.
+method updates-component(%updates --> Hash) {
+    %(
+        protocol             => %updates<protocol>,
+        enabled              => True,
+        repository           => %updates<repository>,
+        coordinator          => %updates<coordinator-rel>,
+        installer            => %updates<installer-rel>,
+        'application-target' => %updates<application-target>,
+    )
 }
 
 #| The manifest's runner entry: which published artefact was staged,
@@ -301,12 +356,14 @@ method version-file(%m --> Str) {
 #| and therefore which of the data file's conditional rows apply.
 method !licensing(
     IO::Path :$work!, App::Ariza::Config:D :$config!, IO::Path :$app-dir!,
-    Str:D :$version!, Str:D :$platform!, :%rakudo!, :%sqlcipher!, :%runner!,
+    Str:D :$version!, Str:D :$platform!, :%rakudo!, :%sqlcipher!, :%updates!,
+    :%runner!,
     --> Hash
 ) {
     my @conditions;
     @conditions.push('sqlcipher') if %sqlcipher;
     @conditions.push('runner') if %runner;
+    @conditions.push('updater') if %updates;
 
     App::Ariza::Licensing.write(
         :bundle-dir($work), :$config, :$app-dir,
@@ -330,6 +387,9 @@ method !licensing(
         :files(%(
             sqlcipher => (%sqlcipher<staged> // ()).list
                             .map(*.basename).unique.sort.List,
+            'ariza-updater' => %updates
+                ?? (%updates<coordinator-rel>, %updates<installer-rel>)
+                !! (),
         )),
     )
 }

@@ -91,6 +91,15 @@ typedef struct arz_config {
 	size_t op_count;
 } arz_config;
 
+/* The deliberately tiny authenticated handoff record written after an
+ * updater transaction commits.  It contains no path: the platform launcher
+ * derives the managed `current` entry point itself, so a writable state file
+ * can never choose an executable. */
+typedef struct arz_handoff {
+	arz_char *nonce;
+	arz_char *candidate;
+} arz_handoff;
+
 /* ------------------------------------------------------------------ */
 /* Strings                                                             */
 /* ------------------------------------------------------------------ */
@@ -158,6 +167,23 @@ arz_key arz_config_missing(const arz_config *cfg);
 const char *arz_key_name(arz_key key);
 
 void arz_config_free(arz_config *cfg);
+
+/* Parse exactly:
+ *
+ *   protocol=1\n
+ *   nonce=<64 lowercase hexadecimal characters>\n
+ *   candidate=<ASCII digits>.<ASCII digits>.<ASCII digits>\n
+ *
+ * with an optional final newline.  No duplicate, reordered, unknown or
+ * trailing fields are accepted. */
+arz_status arz_handoff_parse(const arz_char *text, arz_handoff *handoff);
+
+/* Constant-time comparison for a parsed nonce and an expected 64-character
+ * lowercase hexadecimal nonce. */
+int arz_handoff_nonce_matches(const arz_handoff *handoff,
+	const arz_char *expected);
+
+void arz_handoff_free(arz_handoff *handoff);
 
 /* ------------------------------------------------------------------ */
 /* Paths and environment values                                        */

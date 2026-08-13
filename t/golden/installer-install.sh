@@ -54,6 +54,13 @@ ARIZA_OVERRIDE=0
 ARIZA_NO_VERIFY=0
 ARIZA_TMP=''
 ARIZA_STAGING=''
+ARIZA_PRIVATE=0
+ARIZA_CANDIDATE=''
+ARIZA_HANDOFF=''
+ARIZA_NONCE=''
+ARIZA_EXPECTED_CURRENT=''
+ARIZA_PREVIOUS_PHYSICAL=''
+ARIZA_STATE="$ARIZA_ROOT/.ariza/update-v1"
 
 ############################# common runtime ##################################
 ###############################################################################
@@ -241,11 +248,76 @@ ariza_parse_args() {
                 ;;
             --url=*) ARIZA_SRC=${1#*=} ;;
             --insecure-no-verify) ARIZA_NO_VERIFY=1 ;;
+            --ariza-update-candidate)
+                shift; [ $# -gt 0 ] || ariza_err "--ariza-update-candidate needs a version"
+                ARIZA_PRIVATE=1; ARIZA_CANDIDATE=$1 ;;
+            --ariza-handoff)
+                shift; [ $# -gt 0 ] || ariza_err "--ariza-handoff needs a path"
+                ARIZA_PRIVATE=1; ARIZA_HANDOFF=$1 ;;
+            --ariza-nonce)
+                shift; [ $# -gt 0 ] || ariza_err "--ariza-nonce needs a nonce"
+                ARIZA_PRIVATE=1; ARIZA_NONCE=$1 ;;
+            --ariza-expected-current)
+                shift; [ $# -gt 0 ] || ariza_err "--ariza-expected-current needs a path"
+                ARIZA_PRIVATE=1; ARIZA_EXPECTED_CURRENT=$1 ;;
             -h|--help) ariza_usage; exit 0 ;;
             *) ariza_err "unknown option '$1' -- run with --help" ;;
         esac
         shift
     done
+}
+
+ariza_validate_private() {
+    [ "$ARIZA_PRIVATE" -eq 1 ] || return 0
+    [ -n "$ARIZA_CANDIDATE" ] && [ -n "$ARIZA_HANDOFF" ] \
+        && [ -n "$ARIZA_NONCE" ] && [ -n "$ARIZA_EXPECTED_CURRENT" ] \
+        || ariza_err "private update mode requires candidate, handoff, nonce, and expected-current"
+    case $ARIZA_CANDIDATE in
+        *[!0-9.]*|.*|*..*|*.) ariza_err "private update candidate must be a bare ASCII x.y.z version" ;;
+    esac
+    [ "$(printf '%s' "$ARIZA_CANDIDATE" | awk -F. '{ print NF }')" -eq 3 ] \
+        || ariza_err "private update candidate must be a bare ASCII x.y.z version"
+    case $ARIZA_NONCE in
+        *[!0-9a-f]*|'') ariza_err "private update nonce must be 64 lowercase hexadecimal characters" ;;
+    esac
+    [ "$(printf '%s' "$ARIZA_NONCE" | awk '{ print length($0) }')" -eq 64 ] \
+        || ariza_err "private update nonce must be 64 lowercase hexadecimal characters"
+    [ -d "$ARIZA_EXPECTED_CURRENT" ] \
+        || ariza_err "expected current bundle does not exist"
+    ARIZA_EXPECTED_CURRENT=$(cd "$ARIZA_EXPECTED_CURRENT" && pwd -P)
+
+    [ ! -L "$ARIZA_ROOT/.ariza" ] && [ ! -L "$ARIZA_STATE" ] \
+        || ariza_err "private update state must not be a symlink"
+    mkdir -p "$ARIZA_STATE"
+    _state_physical=$(cd "$ARIZA_STATE" && pwd -P)
+    _handoff_parent=$(dirname "$ARIZA_HANDOFF")
+    [ -d "$_handoff_parent" ] || ariza_err "private handoff must be inside update-v1 state"
+    [ ! -L "$_handoff_parent" ] || ariza_err "private handoff directory must not be a symlink"
+    _handoff_parent=$(cd "$_handoff_parent" && pwd -P)
+    if [ "$_handoff_parent" = "$_state_physical" ]; then
+        case $(basename "$ARIZA_HANDOFF") in
+            handoff|handoff.*) ;;
+            *) ariza_err "private handoff has an invalid name" ;;
+        esac
+    else
+        _handoff_grandparent=$(cd "$_handoff_parent/.." && pwd -P)
+        [ "$_handoff_grandparent" = "$_state_physical" ] \
+            || ariza_err "private handoff must be inside update-v1 state"
+        case $(basename "$_handoff_parent")/$(basename "$ARIZA_HANDOFF") in
+            handoff-*/result) ;;
+            *) ariza_err "private handoff has an invalid name" ;;
+        esac
+    fi
+    [ ! -e "$ARIZA_HANDOFF" ] && [ ! -L "$ARIZA_HANDOFF" ] \
+        || ariza_err "private handoff path already exists"
+
+    # Private mode has no public escape hatches: it installs exactly the
+    # coordinator-approved GitHub candidate, with its mandatory checksum.
+    [ -z "$ARIZA_TAG" ] && [ "$ARIZA_NO_VERIFY" -eq 0 ] \
+        || ariza_err "public version/insecure options are forbidden in private update mode"
+    [ -z "${EXAMPLEAPP_BUNDLE_URL-}" ] \
+        || ariza_err "EXAMPLEAPP_BUNDLE_URL is forbidden in private update mode"
+    ARIZA_SRC=''
 }
 
 ariza_cleanup() {
@@ -340,6 +412,21 @@ ariza_latest_tag() {
 
 # ---- the install itself ------------------------------------------------------
 
+ariza_replace_link() {
+    # GNU mv needs -T not to follow a destination symlink-to-directory; BSD
+    # mv spells that -h. Both forms are atomic renames on the same filesystem.
+    if mv -Tf "$1" "$2" 2>/dev/null; then
+        return 0
+    fi
+    if mv -fh "$1" "$2" 2>/dev/null; then
+        return 0
+    fi
+    # Last-resort POSIX spelling for older implementations. There is a short
+    # missing-link window, but the transaction journal makes it recoverable.
+    rm -f "$2"
+    mv -f "$1" "$2"
+}
+
 ariza_point_current() {
     # $1 = version. The target is relative, so the whole data directory
     # can be moved without breaking it.
@@ -347,7 +434,45 @@ ariza_point_current() {
     if [ -e "$_link" ] && [ ! -L "$_link" ]; then
         ariza_err "$_link exists and is not a symlink -- move it aside and re-run"
     fi
-    ln -sfn "versions/$1" "$_link"
+    _new="$_link.new.$$"
+    rm -f "$_new"
+    ln -s "versions/$1" "$_new"
+    ariza_replace_link "$_new" "$_link"
+}
+
+ariza_physical_current() {
+    _link="$ARIZA_ROOT/current"
+    [ -L "$_link" ] || return 1
+    (cd "$_link" && pwd -P)
+}
+
+ariza_version_for_physical() {
+    _physical=$1
+    _versions=$(cd "$ARIZA_VERSIONS" 2>/dev/null && pwd -P) || return 1
+    case $_physical in
+        "$_versions"/*)
+            _leaf=${_physical#"$_versions"/}
+            case $_leaf in */*) return 1 ;; esac
+            [ -d "$ARIZA_VERSIONS/$_leaf" ] || return 1
+            printf '%s\n' "$_leaf"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+ariza_point_previous() {
+    # $1 is the exact physical pre-switch bundle, not the newest directory.
+    # This is what makes A -> B -> rollback A -> C retain A rather than B.
+    _v=$(ariza_version_for_physical "$1") \
+        || ariza_err "pre-switch current is outside the managed versions directory"
+    _link="$ARIZA_ROOT/previous"
+    if [ -e "$_link" ] && [ ! -L "$_link" ]; then
+        ariza_err "$_link exists and is not a symlink -- move it aside and re-run"
+    fi
+    _new="$_link.new.$$"
+    rm -f "$_new"
+    ln -s "versions/$_v" "$_new"
+    ariza_replace_link "$_new" "$_link"
 }
 
 ariza_link_bin() {
@@ -360,18 +485,19 @@ ariza_link_bin() {
 }
 
 ariza_prune() {
-    # $1 = the version just installed. Exactly one older version is kept,
-    # so a bad release can be rolled back to the one before it without
-    # keeping every bundle ever downloaded.
+    # Keep exactly the new current and exact physical pre-switch current.
     _keep=$1
-    _old=0
-    for _v in $(ls -1t "$ARIZA_VERSIONS" 2>/dev/null); do
+    _previous=$2
+    for _v_path in "$ARIZA_VERSIONS"/*; do
+        [ -d "$_v_path" ] || continue
+        _v=$(basename "$_v_path")
         [ -d "$ARIZA_VERSIONS/$_v" ] || continue
         [ "$_v" = "$_keep" ] && continue
-        _old=$((_old + 1))
-        if [ "$_old" -gt 1 ]; then
-            rm -rf "$ARIZA_VERSIONS/$_v"
+        [ "$_v" = "$_previous" ] && continue
+        if rm -rf "$ARIZA_VERSIONS/$_v"; then
             ariza_log "removed superseded version $_v"
+        else
+            ariza_warn "could not remove superseded version $_v; it will be retried by a later install"
         fi
     done
 }
@@ -389,7 +515,9 @@ ariza_check_existing() {
         rm -rf "$_dir"
         return 1
     fi
-    ariza_point_current "$_v"
+    _current=$(ariza_physical_current 2>/dev/null || true)
+    _existing=$(cd "$_dir" && pwd -P)
+    [ "$_current" = "$_existing" ] || ariza_commit "$_v"
     ariza_link_bin
     ariza_persist_path "$ARIZA_BIN_DIR"
     ariza_ok "$APP_DISPLAY $_v is already installed"
@@ -453,6 +581,151 @@ ariza_fetch_and_unpack() {
     ARIZA_TMP=''
 }
 
+ariza_validate_private_manifest() {
+    [ "$ARIZA_PRIVATE" -eq 1 ] || return 0
+    _manifest="$1/ariza-manifest.json"
+    [ -f "$_manifest" ] || ariza_err "private update bundle has no ariza-manifest.json"
+    # Bundle manifests are generated as one compact JSON line.  Match only
+    # fixed, generated identity fields here; no value from the manifest is
+    # ever evaluated as shell code.
+    _compact="$ARIZA_STAGING/.ariza-manifest.compact"
+    tr -d ' \t\r\n' <"$_manifest" >"$_compact"
+    grep -Fq '"ariza-manifest":1' "$_compact" \
+        || ariza_err "private update bundle has an unsupported manifest"
+    grep -Fq '"exec":"exampleapp"' "$_compact" \
+        || ariza_err "private update bundle is for a different application"
+    grep -Fq '"name":"App::ExampleApp"' "$_compact" \
+        || ariza_err "private update bundle is for a different application"
+    grep -Fq "\"version\":\"$ARIZA_CANDIDATE\"" "$_compact" \
+        || ariza_err "private update bundle version does not match the candidate"
+    grep -Fq '"updates":{"application-target":' "$_compact" \
+        || ariza_err "private update bundle has no update protocol metadata"
+    grep -Fq '"coordinator":"libexec/ariza/update.raku"' "$_compact" \
+        || ariza_err "private update bundle names an invalid coordinator"
+    grep -Fq '"enabled":true' "$_compact" \
+        || ariza_err "private update bundle is not update-enabled"
+    grep -Fq '"installer":"libexec/ariza/install.sh"' "$_compact" \
+        || ariza_err "private update bundle names an invalid installer"
+    grep -Fq '"protocol":1' "$_compact" \
+        || ariza_err "private update bundle uses an unsupported protocol"
+    grep -Fq '"repository":"example-org/App-ExampleApp"' "$_compact" \
+        || ariza_err "private update bundle names a different repository"
+    [ -f "$1/libexec/ariza/update.raku" ] && [ -f "$1/libexec/ariza/install.sh" ] \
+        || ariza_err "private update bundle is missing its trusted updater files"
+    _target=$(sed -n 's/.*"application-target":"\([^"]*\)".*/\1/p' "$_compact")
+    case $_target in
+        ''|/*|*'../'*|*'/..'|../*) ariza_err "private update bundle names an unsafe application target" ;;
+    esac
+    [ -f "$1/$_target" ] \
+        || ariza_err "private update bundle is missing its application target"
+}
+
+ariza_write_handoff() {
+    umask 077
+    _record="$ARIZA_HANDOFF.tmp.$$"
+    rm -f "$_record"
+    if ! printf 'protocol=1\nnonce=%s\ncandidate=%s\n' \
+        "$ARIZA_NONCE" "$ARIZA_CANDIDATE" >"$_record" \
+        || ! mv -f "$_record" "$ARIZA_HANDOFF" \
+        || [ ! -f "$ARIZA_HANDOFF" ] || [ -L "$ARIZA_HANDOFF" ]; then
+        rm -f "$_record"
+        return 1
+    fi
+}
+
+ariza_restore_previous() {
+    if [ -n "$1" ]; then
+        ariza_point_previous "$1"
+    else
+        rm -f "$ARIZA_ROOT/previous"
+    fi
+}
+
+ariza_recover_transaction() {
+    _journal="$ARIZA_STATE/transaction"
+    [ -f "$_journal" ] || return 0
+    [ ! -L "$_journal" ] \
+        || ariza_err "installer transaction journal must not be a symlink"
+    [ "$(wc -c <"$_journal" 2>/dev/null || printf 99999)" -le 4096 ] \
+        || ariza_err "installer transaction journal is oversized"
+    [ "$(grep -c '^protocol=1$' "$_journal" 2>/dev/null || :)" -eq 1 ] \
+        && [ "$(grep -c '^old=' "$_journal" 2>/dev/null || :)" -eq 1 ] \
+        && [ "$(grep -c '^previous=' "$_journal" 2>/dev/null || :)" -eq 1 ] \
+        && [ "$(grep -c '^new=' "$_journal" 2>/dev/null || :)" -eq 1 ] \
+        || ariza_err "installer transaction journal is corrupt; refusing to change managed pointers"
+    _old=$(sed -n 's/^old=//p' "$_journal" | head -n 1)
+    _old_previous=$(sed -n 's/^previous=//p' "$_journal" | head -n 1)
+    if [ -n "$_old" ]; then
+        _old_version=$(ariza_version_for_physical "$_old" 2>/dev/null || true)
+        [ -n "$_old_version" ] \
+            || ariza_err "installer transaction journal names an unsafe old target"
+        ariza_point_current "$_old_version"
+    else
+        rm -f "$ARIZA_ROOT/current"
+    fi
+    ariza_restore_previous "$_old_previous"
+    rm -f "$_journal"
+    ariza_warn "recovered an interrupted installer transaction"
+}
+
+ariza_commit() {
+    # $1 = new version. Validate optimistic concurrency immediately before
+    # pointer mutation; all download/extract/identity work is pre-commit.
+    _new_version=$1
+    _before=$(ariza_physical_current 2>/dev/null || true)
+    if [ "$ARIZA_PRIVATE" -eq 1 ]; then
+        [ -n "$_before" ] || ariza_err "managed current is missing"
+        [ "$_before" = "$ARIZA_EXPECTED_CURRENT" ] \
+            || ariza_err "managed current changed while the update was being prepared"
+    fi
+    _old_previous=''
+    if [ -L "$ARIZA_ROOT/previous" ]; then
+        _old_previous=$(cd "$ARIZA_ROOT/previous" 2>/dev/null && pwd -P || true)
+    fi
+    _previous_version=''
+    if [ -n "$_before" ]; then
+        _previous_version=$(ariza_version_for_physical "$_before") \
+            || ariza_err "managed current is outside the versions directory"
+    fi
+
+    umask 077
+    _journal="$ARIZA_STATE/transaction"
+    _journal_tmp="$_journal.tmp.$$"
+    printf 'protocol=1\nold=%s\nprevious=%s\nnew=%s\n' \
+        "$_before" "$_old_previous" "$ARIZA_VERSIONS/$_new_version" >"$_journal_tmp"
+    mv -f "$_journal_tmp" "$_journal"
+
+    ariza_point_current "$_new_version"
+    if [ -n "$_before" ]; then
+        ariza_point_previous "$_before"
+    else
+        rm -f "$ARIZA_ROOT/previous"
+    fi
+    ARIZA_PREVIOUS_PHYSICAL=$_before
+
+    # Once the journal is gone, the only remaining fallible commit step in
+    # private mode is the authenticated record. If either final write fails,
+    # restore both pointers while every rollback target is still retained.
+    if ! rm -f "$_journal"; then
+        if [ -n "$_previous_version" ]; then
+            ariza_point_current "$_previous_version"
+        else
+            rm -f "$ARIZA_ROOT/current"
+        fi
+        ariza_restore_previous "$_old_previous"
+        ariza_err "could not finalize the installer transaction; restored the previous install"
+    fi
+    if [ "$ARIZA_PRIVATE" -eq 1 ] && ! ariza_write_handoff; then
+        ariza_point_current "$_previous_version"
+        ariza_restore_previous "$_old_previous"
+        ariza_err "could not write authenticated update handoff; restored the previous install"
+    fi
+
+    # No fallible operation follows the private handoff. Retention cleanup is
+    # best-effort and reports anything it must leave for a later install.
+    ariza_prune "$_new_version" "$_previous_version"
+}
+
 ariza_install() {
     # The archive holds exactly one directory, named after the bundle.
     set -- "$ARIZA_STAGING"/*
@@ -469,12 +742,16 @@ ariza_install() {
         [ -n "$ARIZA_VERSION" ] || ariza_err "cannot tell which version $(basename "$_top") is -- expected ${APP_EXEC}-<version>-<platform>"
     else
         if [ -n "$ARIZA_VERSION" ] && [ "$_actual" != "$ARIZA_VERSION" ]; then
+            [ "$ARIZA_PRIVATE" -eq 0 ] \
+                || ariza_err "private update archive contains $_actual, expected $ARIZA_VERSION"
             ariza_warn "that archive is named $ARIZA_VERSION but contains $_actual -- installing it as $_actual"
         fi
         ARIZA_VERSION=$_actual
     fi
 
-    if ariza_check_existing "$ARIZA_VERSION"; then
+    ariza_validate_private_manifest "$_top"
+
+    if [ "$ARIZA_PRIVATE" -eq 0 ] && ariza_check_existing "$ARIZA_VERSION"; then
         rm -rf "$ARIZA_STAGING"
         ARIZA_STAGING=''
         return 0
@@ -493,10 +770,13 @@ ariza_install() {
 
     [ -x "$_dest/bin/$APP_EXEC" ] || ariza_err "the unpacked bundle has no runnable bin/$APP_EXEC -- not touching your existing install"
 
-    ariza_point_current "$ARIZA_VERSION"
+    ariza_commit "$ARIZA_VERSION"
+    if [ "$ARIZA_PRIVATE" -eq 1 ]; then
+        ariza_ok "$APP_DISPLAY $ARIZA_VERSION installed" || :
+        return 0
+    fi
     ariza_link_bin
     ariza_persist_path "$ARIZA_BIN_DIR"
-    ariza_prune "$ARIZA_VERSION"
     ariza_ok "$APP_DISPLAY $ARIZA_VERSION installed"
 }
 
@@ -552,10 +832,25 @@ ariza_report() {
 main() {
     ariza_parse_args "$@"
     trap ariza_cleanup EXIT HUP INT TERM
+    if [ "$ARIZA_PRIVATE" -eq 1 ]; then
+        ariza_validate_private
+    else
+        mkdir -p "$ARIZA_STATE"
+    fi
+    ariza_recover_transaction
 
     _digest_src=''
 
-    if [ -n "$ARIZA_SRC" ]; then
+    if [ "$ARIZA_PRIVATE" -eq 1 ]; then
+        _slug=$(ariza_detect_slug 2>/dev/null || true)
+        [ -n "$_slug" ] && ariza_slug_supported "$_slug" \
+            || ariza_err "no private update bundle for this platform"
+        ARIZA_VERSION=$ARIZA_CANDIDATE
+        ARIZA_TAG=$ARIZA_CANDIDATE
+        ARIZA_SRC="https://github.com/$APP_REPO/releases/download/$ARIZA_CANDIDATE/$APP_EXEC-$ARIZA_CANDIDATE-$_slug.tar.gz"
+        _digest_src="$ARIZA_SRC.sha256"
+        ariza_log "$APP_DISPLAY $ARIZA_CANDIDATE update for $_slug"
+    elif [ -n "$ARIZA_SRC" ]; then
         # An explicit source bypasses GitHub completely. It is how a
         # release candidate, an air-gapped copy or an offline test gets
         # installed, so it accepts a plain file path as readily as a URL.
@@ -583,7 +878,7 @@ main() {
     # Every path that reaches the parting message goes through the
     # warm-up first, including the one where nothing was downloaded --
     # a re-run is what somebody tries when the last one did not take.
-    if [ -n "$ARIZA_VERSION" ] && ariza_check_existing "$ARIZA_VERSION"; then
+    if [ "$ARIZA_PRIVATE" -eq 0 ] && [ -n "$ARIZA_VERSION" ] && ariza_check_existing "$ARIZA_VERSION"; then
         ariza_warm
         ariza_report
         exit 0
@@ -591,6 +886,7 @@ main() {
 
     ariza_fetch_and_unpack "$ARIZA_SRC" "$_digest_src"
     ariza_install
+    [ "$ARIZA_PRIVATE" -eq 1 ] && exit 0
     ariza_warm
     ariza_report
 }

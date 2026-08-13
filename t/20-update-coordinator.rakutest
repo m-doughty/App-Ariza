@@ -1,0 +1,313 @@
+use v6.d;
+use Test;
+
+use App::Ariza::Tools;
+use App::Ariza::Update;
+
+plan 9;
+
+sub tmp-dir(--> IO::Path) {
+    my $dir = $*TMPDIR.add("ariza-update-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir
+}
+
+my $fixture = tmp-dir;
+END { rm-rf($fixture) }
+
+my %written = App::Ariza::Update.write(
+    :bundle-dir($fixture.add('fixture-bundle')),
+    :app-name<App::Example>,
+    :app-exec<example>,
+    :app-display("Example's App"),
+    :app-version<01.2.3>,
+    :repo<owner/example>,
+    :slug<linux-x86_64-glibc>,
+);
+my $source = %written<coordinator>.slurp;
+EVALFILE %written<coordinator>;
+my $Coordinator = ::('Ariza::Update::Coordinator');
+
+sub coordinator(*%overrides) {
+    my %challenge =
+        ARIZA_UPDATE_HANDOFF => $fixture.add('runner-record').absolute.Str,
+        ARIZA_UPDATE_NONCE => 'a' x 64;
+    $Coordinator.new(
+        :app-name<App::Example>, :app-exec<example>,
+        :app-display<Example>, :app-version<1.2.3>, :repo<owner/example>,
+        :installer-rel<libexec/ariza/install.sh>,
+        :terminal(-> { True }), :physical-current(-> $ { True }),
+        :env(%challenge), |%overrides,
+    )
+}
+
+sub managed-root(IO::Path:D $base --> IO::Path) {
+    my $root = $base.add('versions').add('1.2.3');
+    ensure-dir($root);
+    $root
+}
+
+subtest 'renderer stages a standalone core-only coordinator', {
+    plan 10;
+    ok %written<coordinator>.f, 'coordinator is staged';
+    is %written<coordinator>.relative($fixture.add('fixture-bundle')).Str
+        .subst('\\', '/', :g),
+       'libexec/ariza/update.raku', 'at its private bundle path';
+    is %written<installer>.relative($fixture.add('fixture-bundle')).Str
+        .subst('\\', '/', :g),
+       'libexec/ariza/install.sh', 'with the POSIX installer path baked';
+    ok $source.contains("has Str \$.app-version   = '01.2.3'"),
+       'the exact version is baked as data';
+    ok $source.contains("has Str \$.app-display   = 'Example\\'s App'"),
+       'Raku metacharacters are quoted';
+    nok $source.contains('use App::Ariza'), 'no App::Ariza run-time dependency';
+    nok $source.contains('use Template::Jinja2'), 'no renderer run-time dependency';
+    ok $source.contains('Invoke-WebRequest -UseBasicParsing'),
+       'Windows discovery stays compatible with its PowerShell 5.1 baseline';
+    ok $source.contains("run 'wget', '--spider'"),
+       'POSIX discovery has a wget fallback when curl is unavailable';
+    is App::Ariza::Update.installer-rel('windows-x86_64'),
+       'libexec/ariza/install.ps1', 'Windows selects its local installer';
+};
+
+subtest 'generated version and release URL parsing is strict', {
+    plan 14;
+    my $c = coordinator();
+    ok $c.valid-version('01.002.0003'), 'leading zeroes are accepted';
+    nok $c.valid-version("1.2.\x[0663]"), 'Unicode digits are rejected';
+    nok $c.valid-version('v1.2.3'), 'v prefix is rejected';
+    nok $c.valid-version('1.2.3-rc1'), 'prerelease is rejected';
+    is $c.version-cmp('1.' ~ ('9' x 1000) ~ '.0',
+                      '1.1' ~ ('0' x 1000) ~ '.0'), -1,
+       'arbitrary-length components compare numerically';
+    is $c.version-cmp('01.002.0003', '1.2.3'), 0,
+       'leading zeroes do not affect ordering';
+    is $c.latest-tag('https://github.com/owner/example/releases/tag/2.0.0'),
+       '2.0.0', 'the exact repository and bare tag are accepted';
+    for
+        'http://github.com/owner/example/releases/tag/2.0.0',
+        'https://evil.example/owner/example/releases/tag/2.0.0',
+        'https://github.com/owner/other/releases/tag/2.0.0',
+        'https://github.com/owner/example/releases/tag/v2.0.0',
+        'https://github.com/owner/example/releases/tag/2.0.0?x=1',
+        'https://github.com/owner/example/releases/tag/2.0.0%2Fbad',
+        'https://github.com/owner/example/releases/tag/2.0.0/extra'
+      -> $url {
+        nok $c.latest-tag($url).defined, "rejects $url";
+    }
+};
+
+subtest 'eligibility is fail-closed and recognizes handoff environment', {
+    plan 13;
+    my $root = managed-root($fixture.add('eligible'));
+    my $record = $fixture.add('handoff-record').absolute.Str;
+    ok coordinator().eligible($root, []), 'interactive managed current is eligible';
+    nok coordinator(:terminal(-> { False })).eligible($root, []),
+        'redirected terminals bypass';
+    nok coordinator().eligible($root, ['--help']), '--help bypasses';
+    nok coordinator().eligible($root, ['x', '--version']), '--version anywhere bypasses';
+    nok coordinator(:env({ CI => 'true' })).eligible($root, []), 'CI bypasses';
+    nok coordinator(:env({ ARIZA_NO_UPDATE_CHECK => '1' })).eligible($root, []),
+        'explicit opt-out bypasses';
+    nok coordinator(:env({ ARIZA_UPDATE_RELAUNCHED => '1' })).eligible($root, []),
+        'the one-hop relaunch bypasses';
+    nok coordinator(:physical-current(-> $ { False })).eligible($root, []),
+        'portable and retained bundles bypass';
+    nok coordinator(:env({})).eligible($root, []),
+        'a managed launch without a runner challenge bypasses';
+    nok coordinator(:env({ ARIZA_UPDATE_HANDOFF => $record })).eligible($root, []),
+        'a handoff without its nonce fails closed';
+    nok coordinator(:env({ ARIZA_UPDATE_NONCE => 'a' x 64 })).eligible($root, []),
+        'a nonce without its record fails closed';
+    nok coordinator(:env({ ARIZA_UPDATE_HANDOFF => $record,
+                           ARIZA_UPDATE_NONCE => 'xyz' })).eligible($root, []),
+        'a malformed nonce fails closed';
+    ok coordinator(:env({ ARIZA_UPDATE_HANDOFF => $record,
+                          ARIZA_UPDATE_NONCE => 'a' x 64 })).eligible($root, []),
+       'the runner-owned absolute record and 256-bit nonce are accepted';
+};
+
+subtest 'discovery stamps first and applies the weekly cadence', {
+    plan 10;
+    my $root = managed-root($fixture.add('cadence'));
+    my $state;
+    my @urls;
+    my @stamps;
+    my $c = coordinator(
+        :clock(-> { 1_000_000 }),
+        :transport(-> $url {
+            @urls.push($url);
+            @stamps.push($state.add('last-attempt').f
+                ?? $state.add('last-attempt').slurp.trim
+                !! '<missing>');
+            'https://github.com/owner/example/releases/tag/2.0.0'
+        }),
+    );
+    $state = $c.state-root($root);
+    is $c.candidate($state, 1_000_000), '2.0.0', 'first launch checks immediately';
+    is @urls, ('https://github.com/owner/example/releases/latest',),
+       'only the repository latest URL is requested';
+    is $c.read-state($state.add('pending-version'), :kind<version>), '2.0.0',
+       'the candidate is persisted';
+
+    $state.add('pending-version').unlink;
+    nok $c.candidate($state, 1_000_000 + 604_799).defined,
+        'one second before cadence does not check';
+    is +@urls, 1, 'no extra transport call before cadence';
+    is $c.candidate($state, 1_000_000 + 604_800), '2.0.0',
+       'the exact cadence boundary checks';
+    is +@urls, 2, 'one new transport call at the boundary';
+
+    $state.add('pending-version').unlink;
+    $state.add('last-attempt').spurt('9999999');
+    is $c.candidate($state, 50), '2.0.0', 'clock rollback safely checks once';
+    is $state.add('last-attempt').slurp.trim, '50', 'rollback resets the stamp';
+    is @stamps, ('1000000', '1604800', '50'),
+       'every timestamp was visible before its transport call';
+};
+
+subtest 'pending, ignored, corrupt, and failed-discovery state is safe', {
+    plan 11;
+    my $root = managed-root($fixture.add('state'));
+    my $calls = 0;
+    my $c = coordinator(:transport(-> $ { $calls++; die 'offline' }));
+    my $state = $c.state-root($root);
+    ensure-dir($state);
+    $state.add('pending-version').spurt("2.0.0\n");
+    is $c.candidate($state, 10), '2.0.0', 'a pending candidate wins without networking';
+    is $calls, 0, 'pending does not discover again';
+    ok $c.ignore($state, '2.0.0'), 'exact candidate can be ignored';
+    nok $c.candidate($state, 10).defined, 'ignored pending candidate is suppressed';
+    is $calls, 1, 'it may perform the otherwise-due single attempt';
+    ok $state.add('last-attempt').f, 'a failed attempt is still stamped';
+    nok $c.candidate($state, 11).defined, 'offline launch inside cadence is silent';
+    is $calls, 1, 'offline state does not hammer transport';
+
+    $state.add('pending-version').spurt('not-a-version');
+    nok $c.state-valid($state), 'corrupt bounded state is rejected';
+    $state.add('pending-version').spurt('3.0.0');
+    $state.add('last-attempt').spurt('x' x 5000);
+    nok $c.state-valid($state), 'oversized state is rejected';
+    nok $c.ignore($state, '../escape'), 'invalid version cannot become a state path';
+};
+
+subtest 'cross-process lock and atomic state replacement', {
+    plan 7;
+    my $root = managed-root($fixture.add('locking'));
+    my $c = coordinator();
+    my $state = $c.state-root($root);
+    ensure-dir($state);
+    my $ready = $state.add('child-ready');
+    my $program = q:to/RAKU/;
+        my ($lock, $ready) = @*ARGS;
+        my $handle = $lock.IO.open(:a);
+        die 'child lock failed' unless $handle.lock(:non-blocking);
+        $ready.IO.spurt('ready');
+        $*IN.get;
+        $handle.unlock;
+        $handle.close;
+        RAKU
+    my $child = Proc::Async.new($*EXECUTABLE, '-e', $program,
+                                $state.add('lock').absolute, $ready.absolute, :w);
+    my $done = $child.start;
+    for ^200 {
+        last if $ready.f;
+        sleep 0.01;
+    }
+    ok $ready.f, 'another process acquired the lock';
+    my $second = $c.acquire-lock($state);
+    nok $second.defined, 'a concurrent process bypasses';
+    ok $c.write-state($state.add('pending-version'), '2.0.0'), 'state write succeeds';
+    is $state.add('pending-version').slurp, "2.0.0\n", 'complete value is visible';
+    nok $state.dir.first({ .basename.contains('.tmp-') }), 'no temporary sibling remains';
+    nok $c.write-state($state.add('pending-version'), 'x' x 5000),
+        'oversized writes fail closed';
+    is $state.add('pending-version').slurp, "2.0.0\n",
+       'a refused replacement preserves old state';
+    await $child.write("done\n".encode);
+    $child.close-stdin;
+    await $done;
+};
+
+subtest 'a first managed launch creates the nested private state root', {
+    plan 3;
+    my $root = managed-root($fixture.add('fresh-state'));
+    my $c = coordinator();
+    my $state = $c.state-root($root);
+    nok $state.parent.e, 'the .ariza parent does not exist yet';
+    my $lock = $c.acquire-lock($state);
+    ok $lock.defined, 'the first lock creates every missing parent';
+    ok $state.add('lock').f, 'and creates the lock at the canonical path';
+    $lock.unlock;
+    $lock.close;
+};
+
+subtest 'prompt outcomes and dispatch stay deterministic', {
+    plan 11;
+    my $root = managed-root($fixture.add('outcomes'));
+    my ($dispatches, $installs, $exited) = 0, 0, 0;
+    my $make = -> $answer, $status = 1 {
+        coordinator(
+            :clock(-> { 100 }),
+            :transport(-> $ { 'https://github.com/owner/example/releases/tag/2.0.0' }),
+            :prompt(-> $ { $answer }),
+            :install(-> $ { $installs++; $status }),
+            :exit(-> $code { $exited = $code; 'handoff' }),
+            :dispatch(-> { $dispatches++; 'application' }),
+        )
+    };
+
+    is $make('later').run(:bundle-root($root)), 'application',
+       'ask-next-time dispatches the app in-process';
+    is $dispatches, 1, 'dispatch called exactly once';
+    ok $make('later').state-root($root).add('pending-version').f,
+       'and leaves the candidate pending';
+
+    is $make('ignore').run(:bundle-root($root)), 'application',
+       'ignore also dispatches';
+    ok $make('ignore').state-root($root).add('ignored').add('2.0.0').f,
+       'and suppresses exactly that version';
+
+    my $root2 = managed-root($fixture.add('install-ok'));
+    is $make('install', 0).run(:bundle-root($root2)), 'handoff',
+       'authenticated installer handoff does not start the old app';
+    is $exited, 75, 'reserved exit status is returned to the launcher';
+    is $installs, 1, 'installer is invoked once';
+
+    my $root3 = managed-root($fixture.add('install-fail'));
+    my $err = $fixture.add('install-error');
+    my $old = $*ERR;
+    $*ERR = $err.open(:w);
+    is $make('install', 1).run(:bundle-root($root3)), 'application',
+       'failed install leaves the old app usable';
+    $*ERR.close;
+    $*ERR = $old;
+    ok $err.slurp.contains('could not install 2.0.0'), 'install failure is visible';
+    ok $make('later').state-root($root3).add('pending-version').f,
+       'failed install remains pending for recovery';
+};
+
+subtest 'gating and corrupt state bypass every update seam', {
+    plan 5;
+    my $root = managed-root($fixture.add('bypass'));
+    my ($transport, $prompt, $dispatch) = 0, 0, 0;
+    my $c = coordinator(
+        :terminal(-> { False }),
+        :transport(-> $ { $transport++; die 'must not run' }),
+        :prompt(-> $ { $prompt++; 'later' }),
+        :dispatch(-> { $dispatch++; 'app' }),
+    );
+    is $c.run(:bundle-root($root)), 'app', 'ineligible launch dispatches';
+    is $transport, 0, 'without discovery';
+    is $prompt, 0, 'or prompting';
+
+    my $bad = coordinator(
+        :transport(-> $ { $transport++; die 'must not run' }),
+        :dispatch(-> { $dispatch++; 'app' }),
+    );
+    my $state = $bad.state-root($root);
+    ensure-dir($state);
+    $state.add('pending-version').spurt('broken');
+    is $bad.run(:bundle-root($root)), 'app', 'corrupt state silently dispatches';
+    is $transport, 0, 'corrupt state disables discovery for the launch';
+};

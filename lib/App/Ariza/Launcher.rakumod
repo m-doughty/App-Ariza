@@ -72,6 +72,7 @@ method context(
         app_display => $config.app-display,
         app_name    => $config.app-name,
         app_version => $app-version,
+        updates_enabled => $config.updates-enabled,
         platform    => $slug,
         os          => $family,
         target      => $target,
@@ -139,6 +140,13 @@ method write(
     # outcomes rather than failures, and both leave a bundle whose
     # scripts do the whole job.
     my %runner = stage-runner(:$bundle-dir, :$slug, :exec($config.app-exec));
+    die "ariza: update-enabled Windows bundles require updater-capable runner-v2+"
+      ~ " for '$slug'; refusing to ship script launchers that cannot"
+      ~ " authenticate an update handoff"
+        if $config.updates-enabled
+        && $slug.starts-with('windows-')
+        && (!%runner<path>.defined
+            || !App::Ariza::Runner.update-handoff-capable(%runner<tag>));
     @written.push(%runner<path>) if %runner<path>.defined;
 
     %( written => @written.List, runner => %runner )
@@ -284,11 +292,12 @@ template. A bundle that grows a native dependency grows a line in this
 file; it does not need a new executable, and an executable pinned
 several releases ago still launches it.
 
-=item1 C<< <exec>.cmd >> and C<< <exec>.ps1 >> — unchanged, still
-written, still supported. They are the transparent alternative for
-someone who would rather read their launcher than trust it, and the
-fallback while a bundle is built before the first runner release is
-pinned.
+=item1 C<< <exec>.cmd >> and C<< <exec>.ps1 >> — still written and still
+supported as transparent launchers. In an update-disabled bundle they carry
+the complete script implementation and are the bootstrap fallback before a
+runner is pinned. In an update-enabled Windows bundle they delegate to the
+required runner-v2 executable, because that process owns the authenticated
+handoff and the original argument tail.
 
 C<$PSScriptRoot> and C<%~dp0> already give a resolved directory, so
 neither script needs the POSIX symlink loop; the executable asks Windows

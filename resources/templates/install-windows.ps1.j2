@@ -44,7 +44,11 @@
 param(
     [string] $Version,
     [string] $Url,
-    [switch] $InsecureNoVerify
+    [switch] $InsecureNoVerify,
+    [string] $ArizaUpdateCandidate,
+    [string] $ArizaHandoff,
+    [string] $ArizaNonce,
+    [string] $ArizaExpectedCurrent
 )
 
 $AppDisplay = '{{ app_display }}'
@@ -59,6 +63,8 @@ $ArizaSlugs = @({{ slugs_ps }})
 $ArizaRoot     = Join-Path $env:LOCALAPPDATA $AppDisplay
 $ArizaVersions = Join-Path $ArizaRoot 'versions'
 $ArizaBinDir   = Join-Path (Join-Path $ArizaRoot 'current') 'bin'
+$ArizaState    = Join-Path $ArizaRoot '.ariza\update-v1'
+$ArizaPrivate  = [bool]($ArizaUpdateCandidate -or $ArizaHandoff -or $ArizaNonce -or $ArizaExpectedCurrent)
 
 ############################# common runtime ##################################
 {{ lib_windows | safe }}
@@ -135,22 +141,264 @@ function Ariza-HasEntryPoint {
     return $false
 }
 
+function Ariza-FullPath {
+    param([string]$Path)
+    return [IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+function Ariza-ValidatePrivate {
+    if (-not $ArizaPrivate) { return }
+    if (-not $ArizaUpdateCandidate -or -not $ArizaHandoff -or
+        -not $ArizaNonce -or -not $ArizaExpectedCurrent) {
+        Ariza-Err 'private update mode requires candidate, handoff, nonce, and expected-current'
+    }
+    if ($ArizaUpdateCandidate -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+        Ariza-Err 'private update candidate must be a bare ASCII x.y.z version'
+    }
+    if ($ArizaNonce -cnotmatch '^[0-9a-f]{64}$') {
+        Ariza-Err 'private update nonce must be 64 lowercase hexadecimal characters'
+    }
+    if ($Version -or $Url -or $InsecureNoVerify -or $env:{{ env_url }}) {
+        Ariza-Err 'public version/url/insecure options are forbidden in private update mode'
+    }
+    if (-not (Test-Path -LiteralPath $ArizaExpectedCurrent -PathType Container)) {
+        Ariza-Err 'expected current bundle does not exist'
+    }
+    foreach ($statePath in @((Join-Path $ArizaRoot '.ariza'), $ArizaState)) {
+        if (-not (Test-Path -LiteralPath $statePath)) { continue }
+        $stateItem = Get-Item -LiteralPath $statePath -Force
+        if (($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Ariza-Err 'private update state must not be a reparse point'
+        }
+    }
+    New-Item -ItemType Directory -Path $ArizaState -Force | Out-Null
+    $handoffParent = Ariza-FullPath (Split-Path -Parent $ArizaHandoff)
+    $handoffName = Split-Path -Leaf $ArizaHandoff
+    if ($handoffParent -ceq (Ariza-FullPath $ArizaState)) {
+        if ($handoffName -cne 'handoff' -and -not $handoffName.StartsWith('handoff.')) {
+            Ariza-Err 'private handoff has an invalid name'
+        }
+    }
+    else {
+        $handoffDir = Get-Item -LiteralPath $handoffParent -Force -ErrorAction SilentlyContinue
+        if (-not $handoffDir -or
+            ($handoffDir.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (Ariza-FullPath (Split-Path -Parent $handoffParent)) -cne (Ariza-FullPath $ArizaState) -or
+            -not $handoffDir.Name.StartsWith('handoff-') -or $handoffName -cne 'result') {
+            Ariza-Err 'private handoff must be inside update-v1 state'
+        }
+    }
+    if (Test-Path -LiteralPath $ArizaHandoff) {
+        Ariza-Err 'private handoff path already exists'
+    }
+}
+
+function Ariza-PhysicalLinkTarget {
+    param([string]$Link)
+    if (-not (Test-Path -LiteralPath $Link)) { return '' }
+    $item = Get-Item -LiteralPath $Link -Force
+    if (-not $item.LinkType) { Ariza-Err "$Link exists and is not a junction" }
+    return Ariza-FullPath $item.Target
+}
+
+function Ariza-VersionForPhysical {
+    param([string]$Physical)
+    if (-not $Physical) { return '' }
+    $parent = Ariza-FullPath (Split-Path -Parent $Physical)
+    if ($parent -cne (Ariza-FullPath $ArizaVersions)) {
+        Ariza-Err 'managed pointer target is outside the versions directory'
+    }
+    return Split-Path -Leaf $Physical
+}
+
+function Ariza-SetJunctionAtomic {
+    param([string]$Name, [string]$Target)
+    $link = Join-Path $ArizaRoot $Name
+    $new = "$link.new-$PID"
+    if (Test-Path -LiteralPath $new) { (Get-Item -LiteralPath $new -Force).Delete() }
+    New-Item -ItemType Junction -Path $new -Target $Target | Out-Null
+    Ariza-RemoveLink $link
+    Move-Item -LiteralPath $new -Destination $link
+}
+
+function Ariza-WriteAtomicText {
+    param([string]$Path, [string]$Text)
+    $tmp = "$Path.tmp-$PID"
+    [IO.File]::WriteAllText($tmp, $Text, (New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+}
+
+function Ariza-ValidatePrivateManifest {
+    param([string]$Top)
+    if (-not $ArizaPrivate) { return }
+    $path = Join-Path $Top 'ariza-manifest.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Ariza-Err 'private update bundle has no ariza-manifest.json'
+    }
+    try { $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+    catch { Ariza-Err 'private update bundle has malformed manifest JSON' }
+    if ($manifest.'ariza-manifest' -ne 1 -or
+        $manifest.app.name -cne '{{ app_name }}' -or
+        $manifest.app.exec -cne '{{ app_exec }}' -or
+        $manifest.app.version -cne $ArizaUpdateCandidate) {
+        Ariza-Err 'private update bundle identity does not match the candidate'
+    }
+    $updates = $manifest.updates
+    if (-not $updates -or $updates.protocol -ne 1 -or -not $updates.enabled -or
+        $updates.repository -cne '{{ repo }}' -or
+        $updates.coordinator -cne 'libexec/ariza/update.raku' -or
+        $updates.installer -cne 'libexec/ariza/install.ps1') {
+        Ariza-Err 'private update bundle has invalid update protocol metadata'
+    }
+    foreach ($relative in @($updates.coordinator, $updates.installer, $updates.'application-target')) {
+        if (-not $relative -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+            Ariza-Err 'private update bundle names an unsafe updater path'
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $Top $relative) -PathType Leaf)) {
+            Ariza-Err "private update bundle is missing $relative"
+        }
+    }
+}
+
+function Ariza-RecordDeferredCleanup {
+    param([string]$Dir)
+    $cleanup = Join-Path $ArizaState 'cleanup'
+    New-Item -ItemType Directory -Path $cleanup -Force | Out-Null
+    $name = Split-Path -Leaf $Dir
+    Ariza-WriteAtomicText (Join-Path $cleanup $name) ((Ariza-FullPath $Dir) + "`n")
+}
+
+function Ariza-RunDeferredCleanup {
+    $cleanup = Join-Path $ArizaState 'cleanup'
+    if (-not (Test-Path -LiteralPath $cleanup -PathType Container)) { return }
+    $current = Ariza-PhysicalLinkTarget (Join-Path $ArizaRoot 'current')
+    $previous = Ariza-PhysicalLinkTarget (Join-Path $ArizaRoot 'previous')
+    foreach ($record in @(Get-ChildItem -LiteralPath $cleanup -File -ErrorAction SilentlyContinue)) {
+        if ($record.Length -gt 4096) { continue }
+        $path = (Get-Content -LiteralPath $record.FullName -TotalCount 1).Trim()
+        if (-not $path -or (Ariza-FullPath (Split-Path -Parent $path)) -cne (Ariza-FullPath $ArizaVersions)) {
+            Remove-Item -LiteralPath $record.FullName -Force; continue
+        }
+        if ($path -ceq $current -or $path -ceq $previous -or
+            ($ArizaPrivate -and $path -ceq (Ariza-FullPath $ArizaExpectedCurrent))) { continue }
+        if (-not (Test-Path -LiteralPath $path)) {
+            Remove-Item -LiteralPath $record.FullName -Force; continue
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            # A directory replaced by a reparse point after recording is not
+            # the object the installer decided was safe to delete.
+            continue
+        }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force
+            Remove-Item -LiteralPath $record.FullName -Force
+            Ariza-Log "removed deferred superseded version $($item.Name)"
+        }
+        catch { }
+    }
+}
+
 function Ariza-Prune {
-    param([string]$Keep)
-    # Exactly one older version is kept, so a bad release can be rolled
-    # back to the one before it without hoarding every bundle ever
-    # downloaded.
-    $old = 0
-    $dirs = Get-ChildItem -LiteralPath $ArizaVersions -Directory -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending
+    param([string]$Keep, [string]$Previous)
+    $dirs = Get-ChildItem -LiteralPath $ArizaVersions -Directory -ErrorAction SilentlyContinue
     foreach ($dir in $dirs) {
-        if ($dir.Name -eq $Keep) { continue }
-        $old++
-        if ($old -gt 1) {
+        if ($dir.Name -ceq $Keep -or $dir.Name -ceq $Previous) { continue }
+        if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        try {
             Remove-Item -LiteralPath $dir.FullName -Recurse -Force
             Ariza-Log "removed superseded version $($dir.Name)"
         }
+        catch {
+            try { Ariza-RecordDeferredCleanup $dir.FullName } catch { }
+            Ariza-Warn "could not remove superseded version $($dir.Name); cleanup was deferred"
+        }
     }
+}
+
+function Ariza-Commit {
+    param([string]$NewVersion)
+    $currentLink = Join-Path $ArizaRoot 'current'
+    $previousLink = Join-Path $ArizaRoot 'previous'
+    $before = Ariza-PhysicalLinkTarget $currentLink
+    if ($ArizaPrivate) {
+        if (-not $before -or (Ariza-FullPath $before) -cne (Ariza-FullPath $ArizaExpectedCurrent)) {
+            Ariza-Err 'managed current changed while the update was being prepared'
+        }
+    }
+    $oldPrevious = Ariza-PhysicalLinkTarget $previousLink
+    $previousVersion = Ariza-VersionForPhysical $before
+    $newTarget = Join-Path $ArizaVersions $NewVersion
+    $journal = Join-Path $ArizaState 'transaction'
+    New-Item -ItemType Directory -Path $ArizaState -Force | Out-Null
+    Ariza-WriteAtomicText $journal ("protocol=1`nold=$before`nprevious=$oldPrevious`nnew=$newTarget`n")
+
+    try {
+        Ariza-SetJunctionAtomic 'current' $newTarget
+        if ($before) { Ariza-SetJunctionAtomic 'previous' $before }
+        elseif (Test-Path -LiteralPath $previousLink) { Ariza-RemoveLink $previousLink }
+
+        # Clear the recovery journal before emitting success. The handoff is
+        # then the final fallible commit step; no later error can turn a
+        # natural application exit 75 into a false authenticated relaunch.
+        Remove-Item -LiteralPath $journal -Force
+        if ($ArizaPrivate) {
+            $record = "protocol=1`nnonce=$ArizaNonce`ncandidate=$ArizaUpdateCandidate`n"
+            Ariza-WriteAtomicText $ArizaHandoff $record
+        }
+    }
+    catch {
+        # A handoff-less switch is not authenticatable. Restore both pointers
+        # while every target is still retained.
+        if ($before) { Ariza-SetJunctionAtomic 'current' $before }
+        elseif (Test-Path -LiteralPath $currentLink) { Ariza-RemoveLink $currentLink }
+        if ($oldPrevious) { Ariza-SetJunctionAtomic 'previous' $oldPrevious }
+        elseif (Test-Path -LiteralPath $previousLink) { Ariza-RemoveLink $previousLink }
+        Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue
+        throw
+    }
+
+    # Retention failures are caught and deferred, so nothing fallible follows
+    # a private handoff record.
+    Ariza-Prune $NewVersion $previousVersion
+}
+
+function Ariza-RecoverTransaction {
+    $journal = Join-Path $ArizaState 'transaction'
+    if (-not (Test-Path -LiteralPath $journal -PathType Leaf)) { return }
+    $journalItem = Get-Item -LiteralPath $journal -Force
+    if ($journalItem.Length -gt 4096 -or
+        ($journalItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Ariza-Err 'installer transaction journal is unsafe; refusing to change managed pointers'
+    }
+    $lines = @(Get-Content -LiteralPath $journal)
+    if (@($lines | Where-Object { $_ -ceq 'protocol=1' }).Count -ne 1 -or
+        @($lines | Where-Object { $_.StartsWith('old=') }).Count -ne 1 -or
+        @($lines | Where-Object { $_.StartsWith('previous=') }).Count -ne 1 -or
+        @($lines | Where-Object { $_.StartsWith('new=') }).Count -ne 1) {
+        Ariza-Err 'installer transaction journal is corrupt; refusing to change managed pointers'
+    }
+    $oldLine = $lines | Where-Object { $_.StartsWith('old=') } | Select-Object -First 1
+    $previousLine = $lines | Where-Object { $_.StartsWith('previous=') } | Select-Object -First 1
+    if (-not $oldLine -or -not $previousLine) {
+        Ariza-Err 'installer transaction journal is corrupt; refusing to change managed pointers'
+    }
+    $old = $oldLine.Substring(4)
+    $oldPrevious = $previousLine.Substring(9)
+    if ($old -and (Test-Path -LiteralPath $old -PathType Container) -and
+        (Ariza-FullPath (Split-Path -Parent $old)) -ceq (Ariza-FullPath $ArizaVersions)) {
+        Ariza-SetJunctionAtomic 'current' $old
+        if ($oldPrevious -and (Test-Path -LiteralPath $oldPrevious -PathType Container) -and
+            (Ariza-FullPath (Split-Path -Parent $oldPrevious)) -ceq (Ariza-FullPath $ArizaVersions)) {
+            Ariza-SetJunctionAtomic 'previous' $oldPrevious
+        }
+        elseif (Test-Path -LiteralPath (Join-Path $ArizaRoot 'previous')) {
+            Ariza-RemoveLink (Join-Path $ArizaRoot 'previous')
+        }
+        Remove-Item -LiteralPath $journal -Force
+        Ariza-Warn 'recovered an interrupted installer transaction'
+    }
+    else { Ariza-Err 'installer transaction journal names an unsafe old target' }
 }
 
 function Ariza-CheckExisting {
@@ -166,7 +414,10 @@ function Ariza-CheckExisting {
         Remove-Item -LiteralPath $dir -Recurse -Force
         return $false
     }
-    Ariza-PointCurrent $dir
+    $current = Ariza-PhysicalLinkTarget (Join-Path $ArizaRoot 'current')
+    if (-not $current -or (Ariza-FullPath $current) -cne (Ariza-FullPath $dir)) {
+        Ariza-Commit $InstalledVersion
+    }
     Ariza-LinkBin
     Ariza-Ok "$AppDisplay $InstalledVersion is already installed"
     return $true
@@ -235,11 +486,26 @@ function Ariza-Report {
 }
 
 function Ariza-Main {
+    if ($ArizaPrivate) { Ariza-ValidatePrivate }
+    else { New-Item -ItemType Directory -Path $ArizaState -Force | Out-Null }
+    Ariza-RecoverTransaction
+    Ariza-RunDeferredCleanup
+
     $src        = if ($Url) { $Url } elseif ($env:{{ env_url }}) { $env:{{ env_url }} } else { '' }
     $override   = [bool]$src
     $installVer = ''
 
-    if ($override) {
+    if ($ArizaPrivate) {
+        $slug = Ariza-DetectSlug
+        if (-not $slug -or $ArizaSlugs -notcontains $slug) {
+            Ariza-Err 'no private update bundle for this Windows platform'
+        }
+        $installVer = $ArizaUpdateCandidate
+        $src = "https://github.com/$AppRepo/releases/download/$ArizaUpdateCandidate/$AppExec-$ArizaUpdateCandidate-$slug.tar.gz"
+        $override = $false
+        Ariza-Log "$AppDisplay $installVer update for $slug"
+    }
+    elseif ($override) {
         # An explicit source bypasses GitHub completely. It is how a
         # release candidate, an air-gapped copy or an offline test gets
         # installed, so it accepts a plain file path as readily as a URL.
@@ -263,7 +529,7 @@ function Ariza-Main {
     # Every path that reaches the parting message warms up first,
     # including the one where nothing was downloaded -- a re-run is what
     # somebody tries when the last one did not take.
-    if ($installVer -and (Ariza-CheckExisting $installVer)) {
+    if (-not $ArizaPrivate -and $installVer -and (Ariza-CheckExisting $installVer)) {
 {%- if warm %}
         Ariza-Warmup
 {%- endif %}
@@ -340,12 +606,17 @@ function Ariza-Main {
         }
         else {
             if ($installVer -and $actual -ne $installVer) {
+                if ($ArizaPrivate) {
+                    Ariza-Err "private update archive contains $actual, expected $installVer"
+                }
                 Ariza-Warn "that archive is named $installVer but contains $actual -- installing it as $actual"
             }
             $installVer = $actual
         }
 
-        if (Ariza-CheckExisting $installVer) {
+        Ariza-ValidatePrivateManifest $top.FullName
+
+        if (-not $ArizaPrivate -and (Ariza-CheckExisting $installVer)) {
 {%- if warm %}
             Ariza-Warmup
 {%- endif %}
@@ -366,9 +637,12 @@ function Ariza-Main {
             Ariza-Err "the unpacked bundle has neither bin\$AppExec.exe nor bin\$AppExec.cmd -- not touching your existing install"
         }
 
-        Ariza-PointCurrent $dest
+        Ariza-Commit $installVer
+        if ($ArizaPrivate) {
+            Ariza-Ok "$AppDisplay $installVer installed"
+            return
+        }
         Ariza-LinkBin
-        Ariza-Prune $installVer
         Ariza-Ok "$AppDisplay $installVer installed"
 {%- if warm %}
         Ariza-Warmup

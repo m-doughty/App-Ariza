@@ -4,7 +4,7 @@ use Test;
 use App::Ariza::Config;
 use App::Ariza::Resources;
 
-plan 13;
+plan 14;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
@@ -316,6 +316,56 @@ subtest 'the [installer] table', {
         $head ~ "repo = \"o/n\"\nchannel = \"nightly\"\n"));
     ok $future.warnings.first(/"'installer.channel'"/),
         'while an unknown key in the table only warns';
+};
+
+subtest 'the [updates] table', {
+    plan 9;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n";
+
+    is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).updates-enabled,
+        False, 'updates are off when the table is omitted';
+    is App::Ariza::Config.load-file(write-config($dir,
+        $head ~ "[updates]\nenabled = false\n")).updates-enabled,
+        False, 'and explicit false is off';
+
+    # TOML preserves table order. This places [updates] before [installer]
+    # to prove the cross-field requirement is checked only after every table
+    # has been parsed.
+    my $enabled = App::Ariza::Config.load-file(write-config($dir,
+        $head ~ "[updates]\nenabled = true\n[installer]\nrepo = \"o/n\"\n"));
+    ok $enabled.updates-enabled, 'true enables update-aware bundles';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            $head ~ "[updates]\nenabled = true\n"))
+    }, Exception, message => /'updates.enabled requires installer.repo'/,
+        'enabled updates require a release repository';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            $head ~ "[updates]\nenabled = \"yes\"\n"))
+    }, Exception, message => /'updates.enabled must be true or false'/,
+        'a string is not a boolean';
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir,
+            $head ~ "[updates]\nenabled = 1\n"))
+    }, Exception, message => /'updates.enabled must be true or false'/,
+        'a number is not a boolean';
+
+    my $future = App::Ariza::Config.load-file(write-config($dir,
+        $head ~ "[installer]\nrepo = \"o/n\"\n[updates]\nenabled = true\n"
+      ~ "cadence = 60\n"));
+    ok $future.warnings.first(/"'updates.cadence'"/),
+        'unknown dotted keys warn';
+
+    my $comment = App::Ariza::Config.load-file(write-config($dir,
+        $head ~ "[installer]\nrepo = \"o/n\"\n[updates]\n"
+      ~ "\"// note\" = \"manual cadence is not configurable\"\n"
+      ~ "enabled = true\n"));
+    is-deeply $comment.warnings.List, (), 'comment keys remain silent';
+    ok $comment.updates-enabled, 'a comment key does not affect enablement';
 };
 
 subtest 'installer.warm: what the installers run once, or nothing', {
