@@ -447,7 +447,7 @@ subtest 'sh -n accepts them, and write puts them where they belong', {
 };
 
 subtest 'the Windows pair mirrors it, in PowerShell', {
-    plan 8;
+    plan 10;
 
     # PowerShell reads a .ps1 fine either way, but every other file in a
     # Windows repository is CRLF and a here-string is not forgiving.
@@ -465,4 +465,9 @@ subtest 'the Windows pair mirrors it, in PowerShell', {
         'it looks for exactly the Windows platforms the app declares';
     ok $PS1.contains('tar.exe'),
         'and unpacks the .tar.gz ariza actually publishes, not a hypothetical .zip';
+    ok $PS1.contains('[Security.Cryptography.SHA256]::Create()'),
+        'SHA-256 uses the PowerShell 5.1 .NET runtime directly';
+    nok $PS1.lines.grep({ !.trim.starts-with('#') })
+        .first(*.contains('Get-FileHash')),
+        'and does not require an optional PowerShell utility cmdlet';
 };

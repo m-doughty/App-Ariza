@@ -67,7 +67,24 @@ function Ariza-Download {
 
 function Ariza-Sha256 {
     param([string]$Path)
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+    # Use the .NET implementation directly. Get-FileHash normally ships in
+    # Microsoft.PowerShell.Utility, but minimal/non-standard PowerShell 5.1
+    # environments can lack that cmdlet while still providing the runtime
+    # APIs the installer needs.
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha.ComputeHash($stream)
+            return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
 }
 
 function Ariza-FirstWord {
