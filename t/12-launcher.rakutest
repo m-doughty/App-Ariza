@@ -8,7 +8,7 @@ use App::Ariza::Resources;
 use App::Ariza::Site;
 use App::Ariza::Tools;
 
-plan 8;
+plan 9;
 
 my constant SLUGS = 'macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64';
 
@@ -257,6 +257,57 @@ subtest 'Windows output is CRLF', {
     my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
                                          |ctx('macos-arm64'));
     nok $sh.contains("\r"), 'while the POSIX script has none';
+};
+
+subtest 'the PowerShell launcher is valid in Windows PowerShell 5.1', {
+    plan 3;
+    my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
+                                          |ctx('windows-x86_64'));
+    my $normalized = $ps1.subst("\r\n", "\n", :g);
+
+    nok $ps1.contains(' ? '),
+        'it does not use the PowerShell 7 ternary operator';
+    ok $normalized.contains(q:to/FALLBACK/.trim),
+$ArizaStateRoot = $env:LOCALAPPDATA
+if (-not $ArizaStateRoot) {
+    $ArizaStateRoot = $env:TEMP
+}
+$ArizaStateDir = Join-Path $ArizaStateRoot 'exampleapp'
+FALLBACK
+        'the state directory falls back to TEMP with PowerShell 5.1 syntax';
+
+    if $*DISTRO.is-win {
+        my $dir = tmp-dir;
+        LEAVE { rm-rf($dir) }
+        my $path = $dir.add('launcher.ps1');
+        $path.spurt($ps1);
+        my %env = child-env(ARIZA_LAUNCHER_PARSE_PATH => $path.absolute.Str);
+        my $parse = q:to/POWERSHELL/.trim;
+$tokens = $null
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    $env:ARIZA_LAUNCHER_PARSE_PATH,
+    [ref]$tokens,
+    [ref]$errors
+)
+if ($errors.Count -ne 0) {
+    $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
+    exit 1
+}
+POWERSHELL
+        my ($code, $, $err) = try-run(
+            [
+                'powershell.exe', '-NoProfile', '-NonInteractive',
+                '-Command', $parse,
+            ],
+            :%env,
+        );
+        is $code, 0, 'Windows PowerShell 5.1 parses it without execution'
+            or diag $err;
+    }
+    else {
+        skip 'Windows PowerShell 5.1 parser check only runs on Windows', 1;
+    }
 };
 
 #| The directive lines of a rendered sidecar, in order, with comments

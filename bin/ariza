@@ -18,7 +18,7 @@ multi MAIN("bundle", Str :$app!, Str :$platform, Str :$out-dir,
     cli { App::Ariza.cmd-bundle(:$app, :$platform, :$out-dir, :$sqlcipher-archive) };
 }
 
-multi MAIN("installers", Str :$app!, Str :$out-dir, Str :$branch = 'main') {
+multi MAIN("installers", Str :$app!, Str :$out-dir, Str :$branch = 'HEAD') {
     cli { App::Ariza.cmd-installers(:$app, :$out-dir, :$branch) };
 }
 
@@ -73,8 +73,10 @@ sub USAGE {
             --app=DIR            the application's repository (required)
             --out-dir=DIR        write here instead of into the app's own
                                  repository; the directory must exist
-            --branch=NAME        the branch the curl one-liner names
-                                 (default: main)
+            --branch=NAME        the git ref the curl one-liner names
+                                 (default: HEAD, which resolves to
+                                 whatever the repository calls its
+                                 default branch)
 
       ariza scaffold-ci          write the GitHub Actions workflows that
                                  build a bundle per declared platform,

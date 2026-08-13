@@ -40,7 +40,11 @@ $env:PATH = $SqlcipherDir + ';' + $env:PATH
 $env:DBIISH_SQLCIPHER_LIB = Join-Path $BundleRoot '{{ sqlcipher_lib_win }}'
 {%- endif %}
 
-$ArizaStateDir = Join-Path ($env:LOCALAPPDATA ? $env:LOCALAPPDATA : $env:TEMP) '{{ app_exec }}'
+$ArizaStateRoot = $env:LOCALAPPDATA
+if (-not $ArizaStateRoot) {
+    $ArizaStateRoot = $env:TEMP
+}
+$ArizaStateDir = Join-Path $ArizaStateRoot '{{ app_exec }}'
 if (-not (Test-Path -LiteralPath (Join-Path $ArizaStateDir '.first-run'))) {
     [Console]::Error.WriteLine("${ArizaDisplay}: first launch can take a few seconds. Later ones are instant.")
     try {

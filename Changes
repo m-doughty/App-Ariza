@@ -2,6 +2,20 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.1.2  2026-08-13T12:43:51+01:00
+    - Windows PowerShell launchers no longer use PowerShell 7's ternary
+      operator. The generated `.ps1` now parses under Windows PowerShell
+      5.1 while retaining its LOCALAPPDATA-to-TEMP state-directory fallback.
+    - `ariza installers` defaults its `--branch` to `HEAD`. The library
+      moved to HEAD in 0.1.1 but `bin/ariza` kept declaring `main` as
+      its own default, which is the value a user who runs the command
+      actually gets — so the scripts rendered for the first release
+      after that change still pointed at a branch the repository does
+      not have, and the fix looked applied while the bug was fully
+      intact. t/07-cli now renders through the CLI and fails on a
+      hardcoded branch in any generated script, because a library
+      default proves nothing about the command.
+
 0.1.1  2026-08-13T01:14:07+01:00
     - The POSIX installer's parting message actually tells the user
       their current terminal cannot see the command yet, and gives

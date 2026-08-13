@@ -75,7 +75,7 @@ subtest 'ariza help', {
 };
 
 subtest 'ariza installers', {
-    plan 5;
+    plan 6;
     my $out-dir = tmp-dir;
     my $app-dir = tmp-dir;
     LEAVE { rm-rf($out-dir); rm-rf($app-dir) }
@@ -99,6 +99,18 @@ subtest 'ariza installers', {
         'wrote all four scripts';
     ok $out.contains('rendered 4 installers'), 'and said so';
     is $err.trim, '', 'with nothing on stderr for a clean manifest';
+
+    # The ref the one-liner names, asserted through the CLI rather than
+    # the library: `bin/ariza` declares its own `--branch` default, so a
+    # library default of HEAD proves nothing about what a user who runs
+    # the command actually gets. The two disagreed exactly once — the
+    # library moved to HEAD, the script kept `main`, and the installers
+    # rendered for a real release pointed at a branch that repository
+    # does not have. Every generated script is checked, because only one
+    # of the four is what the failure showed up in.
+    nok $out-dir.dir.grep(*.f).first({ .slurp.contains('/main/') }),
+        'and no generated script names a hardcoded branch: the CLI '
+        ~ 'default is HEAD too, not just the library default';
 
     # An app with no [installer] table has nowhere to download from, and
     # is told that rather than handed a script that 404s.
