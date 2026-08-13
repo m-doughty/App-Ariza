@@ -5,8 +5,8 @@
 # file: edit ariza's resources/templates/install-posix.sh.j2 and re-run
 # `ariza installers --app=<this repository>`.
 #
-#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/main/install.sh | sh -s -- --version v1.2.3
+#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD/install.sh | sh -s -- --version v1.2.3
 #   sh install.sh --help
 #
 # What it does:
@@ -18,6 +18,8 @@
 #      install.
 #   4. Links ~/.local/bin/exampleapp, and puts that directory on PATH
 #      only if it is not on it already.
+#   5. Runs it once, so that whatever the first launch has to do is done
+#      here rather than the first time you want the program.
 #
 # Nothing is compiled, nothing needs root, and nothing outside
 # ${XDG_DATA_HOME:-~/.local/share}/exampleapp and ~/.local/bin is
@@ -138,15 +140,26 @@ ariza_verify_sha256() {
 
 ariza_persist_path() {
     # $1 = directory to put on PATH.
+    #
+    # Records whether the directory was on PATH BEFORE this function
+    # touched anything, in ARIZA_PATH_WAS_PRESENT. The parting message
+    # keys on that record, not on $PATH: this function's last act is to
+    # export the directory into this script's own PATH, so a check made
+    # after it runs always says "present" and the tell-the-user branch
+    # becomes unreachable — which is exactly how the first real install
+    # ended with a command the user's terminal could not find and no
+    # line telling them why.
     _dir=$1
     case ":${PATH:-}:" in
         *":$_dir:"*)
             # Already there for this shell, so a login shell almost
             # certainly has it too. Adding a block would be one more
             # thing to clean up later for no gain.
+            ARIZA_PATH_WAS_PRESENT=1
             return 0
             ;;
     esac
+    ARIZA_PATH_WAS_PRESENT=0
 
     _block=$(printf '%s\ncase ":$PATH:" in\n  *":%s:"*) ;;\n  *) PATH="%s:$PATH"; export PATH ;;\nesac\n%s\n' \
         "$ARIZA_PATH_MARKER" "$_dir" "$_dir" "$ARIZA_PATH_END")
@@ -487,15 +500,53 @@ ariza_install() {
     ariza_ok "$APP_DISPLAY $ARIZA_VERSION installed"
 }
 
+ariza_warm() {
+    # Run the app once, now, through the same path the user's shell will
+    # take: the `current` symlink this script has just repointed. A first
+    # launch pages a few hundred megabytes off a cold disk and builds
+    # whatever per-user state the app keeps; doing it here means it
+    # happens while an installer is on screen saying so, instead of the
+    # first time somebody actually wants the program.
+    #
+    # Never fatal. The bundle is installed and its sha256 was checked
+    # before anything was moved into place, so a warm-up that fails on
+    # one machine is far more likely to be that machine — no terminal, a
+    # sandbox, a policy — than a broken release. Refusing to finish the
+    # install over it would take a working program away from a user who
+    # has one.
+    _warm_bin="$ARIZA_ROOT/current/bin/$APP_EXEC"
+    [ -x "$_warm_bin" ] || return 0
+
+    # The arguments come from the app's ariza.toml and are written out
+    # already quoted, once as the command line and once as the single
+    # word the message names.
+    _warm_what='--version'
+
+    ariza_log 'warming up -- the first launch does the work the rest never repeat'
+    if "$_warm_bin" '--version' >/dev/null 2>&1; then
+        ariza_ok 'ready'
+    else
+        ariza_warn "warm-up failed: $APP_EXEC $_warm_what did not complete"
+        ariza_warn "$APP_DISPLAY is installed and its download was verified -- try running it; the first launch may just take longer"
+    fi
+}
+
 ariza_report() {
     printf '\n'
     printf '    run it:        %s\n' "$APP_EXEC"
     printf '    installed in:  %s\n' "$ARIZA_VERSIONS/$ARIZA_VERSION"
-    printf '    uninstall:     curl -fsSL %s/uninstall.sh | sh\n' 'https://raw.githubusercontent.com/example-org/App-ExampleApp/main'
-    case ":${PATH:-}:" in
-        *":$ARIZA_BIN_DIR:"*) ;;
-        *) printf '\n    Open a new terminal first: %s was just added to your PATH.\n' "$ARIZA_BIN_DIR" ;;
-    esac
+    printf '    uninstall:     curl -fsSL %s/uninstall.sh | sh\n' 'https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD'
+    # Keyed on what ariza_persist_path found BEFORE it ran, never on
+    # $PATH here: persisting exports the directory into this script's
+    # own PATH, so checking now would always answer "present" and this
+    # message would never print for the one user who needs it. The
+    # default is the quiet arm, so a run that never persisted (--help,
+    # an early exit) stays quiet.
+    if [ "${ARIZA_PATH_WAS_PRESENT:-1}" -eq 0 ]; then
+        printf '\n    %s is now on your PATH for new terminals.\n' "$ARIZA_BIN_DIR"
+        printf '    To use %s in THIS one first, paste:\n' "$APP_EXEC"
+        printf '\n        export PATH="%s:$PATH"\n' "$ARIZA_BIN_DIR"
+    fi
 }
 
 main() {
@@ -528,13 +579,19 @@ main() {
         ariza_log "$APP_DISPLAY $ARIZA_VERSION for $_slug"
     fi
 
+    # Both arms end the same way: warm the install, then say the piece.
+    # Every path that reaches the parting message goes through the
+    # warm-up first, including the one where nothing was downloaded --
+    # a re-run is what somebody tries when the last one did not take.
     if [ -n "$ARIZA_VERSION" ] && ariza_check_existing "$ARIZA_VERSION"; then
+        ariza_warm
         ariza_report
         exit 0
     fi
 
     ariza_fetch_and_unpack "$ARIZA_SRC" "$_digest_src"
     ariza_install
+    ariza_warm
     ariza_report
 }
 

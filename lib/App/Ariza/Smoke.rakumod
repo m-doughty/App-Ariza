@@ -1,6 +1,7 @@
 use JSON::Fast;
 
 use App::Ariza::Native;
+use App::Ariza::Site;
 use App::Ariza::Tools;
 
 unit class App::Ariza::Smoke;
@@ -38,11 +39,24 @@ method base-env(--> Hash) {
     %env
 }
 
+#| The module repository inside an unpacked bundle, B<as that bundle
+#| records it> rather than as this ariza would place it.
+#|
+#| C<launcher.site> arrived when the app's repository moved into the
+#| runtime's own C<vendor> prefix — the only place a repository has a
+#| name, and so the only place warm bytecode survives being moved.
+#| Archives built before that keep their modules in C<< <root>/site >>,
+#| and smoking one of those has to keep working: an archive is checked
+#| on its own terms.
+method site-dir(IO() $root, %manifest --> IO::Path) {
+    $root.add(%manifest<launcher><site> // 'site')
+}
+
 #| The extra variables the launcher would have exported, for commands
 #| that run the bundled interpreter directly instead of going through it.
 method runtime-env(IO() $root, %manifest --> Hash) {
     my %env =
-        RAKULIB => 'inst#' ~ $root.add('site').absolute,
+        RAKULIB => 'inst#' ~ self.site-dir($root, %manifest).absolute,
         NOTCURSES_NATIVE_DATA_DIR => $root.add('native').absolute,
     ;
     with %manifest<components><sqlcipher><path> -> $rel {
@@ -235,7 +249,8 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
                             !! "missing {%manifest<launcher><target> // '(none recorded)'}",
     });
 
-    my $precomp = $root.add('site').add('precomp');
+    my $site    = self.site-dir($root, %manifest);
+    my $precomp = $site.add('precomp');
     my $files = $precomp.d ?? self!count-files($precomp) !! 0;
     @checks.push({
         name => 'precomp',
@@ -244,6 +259,27 @@ method !layout-checks(IO::Path $root, %manifest --> List) {
             ?? "$files precompiled artefacts ship with the bundle"
             !! 'the precompilation store is empty — first launch will compile everything',
     });
+
+    # Whether that store is worth anything anywhere but here. A unit
+    # whose dependencies are recorded as absolute paths is one Rakudo
+    # will throw away and recompile on the first machine that is not
+    # this one — and every other check in this file would still pass,
+    # including the commands below, because on the machine that built
+    # the bundle those paths are still there.
+    if $files {
+        my %deps = App::Ariza::Site.precomp-deps($site);
+        my @strays = %deps<strays>.list;
+        @checks.push({
+            name => 'precomp-relocatable',
+            ok => %deps<records> > 0 && !@strays,
+            detail => %deps<records> == 0
+                ?? "read no dependency records from $files artefacts"
+                !! @strays
+                    ?? "{+@strays} dependencies name a build-machine path,"
+                       ~ " starting with {@strays.head<src>}"
+                    !! "{%deps<records>} dependency records, all repository-relative",
+        });
+    }
 
     @checks.List
 }
@@ -300,7 +336,7 @@ method !command-checks(IO::Path $root, %manifest, Bool $verbose --> List) {
     my %vars =
         exec   => $root.add('bin').add($exec ~ ($win ?? '.cmd' !! '')).absolute,
         raku   => $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku').absolute,
-        site   => $root.add('site').absolute,
+        site   => self.site-dir($root, %manifest).absolute,
         native => $root.add('native').absolute,
         bundle => $root.absolute,
         tmp    => $tmp.absolute,
@@ -403,8 +439,9 @@ for %r<checks> -> %c {
 # ok   manifest: App::Moneymoor 0.2.0 for macos-arm64
 # ok   launcher: bin/moneymoor
 # ok   runtime: rakudo 2026.07-01
-# ok   target: site/bin/moneymoor.raku
+# ok   target: rakudo/share/perl6/vendor/bin/moneymoor.raku
 # ok   precomp: 395 precompiled artefacts ship with the bundle
+# ok   precomp-relocatable: 2938 dependency records, all repository-relative
 # ok   native-audit: 32 native binaries resolve inside the bundle
 # ok   smoke[0]: {exec} → exit 0: App::Moneymoor 0.2.0
 # ok   smoke[1]: {raku} → exit 0: ok: encrypted database created …
@@ -460,7 +497,8 @@ word is expanded against:
 
 =item1 C<{exec}> — the launcher
 =item1 C<{raku}> — the bundled interpreter
-=item1 C<{site}> — the module repository
+=item1 C<{site}> — the module repository, wherever the manifest says the
+bundle put it
 =item1 C<{native}> — the staged native libraries
 =item1 C<{bundle}> — the bundle root
 =item1 C<{tmp}> — a writable scratch directory beside the unpacked bundle
@@ -496,6 +534,16 @@ read is a bundle that cannot start, so the pair is checked together.
 =item1 B<precomp> — the precompilation store shipped warm. An empty one
 is not a crash, so nothing else would catch it; it just makes every
 launch slow, forever, on a read-only bundle.
+=item1 B<precomp-relocatable> — and that store is worth something
+somewhere else. Every dependency a compiled unit records has to name a
+I<repository> (C<vendor#sources/…>) rather than a I<place>
+(C</home/runner/work/…/sources/…>), because Rakudo resolves the first
+wherever the bundle now is and throws the unit away when it cannot find
+the second. This is the one check here that cannot be replaced by
+running the thing: on the machine that built the bundle those paths
+still exist, so a bundle that will recompile its whole closure for
+every user passes every other check in this list, including the smoke
+commands.
 =item1 B<native-audit> — L<App::Ariza::Native>'s audit, re-run over the
 B<unpacked> tree rather than the build directory, because that is the
 tree a user has.
@@ -529,6 +577,14 @@ C<{ name, ok, detail }>, and command checks also carry C<output>.
 =head2 base-env(--> Hash) / runtime-env(IO() $root, %manifest --> Hash)
 
 The replacement environment, and the launcher-equivalent additions.
+
+=head2 site-dir(IO() $root, %manifest --> IO::Path)
+
+The module repository inside an unpacked bundle, taken from the
+manifest's C<launcher.site> so that an archive is checked on its own
+terms — including one built before that repository moved into the
+runtime's C<vendor> prefix, which recorded nothing and kept its modules
+in C<< <root>/site >>.
 
 =head2 scratch-dir(:$work-dir --> IO::Path)
 

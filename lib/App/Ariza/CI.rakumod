@@ -17,8 +17,14 @@ my constant TEMPLATE-PREFIX = 'templates/ci';
 our constant ARIZA-FEZ = 'App::Ariza';
 our constant ARIZA-REPO-URL = 'https://github.com/m-doughty/App-Ariza.git';
 
-#| The tag shape the generated release workflow triggers on.
-our constant TAG-GLOB = 'v*';
+#| The tag shapes the generated release workflow triggers on. Two,
+#| because the two tools that create release tags disagree: humans (and
+#| most of GitHub) write `v0.3.0`, while mi6 — the release tool this
+#| scaffold's own audience uses — tags the bare version, `0.3.0`. The
+#| first real mi6 release of a scaffolded app produced a tag no
+#| workflow fired on; these are GitHub Actions filter globs (not
+#| regexes), so the bare shape is spelled `[0-9]*.[0-9]*.[0-9]*`.
+our constant TAG-GLOBS = ('v*', '[0-9]*.[0-9]*.[0-9]*');
 
 # One build lane per platform ariza can scaffold a job for:
 #
@@ -207,7 +213,7 @@ method context(
         rakudo_revision_int => $revision.Int,
         sqlcipher_version   => $versions.sqlcipher // '',
 
-        tag_glob    => TAG-GLOB,
+        tag_globs   => TAG-GLOBS,
         slugs       => @lanes.map(*.<slug>).List,
         job_names   => @lanes.map(*.<job>).List,
         floors      => @lanes.map({ %( slug => .<slug>, note => .<floor>.List ) }).List,

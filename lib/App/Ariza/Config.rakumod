@@ -11,6 +11,7 @@ has      $.bundle-platforms = ();
 has      $.bundle-native = ();
 has      $.bundle-smoke;
 has Str  $.installer-repo;
+has      $.installer-warm;
 has Str  $.ci-ariza-source;
 has Bool $.licensing-strict = False;
 has      $.licensing-app = {};
@@ -113,11 +114,51 @@ my sub parse-bundle($value, %attrs, @warnings) {
 # the one moment a user is least equipped to debug it.
 my constant REPO-SHAPE = / ^ <[\w.-]>+ '/' <[\w.-]>+ $ /;
 
+# The arguments the generated installers hand the freshly installed
+# launcher, once, so that whatever a first launch does is done while the
+# installer is still on screen saying so.
+#
+# `--version` because it is the one invocation every bundled app answers
+# and returns from — it is what `bundle.smoke` uses as its own canary —
+# and because a warm-up that does not exit is an installer that hangs.
+my constant WARM-DEFAULT = ('--version',);
+
+# `installer.warm` is one of:
+#
+#   (omitted) / true         --version
+#   "--check --quiet"        one command line, whitespace-split
+#   ["--check", "--quiet"]   the same, word for word
+#   false                    no warm-up step at all
+my constant WARM-SHAPE = 'a string, an array of strings, or false';
+
+my sub as-warm(Str:D $key, $value) {
+    return $value if $value ~~ Bool;
+    if $value ~~ Str {
+        # An empty string is not "the default" and it is not "off"; it is
+        # a launcher run with no arguments, which for a full-screen
+        # application never returns. Both intentions have a spelling, so
+        # say which one is meant rather than guessing.
+        die "ariza: $key is empty — use `false` to skip the warm-up, or"
+          ~ " arguments the app returns from"
+            unless $value.words;
+        return $value;
+    }
+    die-with-key($key, WARM-SHAPE) unless $value.defined && $value ~~ Positional;
+    die "ariza: $key is empty — use `false` to skip the warm-up, or"
+      ~ " arguments the app returns from"
+        unless $value.list;
+    for $value.list -> $word {
+        die-with-key($key, WARM-SHAPE) unless $word.defined && $word ~~ Str;
+    }
+    $value
+}
+
 my sub parse-installer($value, %attrs, @warnings) {
     my %obj = as-hash('installer', $value);
     for %obj.kv -> $key, $v {
         next if $key.starts-with('//');
         given $key {
+            when 'warm' { %attrs<installer-warm> = as-warm('installer.warm', $v); }
             when 'repo' {
                 my $repo = as-str('installer.repo', $v);
                 # A closed shape, like a platform slug: a typo here cannot
@@ -302,6 +343,26 @@ method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
     App::Ariza::Config.new(|%attrs, :$path, :warnings(@warnings.List));
 }
 
+#| The arguments a generated installer runs the newly installed launcher
+#| with, or the empty list when the app has turned the warm-up off.
+#|
+#| C<()> is unambiguous: an empty C<installer.warm> is rejected at load
+#| time precisely so that "no arguments" cannot be confused with "no
+#| warm-up" here — the first would launch the application itself, which
+#| is a full-screen program that never returns, inside an installer with
+#| no timeout.
+method warm-argv(--> List) {
+    return () if $!installer-warm ~~ Bool && !$!installer-warm;
+    return WARM-DEFAULT.List
+        if !$!installer-warm.defined || $!installer-warm ~~ Bool;
+    $!installer-warm ~~ Str
+        ?? $!installer-warm.words.List
+        !! $!installer-warm.list.map(*.Str).List
+}
+
+#| Whether the generated installers warm this app up at all.
+method warm-enabled(--> Bool) { so self.warm-argv }
+
 #| Every configured smoke command as raw (unexpanded) argv, in order.
 #|
 #| A string entry is split on whitespace; an array entry is taken word
@@ -410,6 +471,7 @@ smoke = "{exec} --version"   # command template run by ariza smoke
 
 [installer]
 repo = "m-doughty/App-Moneymoor"   # where the releases live
+warm = "--version"                 # run once at install time; false skips it
 
 [ci]
 ariza-source = "fez"         # how the scaffolded workflows install ariza
@@ -504,6 +566,37 @@ C<.git>, or a stray space is a hard error for the same reason an unknown
 platform slug is: the shape is closed, so a typo cannot be a future
 feature, and the resulting 404 lands on a stranger's machine rather than
 on the author's.
+
+=item1 C<warm> — the arguments the generated installers run the freshly
+installed launcher with, once, before they print the parting message.
+Defaults to C<--version>.
+
+Whatever a first launch has to do that later ones do not — paging a few
+hundred megabytes off a cold disk, building a per-user state directory,
+touching a keychain — is done there, while the installer is on screen
+saying so, rather than the first time the user actually wants the
+application.
+
+Four spellings:
+
+=begin code :lang<toml>
+
+[installer]
+warm = "--version"            # arguments, whitespace-split
+warm = ["--check", "--quiet"] # the same, word for word
+warm = true                   # the default arguments, said out loud
+warm = false                  # no warm-up step at all
+
+=end code
+
+An B<empty> string or array is an error rather than either of the two
+things it might mean. Running the launcher with no arguments starts the
+application, and a full-screen application does not return — the
+installers deliberately impose no timeout, so that spelling would be a
+hang. C<false> is how you say "skip it", and arguments the app returns
+from are how you say anything else.
+
+The warm-up B<never fails an install>. See L<App::Ariza::Installer>.
 
 =head3 Placeholders
 

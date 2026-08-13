@@ -2,6 +2,122 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.1.1  2026-08-13T01:14:07+01:00
+    - The POSIX installer's parting message actually tells the user
+      their current terminal cannot see the command yet, and gives
+      them the paste-able `export PATH=…` line that fixes it there and
+      then. The old message keyed on $PATH after ariza_persist_path
+      had already exported the directory into the installer's own
+      environment, so the tell-the-user branch was unreachable — the
+      first real install ended with a command the terminal could not
+      find and no explanation. The message now keys on what
+      persist-path found before it touched anything.
+    - Installer URLs and the generated release notes reference the
+      `HEAD` ref instead of a hardcoded `main` branch.
+      raw.githubusercontent resolves `HEAD` to the repository's default
+      branch whatever it is called; `main` was a 404 for every
+      `master`-defaulted repository — including the first app to ship
+      with these installers, whose documented `curl | sh` line failed
+      on its first real use. `:$branch` still overrides for anyone who
+      wants a pinned ref.
+    - The Windows installer smoke keeps Windows' mandatory ambient
+      environment (SystemRoot, windir, ComSpec, PATHEXT, SystemDrive)
+      when it builds its cleared-environment child. `env -i` has no
+      Windows analogue: launching any .cmd resolves the interpreter
+      through ComSpec, so the fully-stripped environment made the OS
+      itself malfunction — ERROR_MOD_NOT_FOUND before the launcher ran
+      a line — and failed the first published Windows installer smoke
+      against a perfectly good bundle. These variables belong to
+      Windows, not to the runner's toolchain, so keeping them does not
+      weaken the isolation.
+    - The Windows installer smoke also launches the installed
+      `<exec>.exe` when the bundle ships one — the entry point PATHEXT
+      actually hands a user who types the bare command was otherwise
+      never exercised post-install, and it fails independently of the
+      .cmd path (no cmd.exe, no ComSpec involved).
+    - The scaffolded release workflow triggers on bare version tags
+      (`[0-9]*.[0-9]*.[0-9]*`) as well as `v*`. mi6 — the release tool
+      this scaffold's own audience uses — tags `0.3.0`, not `v0.3.0`,
+      and the first real mi6 release of a scaffolded app pushed a tag
+      no workflow fired on. The publish job was already prefix-agnostic
+      (it gates on `refs/tags/` and names the release from the ref),
+      so only the trigger list needed to learn the second shape.
+    - A bundle's Raku code is installed into the bundled runtime's own
+      `vendor` repository — `<bundle>/rakudo/share/perl6/vendor` — and
+      no longer into `<bundle>/site`, which quietly cost every user a
+      full recompile of the closure on their first launch. Rakudo
+      records what a precompiled unit depends on relative to the
+      repository holding it (`vendor#sources/<id>`) for the four
+      repositories its registry has a *name* for — `core`, `vendor` and
+      `site` under the running interpreter's own prefix, `home` under
+      `$HOME` — and as an absolute path on the compiling machine for
+      every other one, including any directory named in `RAKULIB`. So a
+      bundle built in CI and unpacked under `~/.local/share` looked for
+      its own modules in the build agent's workspace, found nothing,
+      declared all 52 compiled units outdated and rebuilt the lot: 58
+      seconds on the first launch of the first bundle anyone installed,
+      against 1.8 seconds now, for a store that shipped complete and
+      correct. Nothing on the build machine could see it, because there
+      the paths still resolve.
+    - `ariza bundle` asks the bundled runtime what it calls that
+      repository before it warms a single module, and refuses to build
+      when the answer is nothing. It then reads the store's dependency
+      records back and fails on any that name a path instead of a
+      repository. Both checks exist because this failure is otherwise
+      invisible at build time and expensive exactly once per user: the
+      store is present, the right size, and worthless.
+    - `ariza smoke` gained a `precomp-relocatable` check that reads the
+      same records out of the unpacked archive. It is the one check in
+      that command which cannot be replaced by running the bundle:
+      smoke runs on the machine that built it, where a store bound to
+      the build tree still works perfectly.
+    - The manifest records `launcher.site`, the repository the launcher
+      points `RAKULIB` at, so anything inspecting a bundle afterwards
+      reads the answer out of the bundle rather than out of whichever
+      ariza happens to be installed. `ariza smoke` uses it, and falls
+      back to `site/` so that archives published before the move are
+      still checkable on their own terms.
+    - New `xt/05-relocation.rakutest`: builds a bundle of a two-module
+      fixture app, unpacks it somewhere else, deletes the build tree,
+      and fails if the relocated launcher recompiles anything —
+      RAKUDO_MODULE_DEBUG for Rakudo's own account of it, and the
+      store's file list for a second opinion. Deleting the build tree
+      is the step the whole suite was missing.
+    - The generated installers warm the app up before they say
+      goodbye: they run the launcher they just linked, once, with the
+      output suppressed and a line on screen saying so. Whatever a
+      first launch has to do that later ones do not — paging a few
+      hundred megabytes off a cold disk, building a per-user state
+      directory — now happens while an installer is visibly working
+      rather than the first time somebody wants the program. Every
+      path that reaches the parting message goes through it, including
+      the re-run that found the version already installed, which is
+      what people try when the last one did not take.
+    - `installer.warm` in ariza.toml says what to run: `--version` by
+      default (the one invocation every bundled app answers and
+      returns from, and already `bundle.smoke`'s canary), a string
+      split on whitespace, an array taken word for word, or `false` to
+      skip the step. An empty value is a load-time error rather than
+      either of the things it might mean: a launcher run with no
+      arguments starts the application, which does not return, and the
+      installers impose no timeout on purpose. Arguments are rendered
+      shell-quoted (and PowerShell-quoted, and splatted rather than
+      passed as one array-shaped argument), because this is the one
+      place where somebody else's string becomes script syntax.
+    - A warm-up that fails warns loudly and the install still
+      succeeds — no non-zero exit, no rollback. It deliberately
+      diverges from the fail-closed posture of `ariza bundle` and
+      `ariza smoke`, and the reason is the failure domain: those run
+      in our own pipeline before anything is published, where stopping
+      is cheap and correct, while this runs on a stranger's machine
+      after the bundle has been downloaded, checksummed and put in
+      place, where the same signal much more often means the machine
+      (no terminal, a sandbox, a scanner) than the release. Failing
+      there would delete a working program from somebody who has one.
+      The message says what did not complete, and that the app is
+      installed and worth running. The ruling and its reasoning are in
+      design.md §6.6.
+
 0.1.0  2026-08-12T22:34:02+01:00
     - The bootstrap-rung test captures the "no pinned runner build
       yet" notice instead of letting it reach the harness's stderr. A

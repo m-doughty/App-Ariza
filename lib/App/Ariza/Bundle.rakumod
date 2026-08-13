@@ -72,6 +72,20 @@ method build(
     rm-rf($work);
     ensure-dir($work);
 
+    # Every path from here on is the physical one, not the one that was
+    # typed. On macOS the obvious place to build — anything under
+    # $TMPDIR — lives beneath /var, which is a symlink to /private/var,
+    # and the bundled interpreter works out its own prefix from where
+    # its executable really is. Point RAKULIB at the same repository
+    # spelled the other way and Rakudo's registry compares the two
+    # prefixes as strings, finds no match, and has no *name* for the
+    # bundle's repository — which is precisely the condition under which
+    # it records precompilation dependencies as absolute paths and the
+    # user recompiles the whole closure. L<App::Ariza::Site> refuses to
+    # warm a nameless repository, so this would be a failed build rather
+    # than a bad bundle; resolving here means it is neither.
+    $work = $work.resolve;
+
     my %rakudo = App::Ariza::Rakudo.provision(
         :bundle-dir($work), :slug($platform), :$versions);
     note "ariza: runtime {%rakudo<tag>}"
@@ -98,7 +112,8 @@ method build(
 
     my %launchers = App::Ariza::Launcher.write(
         :bundle-dir($work), :$config, :slug($platform),
-        :target(%site<target-rel>), :app-version($version),
+        :target(%site<target-rel>), :site(%site<site-rel>),
+        :app-version($version),
         :sqlcipher-rel(%sqlcipher<rel> // Str));
     my @launchers = %launchers<written>.list;
 
@@ -160,6 +175,12 @@ method !manifest(
         launcher => {
             scripts => @launchers.map({ .relative($work).subst('\\', '/', :g) }).List,
             target  => %site<target-rel>,
+            # The repository the launcher points RAKULIB at. Recorded
+            # rather than assumed so that anything checking a bundle
+            # after the fact — `ariza smoke` above all — reads the
+            # answer out of the bundle instead of out of the version of
+            # ariza that happens to be installed.
+            site    => %site<site-rel>,
         },
         components => {
             rakudo => {
@@ -396,9 +417,11 @@ writes the three files that describe what was made.
 C<< <work>/rakudo >>. It goes first because everything after it runs
 I<under> that runtime.
 
-=item1 B<L<App::Ariza::Site>> installs the app and its closure into
-C<< <work>/site >> using the runtime's own C<zef>, stages notcurses into
-C<< <work>/native >> as a side effect, and warms the precompilation
+=item1 B<L<App::Ariza::Site>> installs the app and its closure into the
+runtime's own C<vendor> repository — C<< <work>/rakudo/share/perl6/vendor >>,
+which is the only kind of place a warm precompilation store survives
+being moved to another machine — using the runtime's own C<zef>, stages
+notcurses into C<< <work>/native >> as a side effect, and warms that
 store.
 
 =item1 B<L<App::Ariza::Native>> stages SQLCipher, then audits every
@@ -446,7 +469,7 @@ what you look inside when something is wrong.
 
 bin/moneymoor              the launcher, and the only thing a user runs
 rakudo/                    the interpreter (plus SQLCipher, on macOS)
-site/                      every Raku module, with warm bytecode
+  share/perl6/vendor/      every Raku module, with warm bytecode
 native/                    notcurses and friends
 VERSION                    one screen: app version and component pins
 ariza-manifest.json        the machine-readable version of the same

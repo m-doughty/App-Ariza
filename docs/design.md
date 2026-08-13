@@ -91,17 +91,32 @@ uncompiled, because the first process to `use` a module is what compiles
 it; so `build-site` loads every module the app distribution `provides`,
 under the bundled runtime, with the bundle's environment, and the
 transitive closure comes in as a side effect of loading what uses it.
-The store is content-addressed and position-independent, so warming it
-at build time and unpacking the archive somewhere else entirely —
-including a path with spaces — loads the same bytecode. That is
-verified, not assumed.
+The store is content-addressed, and every dependency in it is recorded
+relative to the repository that holds it, so warming it at build time
+and unpacking the archive somewhere else entirely — including a path
+with spaces — loads the same bytecode. That last property is why the
+app's repository is the bundled runtime's own `vendor` prefix,
+`<bundle>/rakudo/share/perl6/vendor`, and not a directory of ariza's
+choosing: Rakudo writes `vendor#sources/<id>` for a repository the
+registry has a *name* for — `core`, `vendor` and `site` under the
+running interpreter's prefix, `home` under `$HOME` — and an absolute
+build-machine path for any other, including one named only in
+`RAKULIB`. A store full of the second kind is thrown away wholesale by
+the first machine that is not the build machine, which is the bug the
+first published bundle shipped with: 52 modules recompiled, ~58
+seconds, on every user's first launch, invisible to every check that
+ran on the machine that built it. `build-site` now asks the bundled
+runtime what it calls the repository before warming anything, and reads
+the records back afterwards; `ariza smoke` reads them again in the
+unpacked archive.
 
 **The launcher** is the one file a user runs, and the only file in the
 bundle they are ever expected to touch. It finds its own bundle by
 resolving its own path through a `readlink` loop, not `readlink -f`,
 which is a GNU extension absent from macOS before Monterey and from the
 BSDs — a launcher that only resolves symlinks on Linux breaks the moment
-someone puts one in `~/bin`. It exports `RAKULIB=inst#<root>/site` and
+someone puts one in `~/bin`. It exports
+`RAKULIB=inst#<root>/rakudo/share/perl6/vendor` and
 unsets `PERL6LIB`, so the bundle's repository is the *only* one: a
 `RAKULIB` left in the user's environment would otherwise put modules
 compiled against a different Rakudo ahead of the bundle's. It exports
@@ -482,7 +497,58 @@ The default source is the latest release, read from the `location:`
 header of `https://github.com/<owner>/<repo>/releases/latest`: one HEAD
 request, no API token, no `jq`.
 
-### 6.6 Windows
+### 6.6 The install warms the app up, and a failed warm-up is not a failed install
+
+The last thing an install does before it says goodbye is run the thing
+it just installed, once: `<exec> --version` by default, or whatever
+`installer.warm` names, with its output suppressed and a line on screen
+saying what is happening. Whatever a first launch has to do that later
+ones do not — paging a few hundred megabytes off a cold disk, creating a
+per-user state directory, unlocking a keychain — is done there. A user
+who types the command for the first time expecting their application
+should get their application, not a progress-free pause of unknown
+length.
+
+Every path that reaches the parting message goes through it, including
+the re-run that found the version already installed. That re-run is what
+somebody tries when the last one did not take, and warming it again
+costs a second.
+
+**The ruling: a warm-up that fails warns loudly and the install
+succeeds.** No non-zero exit, no rollback, no "installation failed".
+
+This deliberately diverges from the fail-closed posture everywhere else
+in this tool. `ariza bundle` dies on a missing licence; `ariza smoke`
+fails on a stray library; the audit refuses a dependency it cannot
+resolve inside the bundle. The difference is the **failure domain**. All
+of those run in our own pipeline, on a machine we control, before
+anything is published: there, a failure is cheap, a false negative is
+expensive, and the correct response to "something is off" is to stop.
+The warm-up runs on a stranger's machine, after the bundle has been
+downloaded, checksummed and moved into place. There, the same signal
+means something quite different — no terminal, a sandbox, a policy, a
+scanner holding the file open, a machine with no display — and the
+program on disk is, on the evidence available, fine. Failing the install
+would delete a working program from somebody who has one, and would
+teach them that this installer is unreliable, on the strength of a
+diagnostic step.
+
+So the failure path says two things and stops: what did not complete,
+and that the app is installed and its download was verified, so run it
+— the first launch may just take longer. That is a true statement about
+a bundle in that state, which is the test any message printed on
+somebody else's machine has to pass.
+
+Two consequences follow. There is **no timeout** — a mechanism that
+would need one implies a warm command that might not return, and the
+right fix for that is the command, not a watchdog — which is why an
+empty `installer.warm` is a load-time error rather than "run the app
+with no arguments". And the default is `--version` rather than anything
+cleverer, because it is the one invocation every bundled application
+answers and returns from, and it is already the canary `bundle.smoke`
+uses.
+
+### 6.7 Windows
 
 The same shape in PowerShell: `%LOCALAPPDATA%\<Display>\versions\<version>`,
 a `current` **junction** rather than a symlink — which would need
@@ -856,10 +922,10 @@ The sidecar carries the target, the exec name and the display name, and
 then the environment as **ordered directives**:
 
 ```
-target site\bin\moneymoor.raku
+target rakudo\share\perl6\vendor\bin\moneymoor.raku
 app-exec moneymoor
 app-display Moneymoor
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
@@ -885,7 +951,8 @@ lines without a sidecar format break, a runner rebuild, or anything else
 changing.
 
 Two rules keep that generality honest. `#` only starts a comment in the
-first non-blank column, because `inst#{root}\site` is a real value and
+first non-blank column, because `inst#{root}\rakudo\share\perl6\vendor`
+is a real value and
 an inline-comment rule would truncate it into a `RAKULIB` that names a
 relative directory. And an unrecognised directive, or an unknown
 `{token}`, is a **hard error naming the line** rather than something
@@ -1013,8 +1080,8 @@ came from:
   to speak from: they arrive as compiled bytes inside archives with no
   manifest, so there is nothing in the bundle to interrogate.
 * **Each installed distribution's `META6.json`.** The `license` field,
-  from the bundle's own site repository *and* from the one inside the
-  vendored runtime — which is where `zef` lives, and `zef` is
+  from the repository the app was installed into *and* from the
+  runtime's own `site` — which is where `zef` lives, and `zef` is
   redistributed like anything else.
 * **The app's `ariza.toml`.** Its own row, and rows for what it ships
   that ariza cannot see.
@@ -1196,5 +1263,6 @@ Everything a bundle downloads is now traceable to something published.
 | 0.0.6 | 2026-08-12 | PE gets the same dependency walk ELF and Mach-O get. |
 | unreleased | 2026-08-12 | The redistributable gate: an MSVC-built dependency is a clean-machine failure, so the CI lane takes UCRT and the audit refuses the alternative. |
 | unreleased | 2026-08-12 | Windows launches from a compiled runner of ariza's own, pinned by digest; its sidecar carries ordered env directives, so a bundle's dependencies are the renderer's business and never the executable's. |
+| unreleased | 2026-08-13 | The install pays the first launch: the installers warm the app up under a visible line, and a warm-up that fails warns rather than failing an install that has already been verified. |
 | unreleased | 2026-08-12 | A bundle says what it redistributes, out of four sources it reads rather than a table it remembers; a Raku distribution with no licence fails the build, an unattributed native pack is a visible row and, on request, a failure. |
 | unreleased | 2026-08-12 | `NOASSERTION` is a declaration an app makes after looking, never a gap ariza fills: not from a distribution's own metadata, not about the app itself, and not at all under `licensing.strict`. |

@@ -11,8 +11,41 @@ unit class App::Ariza::Site;
 # ours) and is read back off disk rather than pinned here.
 my constant NOTCURSES-DIR = 'Notcurses-Native';
 
-#| The module repository a bundle's Raku code is installed into.
-method site-dir(IO() $bundle-dir --> IO::Path) { $bundle-dir.add('site') }
+#| The module repository a bundle's Raku code is installed into: the
+#| B<vendor> repository of the runtime the bundle carries.
+#|
+#| Not C<< <bundle>/site >>, which is where this used to be and which
+#| quietly cost every user a full recompile of the closure on first
+#| launch. Rakudo records each precompiled module's dependencies by
+#| I<repository-relative> path — C<< core#sources/<id> >> — but only
+#| for repositories the registry has a B<name> for, and it has exactly
+#| four: C<core>, C<vendor> and C<site> under the running interpreter's
+#| own prefix, and C<home> under C<$HOME>. A repository reached by
+#| C<RAKULIB=inst#/some/path> has no name, so its dependencies are
+#| recorded as B<absolute paths on the build machine>. Unpack that
+#| bundle anywhere else and Rakudo cannot find them, declares every
+#| compiled unit outdated, and recompiles the lot.
+#|
+#| C<< <bundle>/rakudo/share/perl6/vendor >> B<is> the bundled runtime's
+#| C<vendor> prefix, so the registry names it, the store records
+#| C<vendor#sources/…>, and the bytecode survives being moved. It is
+#| also in that interpreter's default chain, so it resolves even for a
+#| command that runs the bundled C<raku> without setting C<RAKULIB>.
+#|
+#| C<vendor> rather than C<site> because the runtime's own C<site> is
+#| where the C<zef> that came down with Rakudo lives: keeping the app's
+#| closure out of it means "what this bundle installed" and "what the
+#| runtime shipped with" stay two separate, separately reportable sets.
+method site-dir(IO() $bundle-dir --> IO::Path) {
+    $bundle-dir.add('rakudo').add('share').add('perl6').add('vendor')
+}
+
+#| C<site-dir> relative to the bundle root, with forward slashes: what
+#| the launcher templates and the manifest carry, since neither may
+#| contain a build-machine path.
+method site-rel(IO() $bundle-dir --> Str) {
+    self.site-dir($bundle-dir).relative($bundle-dir).subst('\\', '/', :g)
+}
 
 #| The directory native payloads are staged into, and the value
 #| C<NOTCURSES_NATIVE_DATA_DIR> takes both at build time and at run time.
@@ -110,6 +143,7 @@ method build-site(
         if @gaps;
 
     my $target = self.exec-target($site, :$config);
+    self!check-named-repo($raku, $site, %env);
     my @warmed = self!warm-precomp($raku, %app<provides>, %env, $verbose);
     self!check-precomp($site, +@warmed);
 
@@ -117,6 +151,7 @@ method build-site(
 
     {
         site          => $site,
+        site-rel      => self.site-rel($bundle-dir),
         native        => $native,
         dists         => @dists,
         app           => %app,
@@ -301,9 +336,113 @@ method !warm-precomp(IO::Path $raku, @modules, %env, Bool $verbose --> List) {
     @done.List
 }
 
+#| Ask the B<bundled> runtime what it calls the repository we are about
+#| to warm, and refuse to build a bundle if the answer is "nothing".
+#|
+#| This is the invariant the whole shipped precompilation store rests
+#| on. Rakudo writes each unit's dependencies as
+#| C<< <repo-name>#sources/<id> >> when the repository has a registered
+#| name, and as an B<absolute path> when it does not — and on the next
+#| machine an absolute path from this one does not exist, so every unit
+#| is declared outdated and the user recompiles the closure they were
+#| shipped precompiled. It is entirely silent: the store is there, it is
+#| the right size, and it is worthless.
+#|
+#| Asking the runtime beats asserting the path, because the answer
+#| depends on where I<that interpreter> thinks its own prefix is — which
+#| is the thing that has to agree, and which only it can say.
+method !check-named-repo(IO::Path $raku, IO::Path $site, %env) {
+    my $prog = q:to/RAKU/;
+        my $want = @*ARGS[0];
+        my $repo = $*REPO.repo-chain.first({
+            $_ ~~ CompUnit::Repository::Installation
+                && .prefix.defined
+                && .prefix.absolute eq $want
+        });
+        say 'ariza-repo-name ' ~ ($repo
+            ?? (CompUnit::RepositoryRegistry.name-for-repository($repo) // '')
+            !! '<not-in-chain>');
+        RAKU
+
+    my ($code, $out, $err) = try-run(
+        [$raku.absolute, '-e', $prog, $site.absolute], :%env);
+
+    my $name = ($out.lines.first(*.starts-with('ariza-repo-name ')) // '')
+        .substr('ariza-repo-name '.chars).trim;
+
+    die "ariza: could not ask the bundled runtime about $site (exit $code)"
+      ~ ($err.trim ?? ":\n" ~ $err.trim.lines.map({ "    $_" }).join("\n") !! '')
+        unless $code == 0 && $out.contains('ariza-repo-name ');
+
+    die "ariza: the bundled runtime does not have $site in its repository"
+      ~ " chain — the bundle's modules would not be found at all"
+        if $name eq '<not-in-chain>';
+
+    die "ariza: the bundled runtime has no name for $site, so every"
+      ~ " precompiled module in the bundle would record its dependencies"
+      ~ " by absolute build-machine path and be thrown away on the user's"
+      ~ " first launch. The repository has to be one of the runtime's own"
+      ~ " (core/vendor/site under {$raku.parent.parent}/share/perl6)."
+        unless $name;
+}
+
+#| What a precompilation store says its units depend on:
+#| C<< { records => Int, strays => List } >>.
+#|
+#| Every record is one dependency of one compiled unit, and names it in
+#| one of two ways. C<< <repo>#sources/<id> >> is a place I<in a
+#| repository>, resolved wherever that repository turns out to be, and
+#| is what a store has to hold to be shippable. An absolute path is a
+#| place I<on the machine that compiled it>, and is a unit that will be
+#| thrown away and recompiled the first time the bundle runs anywhere
+#| else. C<strays> is every record of the second kind, as
+#| C<< { unit, src } >> with C<unit> relative to C<$site-dir>.
+#|
+#| The file format is Rakudo's: two checksum lines, then one
+#| NUL-separated C<id/src/checksum/spec> record per line, then a short
+#| padding line and the bytecode. Reading stops at the padding line, so
+#| nothing here ever touches the binary tail — and the handle is opened
+#| C<latin-1> so that a byte which is not valid UTF-8 could not throw if
+#| it ever did.
+method precomp-deps(IO() $site-dir --> Hash) {
+    my $precomp = $site-dir.add('precomp');
+    my $records = 0;
+    my @strays;
+
+    for self!files-under($precomp) -> $unit {
+        # `.lock` is empty, `.repo-id` is one line, CACHEDIR.TAG is
+        # prose: none of them are units, and all of them are cheap to
+        # skip by name rather than by parsing.
+        next if $unit.extension eq 'lock' | 'repo-id';
+        next if $unit.basename eq 'CACHEDIR.TAG';
+
+        my $handle = $unit.open(:r, :enc<latin-1>);
+        LEAVE $handle.close if $handle;
+        $handle.get;    # checksum
+        $handle.get;    # source-checksum
+        while (my $line = $handle.get).defined && $line.chars > 8 {
+            my @parts = $line.split("\0");
+            next unless @parts >= 2;
+            my $src = @parts[1];
+            $records++;
+            @strays.push({ unit => $unit.relative($site-dir), :$src })
+                if $src.starts-with('/') || $src ~~ / ^ <[A..Za..z]> ':' <[\\/]> /;
+        }
+    }
+
+    %( records => $records, strays => @strays.List )
+}
+
 #| A precomp store that exists but is empty means the warm-up silently
 #| did nothing, which looks identical to success until a user's first
 #| launch takes a minute. One artefact per module warmed is the floor.
+#|
+#| A store full of artefacts that name the build machine is the same
+#| failure wearing a disguise — every check passes, the bundle is the
+#| right size, and the user recompiles the lot — so the records are read
+#| back and any absolute one is fatal. C<records == 0> is fatal too:
+#| that means nothing could be read, and a check that quietly stopped
+#| checking is worse than no check.
 method !check-precomp(IO::Path $site, Int $warmed) {
     my $precomp = $site.add('precomp');
     die "ariza: the bundle has no precompilation store at $precomp"
@@ -317,6 +456,20 @@ method !check-precomp(IO::Path $site, Int $warmed) {
         if @files < $warmed;
     die "ariza: the bundle's precompilation store is empty"
         unless $bytes > 0;
+
+    my %deps = self.precomp-deps($site);
+    die "ariza: could not read a single dependency record out of the"
+      ~ " {+@files} files in $precomp — Rakudo's precompilation format"
+      ~ " has changed and this check no longer checks anything"
+        unless %deps<records>;
+
+    my @strays = %deps<strays>.list;
+    die "ariza: {+@strays} precompiled dependencies in the bundle name a"
+      ~ " path on this machine instead of a repository, so the bundle"
+      ~ " would recompile itself on the user's first launch:\n"
+      ~ @strays.head(5).map({ "    {.<unit>} -> {.<src>}" }).join("\n")
+      ~ (@strays > 5 ?? "\n    … and {@strays - 5} more" !! '')
+        if @strays;
 }
 
 method !files-under(IO::Path $dir --> List) {
@@ -383,7 +536,8 @@ my %site = App::Ariza::Site.build-site(
     :raku(%rt<raku>),
 );
 
-say %site<target-rel>;      # site/bin/moneymoor.raku
+say %site<site-rel>;        # rakudo/share/perl6/vendor
+say %site<target-rel>;      # rakudo/share/perl6/vendor/bin/moneymoor.raku
 say %site<app-version>;     # 0.2.0
 say %site<notcurses-tag>;   # binaries-notcurses-3.0.17-r9
 say +%site<dists>;          # 8
@@ -394,8 +548,53 @@ say +%site<warmed>;         # 50
 =head1 DESCRIPTION
 
 The bundle's Raku code lives in one C<CompUnit::Repository::Installation>
-at C<< <bundle>/site >>, and nothing else — no user repository, no
-system repository, no C<~/.raku>. This module fills it.
+— C<< <bundle>/rakudo/share/perl6/vendor >>, the B<vendor> repository of
+the runtime the bundle carries — and nothing else: no user repository,
+no system repository, no C<~/.raku>. This module fills it.
+
+=head2 Why the app goes in the runtime's vendor repository
+
+Because a repository Rakudo has no B<name> for cannot ship warm
+bytecode.
+
+Rakudo records what each precompiled unit depends on. For a repository
+the registry knows by name it records
+C<< <name>#sources/<id> >> — C<core#sources/…>, C<vendor#sources/…> —
+which is resolved against wherever that repository turns out to be. For
+any other repository it records the B<absolute path of the source file
+on the machine that compiled it>.
+
+The registry knows exactly four names: C<core>, C<vendor> and C<site>
+under the running interpreter's own prefix, and C<home> under C<$HOME>.
+A repository reached through C<RAKULIB=inst#/some/path> — which is what
+C<< <bundle>/site >> was — gets none of them.
+
+So a bundle built at C</__w/App-Moneymoor/dist-out/…> and installed at
+C<~/.local/share/moneymoor/versions/0.3.0> would, on its first launch,
+look for its own modules where the build machine had kept them, find
+nothing, declare all 52 compiled units outdated and recompile the entire
+closure: B<58 seconds on a warm laptop>, for a store that shipped
+complete and correct. Every later launch was fast, so it looked like a
+one-off cost of installing rather than the bug it was.
+
+C<< <bundle>/rakudo/share/perl6/vendor >> B<is> the bundled runtime's
+own C<vendor> prefix. The registry names it, the store records
+C<vendor#sources/…>, and the bytecode survives being moved — the same
+mechanism that lets the C<zef> inside the runtime's C<site> repository
+run from a bundle unpacked anywhere. It is also in that interpreter's
+default chain, so it resolves even for a command that runs the bundled
+C<raku> directly and never sets C<RAKULIB>.
+
+C<vendor> and not C<site> because the runtime's C<site> is where that
+C<zef> lives: keeping the app's closure out of it means "what this
+bundle installed" and "what the runtime shipped with" stay two
+separate, separately reportable sets — which is what
+L<App::Ariza::Licensing> walks and what the manifest lists.
+
+C<build-site> asks the bundled runtime what it calls the repository
+before warming a single module, and refuses to build if the answer is
+nothing. The failure this prevents is invisible on the machine that
+builds it: the store is present, the right size, and worthless.
 
 =head2 The install has to run under the bundled runtime
 
@@ -449,10 +648,13 @@ under the bundled runtime, with the bundle's environment. That pulls the
 transitive closure (Selkie, DBIish, Notcurses::Native…) into the store
 as a side effect of loading what actually uses it.
 
-The store is content-addressed and position-independent: warming it at
-build time and unpacking the bundle somewhere else entirely — including
-a path with spaces — loads the same bytecode. That is verified, not
-assumed.
+The store is content-addressed, and — because the repository it belongs
+to is one the runtime has a name for (above) — every dependency in it is
+recorded relative to that repository. So warming it at build time and
+unpacking the bundle somewhere else entirely, including a path with
+spaces, loads the same bytecode. That is verified rather than assumed:
+C<xt/05-relocation.rakutest> builds a bundle, unpacks it at a second
+path, deletes the first, and fails on a single recompilation.
 
 Loading happens in a child that reports each module as it finishes, so a
 module that takes the process down rather than throwing something
@@ -471,6 +673,10 @@ the app's own C<META6.json> as installed).
 distribution. A gap means zef satisfied something from a repository
 outside the bundle: the classic bundle that runs only on the machine
 that built it.
+
+=item1 The bundled runtime has a B<name> for the repository, so the
+warm store it is about to be handed will still be valid on somebody
+else's machine.
 
 =item1 Every module the app provides loads.
 
@@ -502,8 +708,8 @@ without terminfo is a blank screen.
 
 =head2 build-site(:$bundle-dir!, :$app-source!, :$config!, :$zef!, :$raku!, :$attempts, :$verbose --> Hash)
 
-Install, warm, check. Returns C<site>, C<native>, C<dists>, C<app>,
-C<app-version>, C<target>, C<target-rel>, C<notcurses-tag>,
+Install, warm, check. Returns C<site>, C<site-rel>, C<native>, C<dists>,
+C<app>, C<app-version>, C<target>, C<target-rel>, C<notcurses-tag>,
 C<notcurses-lib> and C<warmed>.
 
 C<:$attempts> (default 2) retries the C<zef> run, but B<only> when the
@@ -515,7 +721,11 @@ only the failed leg. A compile error is not retried.
 =head2 The launcher's target
 
 C<target-rel> is the path, relative to the bundle root, that the
-launcher hands to the bundled C<raku>: C<site/bin/E<lt>execE<gt>.raku>.
+launcher hands to the bundled C<raku>:
+C<rakudo/share/perl6/vendor/bin/E<lt>execE<gt>.raku>. C<site-rel> is the
+repository it lives in, C<rakudo/share/perl6/vendor>, which is what the
+launcher puts in C<RAKULIB>. Both are relative because nothing a bundle
+ships may name the machine that built it.
 
 zef installs two files per C<bin/> script — a C<sh> (or C<.bat>) wrapper
 named after the executable, and a C<E<lt>nameE<gt>.raku> stub calling
@@ -560,19 +770,23 @@ bundle> rather than what the app asked for.
 =head2 dists-in(IO() $site-dir --> List)
 
 The same, for any installation repository directory. A bundle has two:
-its own C<site>, and the one inside the vendored runtime — which is
-where the C<zef> that came down with Rakudo lives, and which is
-therefore redistributed like everything else.
-L<App::Ariza::Licensing> walks both.
+the runtime's C<vendor> repository, which is the app and its closure,
+and the runtime's C<site> repository, where the C<zef> that came down
+with Rakudo lives — and which is therefore redistributed like everything
+else. L<App::Ariza::Licensing> walks both.
 
 C<license> and C<authors> come straight out of each distribution's
 metadata and are undefined where it declares none. What an absent
 licence field I<means> is decided in one place, and it is not this one.
 
-=head2 child-env(IO() $bundle-dir --> Hash) / site-dir / native-dir
+=head2 child-env(IO() $bundle-dir --> Hash) / site-dir / site-rel / native-dir
 
 The environment a bundled-runtime child needs, and the two directories
-it names.
+it names: C<< <bundle>/rakudo/share/perl6/vendor >> for modules (see
+above for why it is that and not C<< <bundle>/site >>) and
+C<< <bundle>/native >> for native payloads. C<site-rel> is the first of
+those relative to the bundle root, with forward slashes, for the
+launcher templates and the manifest.
 
 =head1 SEE ALSO
 

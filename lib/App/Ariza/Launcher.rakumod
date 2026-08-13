@@ -3,6 +3,7 @@ use Template::Jinja2;
 use App::Ariza::Config;
 use App::Ariza::Resources;
 use App::Ariza::Runner;
+use App::Ariza::Site;
 use App::Ariza::Tools;
 
 unit class App::Ariza::Launcher;
@@ -48,10 +49,16 @@ method scripts-for(Str:D $slug --> List) {
 #| the launcher works out its own root at run time, and an absolute path
 #| baked in at build time is precisely the thing that makes an archive
 #| unmovable.
+#|
+#| C<:$site> is the module repository C<RAKULIB> is pointed at, and it
+#| defaults to L<App::Ariza::Site>'s answer rather than to a literal:
+#| a launcher that names a different directory than the one the bundle
+#| was installed into is a bundle that finds no modules at all.
 method context(
     App::Ariza::Config:D :$config!,
     Str:D :$slug!,
     Str:D :$target!,
+    Str:D :$site = App::Ariza::Site.site-rel('.'),
     Str :$app-version = '',
     Str :$sqlcipher-rel,
     --> Hash
@@ -69,6 +76,8 @@ method context(
         os          => $family,
         target      => $target,
         target_win  => $target.subst('/', '\\', :g),
+        site        => $site,
+        site_win    => $site.subst('/', '\\', :g),
         sqlcipher   => $sqlcipher-rel.defined,
         sqlcipher_lib     => $sqlcipher-rel // '',
         sqlcipher_dir     => $sql-dir // '',
@@ -107,12 +116,13 @@ method write(
     App::Ariza::Config:D :$config!,
     Str:D :$slug!,
     Str:D :$target!,
+    Str:D :$site = App::Ariza::Site.site-rel($bundle-dir),
     Str :$app-version = '',
     Str :$sqlcipher-rel,
     :&stage-runner = -> |c { App::Ariza::Runner.stage(|c) },
     --> Hash
 ) {
-    my %ctx = self.context(:$config, :$slug, :$target, :$app-version,
+    my %ctx = self.context(:$config, :$slug, :$target, :$site, :$app-version,
                            :$sqlcipher-rel);
     my $bin = ensure-dir($bundle-dir.add('bin'));
 
@@ -150,7 +160,8 @@ my %w = App::Ariza::Launcher.write(
     :bundle-dir($work),
     :config($cfg),
     :slug<macos-arm64>,
-    :target<site/bin/moneymoor.raku>,
+    :target<rakudo/share/perl6/vendor/bin/moneymoor.raku>,
+    :site<rakudo/share/perl6/vendor>,
     :app-version<0.2.0>,
     :sqlcipher-rel<rakudo/lib/libsqlcipher.0.dylib>,
 );
@@ -161,7 +172,7 @@ say %w<runner>;             # {} — macOS stages no executable
 say App::Ariza::Launcher.render(
     :template<launcher-posix.sh.j2>,
     |App::Ariza::Launcher.context(:$cfg, :slug<linux-x86_64-glibc>,
-                                  :target<site/bin/moneymoor.raku>),
+                                  :target<rakudo/share/perl6/vendor/bin/moneymoor.raku>),
 );
 
 =end code
@@ -181,10 +192,13 @@ the directory above it as the bundle root.
 =item1 Refuses, with a readable message, if the interpreter is not where
 it should be — the signature of a half-unpacked archive.
 
-=item1 Exports C<RAKULIB=inst#E<lt>rootE<gt>/site> and unsets
-C<PERL6LIB>, so the bundle's repository is the I<only> one. A C<RAKULIB>
-left in the user's environment would otherwise put modules compiled
-against a different Rakudo ahead of the bundle's.
+=item1 Exports C<RAKULIB=inst#E<lt>rootE<gt>/rakudo/share/perl6/vendor>
+and unsets C<PERL6LIB>, so the bundle's repository is the I<only> one. A
+C<RAKULIB> left in the user's environment would otherwise put modules
+compiled against a different Rakudo ahead of the bundle's. That path is
+the bundled runtime's own C<vendor> prefix, and not a directory of
+ariza's choosing, because it is the only kind Rakudo has a I<name> for —
+see L<App::Ariza::Site> for what a nameless one costs the user.
 
 =item1 Exports C<NOTCURSES_NATIVE_DATA_DIR=E<lt>rootE<gt>/native>, which
 is both where L<App::Ariza::Site> staged the notcurses libraries and
@@ -249,10 +263,10 @@ B<ordered directives>:
 
 =begin code :lang<text>
 
-target site\bin\moneymoor.raku
+target rakudo\share\perl6\vendor\bin\moneymoor.raku
 app-exec moneymoor
 app-display Moneymoor
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher

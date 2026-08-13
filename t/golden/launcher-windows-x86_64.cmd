@@ -18,8 +18,10 @@ if not exist "%ARIZA_RAKU%" (
     exit /b 1
 )
 
-rem The bundle is the only module repository.
-set "RAKULIB=inst#%BUNDLE_ROOT%\site"
+rem The bundle is the only module repository -- the bundled runtime's own
+rem vendor repository, which is what makes the shipped bytecode usable
+rem from here rather than only where it was built.
+set "RAKULIB=inst#%BUNDLE_ROOT%\rakudo\share\perl6\vendor"
 set "PERL6LIB="
 set "NOTCURSES_NATIVE_DATA_DIR=%BUNDLE_ROOT%\native"
 set "PATH=%BUNDLE_ROOT%\native\sqlcipher;%PATH%"
@@ -32,5 +34,5 @@ if not exist "%ARIZA_STATE_DIR%\.first-run" (
     if exist "%ARIZA_STATE_DIR%" type nul >"%ARIZA_STATE_DIR%\.first-run" 2>nul
 )
 
-"%ARIZA_RAKU%" "%BUNDLE_ROOT%\site\bin\exampleapp.raku" %*
+"%ARIZA_RAKU%" "%BUNDLE_ROOT%\rakudo\share\perl6\vendor\bin\exampleapp.raku" %*
 exit /b %ERRORLEVEL%

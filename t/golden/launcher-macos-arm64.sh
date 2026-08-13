@@ -51,7 +51,12 @@ fi
 # The bundle is the only module repository. A RAKULIB or PERL6LIB left in
 # the user's environment would otherwise put their own Raku modules —
 # compiled against a different Rakudo — ahead of ours.
-RAKULIB="inst#$BUNDLE_ROOT/site"
+#
+# It is the bundled runtime's own vendor repository, which is what makes
+# the shipped bytecode usable here: Rakudo records a precompiled module's
+# dependencies relative to the repository only when it has a name for it,
+# and a path of our own choosing would not have one.
+RAKULIB="inst#$BUNDLE_ROOT/rakudo/share/perl6/vendor"
 export RAKULIB
 unset PERL6LIB || :
 
@@ -83,4 +88,4 @@ case "${TERM:-}" in
         ;;
 esac
 
-exec "$ARIZA_RAKU" "$BUNDLE_ROOT/site/bin/exampleapp.raku" "$@"
+exec "$ARIZA_RAKU" "$BUNDLE_ROOT/rakudo/share/perl6/vendor/bin/exampleapp.raku" "$@"

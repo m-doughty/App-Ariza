@@ -202,8 +202,9 @@ subtest 'release.yml is a workflow GitHub will accept', {
     ok $RELEASE.contains("  workflow_dispatch:\n"),
         'a dispatch trigger, so a lane can be iterated without a tag';
     ok $RELEASE.contains("      ref:\n"), 'with a ref input to iterate on';
-    ok $RELEASE.contains("  push:\n    tags:\n      - 'v*'\n"),
-        'and a tag trigger, which is the one that publishes';
+    ok $RELEASE.contains("  push:\n    tags:\n      - 'v*'\n      - '[0-9]*.[0-9]*.[0-9]*'\n"),
+        'and tag triggers for both shapes a release tag arrives in '
+        ~ '(v-prefixed by hand, bare by mi6), which are the ones that publish';
 
     ok $RELEASE.contains("\npermissions:\n  contents: write\n"),
         'it may write releases, and nothing else';

@@ -4,7 +4,7 @@ use Test;
 use App::Ariza::Config;
 use App::Ariza::Resources;
 
-plan 12;
+plan 13;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
@@ -316,6 +316,47 @@ subtest 'the [installer] table', {
         $head ~ "repo = \"o/n\"\nchannel = \"nightly\"\n"));
     ok $future.warnings.first(/"'installer.channel'"/),
         'while an unknown key in the table only warns';
+};
+
+subtest 'installer.warm: what the installers run once, or nothing', {
+    plan 9;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
+
+    sub warm-of(Str $tail --> List) {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ $tail)).warm-argv
+    }
+
+    is warm-of(''), ('--version',),
+        'an app that says nothing gets --version: the one invocation every'
+      ~ ' bundled app answers, and returns from';
+    is warm-of("warm = true\n"), ('--version',),
+        'and so does one that asks for the default out loud';
+    is warm-of("warm = \"--check --quiet\"\n"), ('--check', '--quiet'),
+        'a string is a command line, split on whitespace';
+    is warm-of(qq{warm = ["--path", "with space"]\n}), ('--path', 'with space'),
+        'an array is taken word for word, which is how an argument keeps its space';
+
+    is warm-of("warm = false\n"), (),
+        'false is no warm-up at all';
+    nok App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = false\n"))
+        .warm-enabled, 'which warm-enabled says in one word';
+    ok App::Ariza::Config.load-file(write-config($dir, MINIMAL)).warm-enabled,
+        'while an app with no [installer] table at all still gets warmed';
+
+    # Neither "the default" nor "off": running the launcher with no
+    # arguments starts the application, and a full-screen application
+    # does not return. Both intentions have a spelling; this is not one.
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = \"\"\n"))
+    }, Exception, message => /'installer.warm is empty' .* 'false'/,
+        'an empty string is refused, and told which spelling was meant';
+
+    throws-like {
+        App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = [1, 2]\n"))
+    }, Exception, message => /'installer.warm must be'/,
+        'and a wrong type dies naming the dotted path, as everywhere else';
 };
 
 subtest 'missing files and missing required keys', {

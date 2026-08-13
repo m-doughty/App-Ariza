@@ -152,13 +152,22 @@ subtest 'the installers render for the app under test', {
 };
 
 subtest 'installing from a local file', {
-    plan 8;
+    plan 10;
 
     my ($code, $out, $err) = install('--url', $ARCHIVE);
     is $code, 0, 'install.sh --url <file> exits 0' or diag $err ~ $out;
     ok $out.contains('sha256 verified'),
         'the sibling .sha256 was found and checked';
     ok $out.contains("$VERSION installed"), 'and it says what it installed';
+
+    # The warm-up runs for real here, against a real bundle: this is the
+    # only place in the suite where the installed launcher is started by
+    # the installer rather than by a test.
+    ok $out.contains('warming up'),
+        'the install warms the app up rather than leaving it to the user';
+    ok $out.contains('ready'),
+        'and the warm-up succeeded, which for a bundle that installed'
+      ~ ' cleanly it should';
 
     is-deeply versions-installed, ($VERSION,), "versions/$VERSION exists";
     ok $DATA.add('current').l, 'current is a symlink, not a copy';

@@ -211,13 +211,14 @@ ok   unpack         extracted to moneymoor-0.2.0-macos-arm64
 ok   manifest       App::Moneymoor 0.2.0, 8 distributions for macos-arm64
 ok   launcher       bin/moneymoor
 ok   runtime        rakudo 2026.07-01
-ok   target         site/bin/moneymoor.raku
-ok   precomp        398 precompiled artefacts ship with the bundle
+ok   target         rakudo/share/perl6/vendor/bin/moneymoor.raku
+ok   precomp        417 precompiled artefacts ship with the bundle
+ok   precomp-relocatable 2938 dependency records, all repository-relative
 ok   native-audit   26 native binaries resolve inside the bundle
 ok   smoke[0]       {exec} → exit 0: App::Moneymoor 0.2.0
 ok   smoke[1]       {raku} → exit 0: ok: encrypted database created, written and reopened
 
-ariza: 9 checks passed
+ariza: 10 checks passed
 
 =end code
 
@@ -316,7 +317,7 @@ Usage. C<ariza --help> and C<ariza -h> do the same.
 moneymoor-0.2.0-macos-arm64/
   bin/moneymoor            the launcher, and the only thing a user runs
   rakudo/                  the interpreter (plus SQLCipher, on macOS)
-  site/                    every Raku module, with warm bytecode
+    share/perl6/vendor/    every Raku module, with warm bytecode
   native/                  notcurses and friends
   VERSION                  app version and component pins, one screen
   ariza-manifest.json      the same, machine-readable, plus every sha256
@@ -356,13 +357,26 @@ with C<< <exec>.cmd >> and C<< <exec>.ps1 >> shipped beside it.
 pinned by C<[rakudo]> in C<versions.toml>. On macOS the staged SQLCipher
 lives in C<rakudo/lib>, which is already on the loader's path.
 
-=item1 B<C<site/>> — one
+=item1 B<C<rakudo/share/perl6/vendor/>> — one
 C<CompUnit::Repository::Installation> holding the app and its whole
 closure, installed by the B<bundled> C<zef> so the bytecode matches the
 runtime that ships. Its precompilation store is warmed at build time:
-cold, a first launch spends about 55 seconds compiling, and does it
-again on every launch if the bundle lives somewhere unwritable, which
-for a downloaded archive is normal.
+cold, a first launch spends about a minute compiling, and does it again
+on every launch if the bundle lives somewhere unwritable, which for a
+downloaded archive is normal.
+
+The location is not decorative. Rakudo records what a compiled module
+depends on relative to its repository — C<< vendor#sources/<id> >> —
+but only for the four repositories the registry has a B<name> for:
+C<core>, C<vendor> and C<site> under the running interpreter's own
+prefix, and C<home> under C<$HOME>. Put the app anywhere else, name it
+in C<RAKULIB>, and the dependencies are recorded as absolute paths on
+the machine that built it — so the first user to unpack the bundle
+somewhere else gets every one of those units declared outdated and
+recompiles the entire closure, once, silently. The runtime's own
+C<vendor> prefix is a repository that I<has> a name, which is what makes
+the shipped bytecode usable anywhere. C<ariza smoke> checks the records
+rather than trusting them.
 
 =item1 B<C<native/>> — the staged native libraries. Everything in here
 has been through the audit: every Mach-O, ELF or PE in the bundle must
@@ -424,10 +438,10 @@ What it reads is C<< bin/<exec>.ariza >>, a plain UTF-8 file beside it:
 
 =begin code :lang<text>
 
-target site\bin\moneymoor.raku
+target rakudo\share\perl6\vendor\bin\moneymoor.raku
 app-exec moneymoor
 app-display Moneymoor
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
@@ -494,6 +508,7 @@ smoke     = "{exec} --version"     # command(s) `ariza smoke` runs
 
 [installer]
 repo = "m-doughty/App-Moneymoor"   # owner/name the releases live under
+warm = "--version"                 # run once at install time; false skips it
 
 [ci]
 ariza-source = "fez"               # how the workflows install ariza itself
@@ -537,6 +552,17 @@ nowhere has no repository to name — and required by C<ariza installers>,
 which says so rather than rendering a script that 404s. Its shape is
 closed: a full URL or a bare name is an error, not a warning.
 
+=item1 B<C<installer.warm>> is what the generated installers run the
+freshly installed launcher with, once, before they print the parting
+message. It defaults to C<--version> — the same canary C<bundle.smoke>
+uses, chosen because it is the one invocation every bundled app answers
+and B<returns from>. C<false> skips the step; a string is a command line
+split on whitespace; an array is taken word for word. An B<empty> value
+is an error rather than either of the things it might mean: a launcher
+run with no arguments starts the application, which does not return, and
+the installers impose no timeout on purpose. See B<The generated
+installers>, below, for what happens when it fails.
+
 =item1 B<C<ci.ariza-source>> is read only by C<ariza scaffold-ci>, and
 says where the generated workflows install ariza from: C<"fez"> (the
 default) or anything C<zef install> accepts, such as a repository URL
@@ -576,7 +602,8 @@ Each argv word is expanded against the unpacked bundle:
 
 =item1 C<{exec}> — the launcher, C<< bin/<exec> >>.
 =item1 C<{raku}> — the bundled interpreter.
-=item1 C<{site}> — the module repository.
+=item1 C<{site}> — the module repository, wherever the manifest says
+the bundle put it.
 =item1 C<{native}> — the staged native libraries.
 =item1 C<{bundle}> — the bundle root.
 =item1 C<{tmp}> — a writable scratch directory beside the unpacked
@@ -763,9 +790,9 @@ Rakudo pin to a release whose MoarVM vendors one more library is a row
 here rather than a patch.
 
 =item1 B<Each installed distribution's C<META6.json>.> The C<license>
-field, read out of the bundle's own site repository B<and> the one
-inside the vendored runtime — which is where the C<zef> that came down
-with Rakudo lives, and which is redistributed like everything else.
+field, read out of the repository the app was installed into B<and> the
+runtime's own C<site> — which is where the C<zef> that came down with
+Rakudo lives, and which is redistributed like everything else.
 
 =item1 B<The app's C<ariza.toml>.> Its own row, and rows for whatever it
 ships that ariza cannot see: a font, a dataset, artwork, a vendored
@@ -912,12 +939,14 @@ user runs is one line:
 
 =begin code :lang<console>
 
-$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/HEAD/install.sh | sh
 ==> Moneymoor 0.2.0 for macos-arm64
 ==> downloading https://github.com/…/moneymoor-0.2.0-macos-arm64.tar.gz
 ok  sha256 verified
 ok  added /home/you/.local/bin to PATH in /home/you/.zshrc
 ok  Moneymoor 0.2.0 installed
+==> warming up -- the first launch does the work the rest never repeat
+ok  ready
 
     run it:        moneymoor
     installed in:  /home/you/.local/share/moneymoor/versions/0.2.0
@@ -947,6 +976,23 @@ cannot damage a working install.
 already>, through one marked block in each shell rc file that exists.
 Re-running never duplicates it; the uninstaller removes exactly that
 block and nothing else.
+
+=item1 B<Warms the install up>: runs the launcher once, with
+C<installer.warm>'s arguments (C<--version> by default), so that
+whatever a first launch has to do — paging a few hundred megabytes off a
+cold disk, creating a per-user state directory — happens here, while a
+line on screen says that is what is happening, rather than the first
+time somebody actually wants the program. Every path that reaches the
+parting message goes through it, including a re-run that found the
+version already installed.
+
+A warm-up that fails B<warns and finishes>; it never fails the install
+and never changes the exit code. By the time it runs, the bundle has
+been downloaded, checksummed and put in place, so a warm-up that fails
+on one machine is far likelier to be that machine — no terminal, a
+sandbox, an over-eager scanner — than a bad release, and refusing to
+finish would take a working program away from somebody who has one. The
+message says what failed and that the app is installed and worth trying.
 
 =item1 Keeps one previous version to roll back to, prunes anything
 older, and says which.
@@ -1109,8 +1155,8 @@ C<ariza/runner>. Defaults to C<~/.cache>.
 
 Set by the bundle's launcher, for the app it starts:
 
-=item1 B<C<RAKULIB>> — C<< inst#<root>/site >>, the bundle's repository
-and the only one. C<PERL6LIB> is unset.
+=item1 B<C<RAKULIB>> — C<< inst#<root>/rakudo/share/perl6/vendor >>, the
+bundle's repository and the only one. C<PERL6LIB> is unset.
 =item1 B<C<NOTCURSES_NATIVE_DATA_DIR>> — C<< <root>/native >>, where
 Notcurses::Native finds its libraries and its terminfo.
 =item1 B<C<LD_LIBRARY_PATH>> — Linux only: the bundle's SQLCipher

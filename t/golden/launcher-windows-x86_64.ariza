@@ -27,10 +27,10 @@
 # knows how to apply these three directives and nothing whatever about
 # what the variables mean, so a bundle that carries a new native library
 # needs a new line here and not a new executable.
-target site\bin\exampleapp.raku
+target rakudo\share\perl6\vendor\bin\exampleapp.raku
 app-exec exampleapp
 app-display Example App
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher

@@ -18,6 +18,10 @@
 #      install.
 #   4. Links ~/.local/bin/{{ app_exec }}, and puts that directory on PATH
 #      only if it is not on it already.
+{%- if warm %}
+#   5. Runs it once, so that whatever the first launch has to do is done
+#      here rather than the first time you want the program.
+{%- endif %}
 #
 # Nothing is compiled, nothing needs root, and nothing outside
 # ${XDG_DATA_HOME:-~/.local/share}/{{ app_exec }} and ~/.local/bin is
@@ -350,15 +354,56 @@ ariza_install() {
     ariza_ok "$APP_DISPLAY $ARIZA_VERSION installed"
 }
 
+{%- if warm %}
+
+ariza_warm() {
+    # Run the app once, now, through the same path the user's shell will
+    # take: the `current` symlink this script has just repointed. A first
+    # launch pages a few hundred megabytes off a cold disk and builds
+    # whatever per-user state the app keeps; doing it here means it
+    # happens while an installer is on screen saying so, instead of the
+    # first time somebody actually wants the program.
+    #
+    # Never fatal. The bundle is installed and its sha256 was checked
+    # before anything was moved into place, so a warm-up that fails on
+    # one machine is far more likely to be that machine — no terminal, a
+    # sandbox, a policy — than a broken release. Refusing to finish the
+    # install over it would take a working program away from a user who
+    # has one.
+    _warm_bin="$ARIZA_ROOT/current/bin/$APP_EXEC"
+    [ -x "$_warm_bin" ] || return 0
+
+    # The arguments come from the app's ariza.toml and are written out
+    # already quoted, once as the command line and once as the single
+    # word the message names.
+    _warm_what={{ warm_display }}
+
+    ariza_log 'warming up -- the first launch does the work the rest never repeat'
+    if "$_warm_bin" {{ warm_args }} >/dev/null 2>&1; then
+        ariza_ok 'ready'
+    else
+        ariza_warn "warm-up failed: $APP_EXEC $_warm_what did not complete"
+        ariza_warn "$APP_DISPLAY is installed and its download was verified -- try running it; the first launch may just take longer"
+    fi
+}
+{%- endif %}
+
 ariza_report() {
     printf '\n'
     printf '    run it:        %s\n' "$APP_EXEC"
     printf '    installed in:  %s\n' "$ARIZA_VERSIONS/$ARIZA_VERSION"
     printf '    uninstall:     curl -fsSL %s/uninstall.sh | sh\n' '{{ raw_base }}'
-    case ":${PATH:-}:" in
-        *":$ARIZA_BIN_DIR:"*) ;;
-        *) printf '\n    Open a new terminal first: %s was just added to your PATH.\n' "$ARIZA_BIN_DIR" ;;
-    esac
+    # Keyed on what ariza_persist_path found BEFORE it ran, never on
+    # $PATH here: persisting exports the directory into this script's
+    # own PATH, so checking now would always answer "present" and this
+    # message would never print for the one user who needs it. The
+    # default is the quiet arm, so a run that never persisted (--help,
+    # an early exit) stays quiet.
+    if [ "${ARIZA_PATH_WAS_PRESENT:-1}" -eq 0 ]; then
+        printf '\n    %s is now on your PATH for new terminals.\n' "$ARIZA_BIN_DIR"
+        printf '    To use %s in THIS one first, paste:\n' "$APP_EXEC"
+        printf '\n        export PATH="%s:$PATH"\n' "$ARIZA_BIN_DIR"
+    fi
 }
 
 main() {
@@ -391,13 +436,23 @@ main() {
         ariza_log "$APP_DISPLAY $ARIZA_VERSION for $_slug"
     fi
 
+    # Both arms end the same way: warm the install, then say the piece.
+    # Every path that reaches the parting message goes through the
+    # warm-up first, including the one where nothing was downloaded --
+    # a re-run is what somebody tries when the last one did not take.
     if [ -n "$ARIZA_VERSION" ] && ariza_check_existing "$ARIZA_VERSION"; then
+{%- if warm %}
+        ariza_warm
+{%- endif %}
         ariza_report
         exit 0
     fi
 
     ariza_fetch_and_unpack "$ARIZA_SRC" "$_digest_src"
     ariza_install
+{%- if warm %}
+    ariza_warm
+{%- endif %}
     ariza_report
 }
 

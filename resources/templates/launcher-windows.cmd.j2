@@ -18,8 +18,10 @@ if not exist "%ARIZA_RAKU%" (
     exit /b 1
 )
 
-rem The bundle is the only module repository.
-set "RAKULIB=inst#%BUNDLE_ROOT%\site"
+rem The bundle is the only module repository -- the bundled runtime's own
+rem vendor repository, which is what makes the shipped bytecode usable
+rem from here rather than only where it was built.
+set "RAKULIB=inst#%BUNDLE_ROOT%\{{ site_win }}"
 set "PERL6LIB="
 set "NOTCURSES_NATIVE_DATA_DIR=%BUNDLE_ROOT%\native"
 {%- if sqlcipher %}

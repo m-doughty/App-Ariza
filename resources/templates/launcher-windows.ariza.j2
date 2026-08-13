@@ -30,7 +30,7 @@
 target {{ target_win }}
 app-exec {{ app_exec }}
 app-display {{ app_display }}
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\{{ site_win }}
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 {%- if sqlcipher %}

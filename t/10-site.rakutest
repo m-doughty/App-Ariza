@@ -7,7 +7,7 @@ use App::Ariza::Config;
 use App::Ariza::Site;
 use App::Ariza::Tools;
 
-plan 7;
+plan 8;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-site-{$*PID}-{(^1_000_000).pick}");
@@ -38,10 +38,26 @@ sub fake-repo(IO::Path $bundle, @dists --> IO::Path) {
 }
 
 subtest 'the two directories a bundle keeps its Raku world in', {
-    plan 2;
+    plan 4;
     my $b = '/b'.IO;
-    is App::Ariza::Site.site-dir($b).absolute, '/b/site'.IO.absolute,
-        'modules go in site/';
+
+    # Not <bundle>/site, and this is the load-bearing detail of the whole
+    # bundle: Rakudo records a precompiled unit's dependencies relative
+    # to its repository only for the four repositories the registry has
+    # a *name* for — core, vendor and site under the running
+    # interpreter's own prefix, and home under $HOME. Anywhere else the
+    # dependencies are absolute paths on the build machine, and every
+    # module in the bundle is recompiled the first time it runs anywhere
+    # else. This path is the bundled runtime's own `vendor` prefix, so
+    # the store it holds survives being moved.
+    is App::Ariza::Site.site-dir($b).absolute,
+        '/b/rakudo/share/perl6/vendor'.IO.absolute,
+        'modules go in the bundled runtime\'s own vendor repository';
+    is App::Ariza::Site.site-rel($b), 'rakudo/share/perl6/vendor',
+        'and the launcher gets that as a relative path, with forward slashes';
+    ok App::Ariza::Site.site-dir($b).absolute
+        .starts-with($b.add('rakudo').absolute),
+        'inside the vendored runtime, which is the only reason it has a name';
     is App::Ariza::Site.native-dir($b).absolute, '/b/native'.IO.absolute,
         'native payloads go in native/';
 };
@@ -56,7 +72,7 @@ subtest 'the child environment names the bundle and unsets the rest', {
     %*ENV<RAKULIB>  = 'inst#/the/users/own/repo';
 
     my %env = App::Ariza::Site.child-env($dir);
-    is %env<RAKULIB>, 'inst#' ~ $dir.add('site').absolute,
+    is %env<RAKULIB>, 'inst#' ~ App::Ariza::Site.site-dir($dir).absolute,
         'RAKULIB points at the bundle, overriding whatever the user had';
 
     # zef precompiles nothing into a repository that is not in the chain,
@@ -191,4 +207,51 @@ subtest 'build-site refuses inputs it cannot work with', {
             :config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
     }, Exception, message => /'no bundled zef at'/,
         'and a runtime that never unpacked — before anything is downloaded';
+};
+
+subtest 'precomp-deps reads what the store says its units depend on', {
+    plan 7;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    my $store = ensure-dir($dir.add('precomp').add('COMPILER').add('AB'));
+
+    #| A file in Rakudo's precompilation-store shape: unit checksum,
+    #| source checksum, one NUL-separated `id/src/checksum/spec` record
+    #| per line, a padding line under nine characters, then bytecode --
+    #| which is binary, and which nothing here may read as text.
+    sub unit(Str $name, *@srcs) {
+        $store.add($name).spurt(
+            ('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
+          ~ @srcs.map({ ('A' x 40, $_, 'D' x 40, 'spec').join("\0") }).join("\n")
+          ~ "\n_______\n" ~ Buf.new(0x00, 0xFF, 0xFE, 0x41).decode('latin-1')
+        );
+    }
+
+    unit('AAAA', 'vendor#sources/' ~ 'E' x 40, 'core#sources/' ~ 'F' x 40);
+    $store.add('AAAA.repo-id').spurt('DEADBEEF');
+    $store.add('AAAA.lock').spurt('');
+    $store.parent.parent.add('CACHEDIR.TAG').spurt('Signature: 8a477f597d28d172789f06886806bc55');
+
+    my %clean = App::Ariza::Site.precomp-deps($dir);
+    is %clean<records>, 2, 'every dependency record in every unit is read';
+    is-deeply %clean<strays>, (),
+        'and one recorded against a repository is going nowhere near a stray';
+
+    unit('BBBB', '/home/builder/work/site/sources/' ~ 'E' x 40);
+    my %posix = App::Ariza::Site.precomp-deps($dir);
+    is %posix<records>, 3, 'the sidecars and CACHEDIR.TAG are not units';
+    is %posix<strays>.list.map(*.<src>).List,
+        ('/home/builder/work/site/sources/' ~ 'E' x 40,),
+        'an absolute POSIX path is a unit that will be recompiled elsewhere';
+    ok %posix<strays>[0]<unit>.contains('BBBB'),
+        'reported with the unit it came out of, relative to the repository';
+
+    unit('CCCC', 'C:\\build\\site\\sources\\' ~ 'E' x 40);
+    is App::Ariza::Site.precomp-deps($dir)<strays>.elems, 2,
+        'and so is a Windows one, drive letter and all';
+
+    is App::Ariza::Site.precomp-deps($dir.add('nothing-here')),
+        %( records => 0, strays => () ),
+        'a bundle with no store at all reads as no records rather than dying';
 };

@@ -6,7 +6,7 @@ use App::Ariza::Installer;
 use App::Ariza::Resources;
 use App::Ariza::Tools;
 
-plan 9;
+plan 11;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-installer-{$*PID}-{(^1_000_000).pick}");
@@ -53,6 +53,22 @@ my $PS1  = render('install-windows.ps1.j2');
 
 sub golden-path(Str $name --> IO::Path) {
     checkout-root().add('t/golden').add("installer-$name")
+}
+
+#| `sh -n` over a rendered script, as one assertion. Skips rather than
+#| passes where there is no shell to ask, so the count is the same on a
+#| machine that cannot run the check.
+sub sh-parses(Str:D $text, Str:D $why) {
+    unless have-command('sh') {
+        skip 'no sh on this machine to syntax-check with', 1;
+        return;
+    }
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    my $path = $dir.add('rendered.sh');
+    $path.spurt($text);
+    my ($code, $, $err) = try-run(['sh', '-n', $path.absolute]);
+    is $code, 0, $why or diag $err;
 }
 
 subtest 'an app gets the installers its platforms justify', {
@@ -106,8 +122,11 @@ subtest 'the context carries the app, not the machine that rendered it', {
     plan 6;
 
     is %CTX<repo>, 'example-org/App-ExampleApp', 'the repository releases come from';
-    is %CTX<raw_base>, 'https://raw.githubusercontent.com/example-org/App-ExampleApp/main',
-        'and where the one-liner reads the scripts from';
+    is %CTX<raw_base>, 'https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD',
+        'and where the one-liner reads the scripts from — HEAD, because'
+        ~ ' raw.githubusercontent resolves it to the default branch'
+        ~ ' whatever it is named, and a hardcoded name 404s on the other'
+        ~ ' convention';
     is %CTX<slugs>, 'macos-arm64 linux-x86_64-glibc',
         'POSIX slugs are a shell word list';
     is %CTX<slugs_ps>, "'windows-x86_64'",
@@ -282,6 +301,83 @@ subtest 'what the installer promises about the machine it lands on', {
         'the new version is renamed into place complete, never assembled in place';
     ok $SH.contains('ARIZA_STAGING="$ARIZA_ROOT/.staging.$$"'),
         'from a staging directory on the same filesystem, which is what makes that a rename';
+};
+
+subtest 'the install warms the app up before it says goodbye', {
+    plan 11;
+
+    # The point of the step: whatever a first launch does, it does here,
+    # while a line on screen says that is what is happening.
+    ok $SH.contains(q{ariza_log 'warming up}),
+        'the POSIX installer says what it is doing before it does it';
+    ok $SH.contains(q{"$_warm_bin" '--version' >/dev/null 2>&1}),
+        'runs the launcher once with the default arguments, output suppressed';
+    ok $SH.contains('"$ARIZA_ROOT/current/bin/$APP_EXEC"'),
+        'through the current symlink, which is the path the user\'s shell takes';
+
+    # Failure warns and finishes. The bundle is installed and its sha256
+    # was checked; a warm-up that fails on one machine is far more likely
+    # to be that machine than a bad release, and refusing to finish would
+    # take a working program away from a user who has one.
+    ok $SH.contains('ariza_warn "warm-up failed:'),
+        'a failed warm-up warns';
+    ok $SH.contains('is installed and its download was verified -- try running it'),
+        'and says the app is installed anyway, which it is';
+    nok $SH.lines.grep({ .contains('warm') && .contains('ariza_err') }),
+        'nothing in the warm-up path is fatal';
+
+    # Both arms of main: the install that just happened, and the re-run
+    # that found the version already there — which is exactly what
+    # somebody tries when the first warm-up did not take. Asserted as the
+    # adjacent pair, because "it warms up" and "it warms up before it
+    # says goodbye" are different claims.
+    is +$SH.comb(/ ^^ \s* 'ariza_warm' \n \s* 'ariza_report' /), 2,
+        'every path that reaches the parting message warms up first';
+
+    ok $PS1.contains('function Ariza-Warmup'), 'the Windows twin has one too';
+    ok $PS1.contains(q{$warmArgs = @('--version')})
+        && $PS1.contains('& $bin @warmArgs *> $null'),
+        'splatted, because an inline array would be one argument with a space in it';
+    ok $PS1.contains('if ($LASTEXITCODE -ne 0)'),
+        'and a native command\'s exit code is looked at on purpose, since'
+      ~ ' PowerShell does not raise it';
+    is +$PS1.comb(/ ^^ \s* 'Ariza-Warmup' $$ /), 3,
+        'at every one of its three ways out';
+};
+
+subtest 'the warm-up is the app\'s to configure, and to refuse', {
+    plan 8;
+
+    my %args = App::Ariza::Installer.context(:config(config(
+        EXAMPLEAPP ~ "warm = [\"--check\", \"--quiet\"]\n")));
+    ok App::Ariza::Installer.render(:template<install-posix.sh.j2>, |%args)
+        .contains(q{"$_warm_bin" '--check' '--quiet' >/dev/null 2>&1}),
+        'declared arguments are rendered, one shell-quoted word each';
+    ok App::Ariza::Installer.render(:template<install-windows.ps1.j2>, |%args)
+        .contains(q{$warmArgs = @('--check', '--quiet')}),
+        'and as a PowerShell array';
+
+    # A word with a quote and a space in it is where a generated script
+    # stops being a script and becomes an injection.
+    my %odd = App::Ariza::Installer.context(:config(config(
+        EXAMPLEAPP ~ "warm = [\"--path\", \"it's here; rm -rf /\"]\n")));
+    my $odd-sh = App::Ariza::Installer.render(:template<install-posix.sh.j2>, |%odd);
+    ok $odd-sh.contains(q{'--path' 'it'\''s here; rm -rf /'}),
+        'a quote in an argument is spliced out and back in, not left to the shell';
+    sh-parses($odd-sh, 'and the script still parses');
+    ok App::Ariza::Installer.render(:template<install-windows.ps1.j2>, |%odd)
+        .contains(q{@('--path', 'it''s here; rm -rf /')}),
+        'PowerShell doubles it instead, which is its own spelling';
+
+    my %off = App::Ariza::Installer.context(:config(config(
+        EXAMPLEAPP ~ "warm = false\n")));
+    my $off-sh = App::Ariza::Installer.render(:template<install-posix.sh.j2>, |%off);
+    nok $off-sh.contains('ariza_warm'),
+        'warm = false removes the step entirely rather than rendering a no-op';
+    nok App::Ariza::Installer.render(:template<install-windows.ps1.j2>, |%off)
+        .contains('Ariza-Warmup'), 'in both families';
+    sh-parses($off-sh,
+        'and what is left is still a script — the call sites go with it');
 };
 
 subtest 'the uninstaller removes what it made and nothing else', {

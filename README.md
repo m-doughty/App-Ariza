@@ -155,13 +155,14 @@ ok   unpack         extracted to moneymoor-0.2.0-macos-arm64
 ok   manifest       App::Moneymoor 0.2.0, 8 distributions for macos-arm64
 ok   launcher       bin/moneymoor
 ok   runtime        rakudo 2026.07-01
-ok   target         site/bin/moneymoor.raku
-ok   precomp        398 precompiled artefacts ship with the bundle
+ok   target         rakudo/share/perl6/vendor/bin/moneymoor.raku
+ok   precomp        417 precompiled artefacts ship with the bundle
+ok   precomp-relocatable 2938 dependency records, all repository-relative
 ok   native-audit   26 native binaries resolve inside the bundle
 ok   smoke[0]       {exec} → exit 0: App::Moneymoor 0.2.0
 ok   smoke[1]       {raku} → exit 0: ok: encrypted database created, written and reopened
 
-ariza: 9 checks passed
+ariza: 10 checks passed
 ```
 
 Two things about that run are worth knowing before you write a smoke command. The scratch directory it unpacks into has **a space in its name**, deliberately, so a launcher whose quoting slips is caught here rather than by a user with `~/Application Support/`. And each command runs with a **replaced** environment — `PATH`, `HOME`, `TERM`, and on Windows the handful of variables without which no process starts — so a bundle cannot pass by borrowing something from your shell. The commands themselves come from the archive's own `ariza-manifest.json`, so an archive can be checked with no access to the app's repository.
@@ -235,7 +236,7 @@ THE BUNDLE
 moneymoor-0.2.0-macos-arm64/
   bin/moneymoor            the launcher, and the only thing a user runs
   rakudo/                  the interpreter (plus SQLCipher, on macOS)
-  site/                    every Raku module, with warm bytecode
+    share/perl6/vendor/    every Raku module, with warm bytecode
   native/                  notcurses and friends
   VERSION                  app version and component pins, one screen
   ariza-manifest.json      the same, machine-readable, plus every sha256
@@ -263,7 +264,9 @@ moneymoor-0.2.0-windows-x86_64/
 
   * **`rakudo/`** — the official runtime archive from `rakudo.org`, pinned by `[rakudo]` in `versions.toml`. On macOS the staged SQLCipher lives in `rakudo/lib`, which is already on the loader's path.
 
-  * **`site/`** — one `CompUnit::Repository::Installation` holding the app and its whole closure, installed by the **bundled** `zef` so the bytecode matches the runtime that ships. Its precompilation store is warmed at build time: cold, a first launch spends about 55 seconds compiling, and does it again on every launch if the bundle lives somewhere unwritable, which for a downloaded archive is normal.
+  * **`rakudo/share/perl6/vendor/`** — one `CompUnit::Repository::Installation` holding the app and its whole closure, installed by the **bundled** `zef` so the bytecode matches the runtime that ships. Its precompilation store is warmed at build time: cold, a first launch spends about a minute compiling, and does it again on every launch if the bundle lives somewhere unwritable, which for a downloaded archive is normal.
+
+The location is not decorative. Rakudo records what a compiled module depends on relative to its repository — `vendor#sources/<id> ` — but only for the four repositories the registry has a **name** for: `core`, `vendor` and `site` under the running interpreter's own prefix, and `home` under `$HOME`. Put the app anywhere else, name it in `RAKULIB`, and the dependencies are recorded as absolute paths on the machine that built it — so the first user to unpack the bundle somewhere else gets every one of those units declared outdated and recompiles the entire closure, once, silently. The runtime's own `vendor` prefix is a repository that *has* a name, which is what makes the shipped bytecode usable anywhere. `ariza smoke` checks the records rather than trusting them.
 
   * **`native/`** — the staged native libraries. Everything in here has been through the audit: every Mach-O, ELF or PE in the bundle must resolve inside it, or the build fails naming the file and the dependency.
 
@@ -291,10 +294,10 @@ Three things it fixes, in the order you are likely to hit them:
 What it reads is `bin/<exec>.ariza `, a plain UTF-8 file beside it:
 
 ```text
-target site\bin\moneymoor.raku
+target rakudo\share\perl6\vendor\bin\moneymoor.raku
 app-exec moneymoor
 app-display Moneymoor
-set RAKULIB=inst#{root}\site
+set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
@@ -339,6 +342,7 @@ smoke     = "{exec} --version"     # command(s) `ariza smoke` runs
 
 [installer]
 repo = "m-doughty/App-Moneymoor"   # owner/name the releases live under
+warm = "--version"                 # run once at install time; false skips it
 
 [ci]
 ariza-source = "fez"               # how the workflows install ariza itself
@@ -367,6 +371,8 @@ spdx-license = "Artistic-2.0"
 
   * **`installer.repo`** is the GitHub `owner/name` the installers download releases from. Optional in the schema — an app published nowhere has no repository to name — and required by `ariza installers`, which says so rather than rendering a script that 404s. Its shape is closed: a full URL or a bare name is an error, not a warning.
 
+  * **`installer.warm`** is what the generated installers run the freshly installed launcher with, once, before they print the parting message. It defaults to `--version` — the same canary `bundle.smoke` uses, chosen because it is the one invocation every bundled app answers and **returns from**. `false` skips the step; a string is a command line split on whitespace; an array is taken word for word. An **empty** value is an error rather than either of the things it might mean: a launcher run with no arguments starts the application, which does not return, and the installers impose no timeout on purpose. See **The generated installers**, below, for what happens when it fails.
+
   * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. Whichever is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
 
   * **`[licensing]`** is optional in every part. An app that writes none of it still gets a complete `THIRD-PARTY.md`, because everything in that document is read out of the bundle rather than declared. The table is for the two things that cannot be: how strict to be about a payload nobody attributed, and what the app itself ships that ariza cannot see. See **Licensing**, below.
@@ -392,7 +398,7 @@ Each argv word is expanded against the unpacked bundle:
 
   * `{raku}` — the bundled interpreter.
 
-  * `{site}` — the module repository.
+  * `{site}` — the module repository, wherever the manifest says the bundle put it.
 
   * `{native}` — the staged native libraries.
 
@@ -494,7 +500,7 @@ ariza bundles **anybody's** application, so it holds no table of who wrote what.
 
   * **ariza's own `resources/runtime-third-party.json`.** The vendored Rakudo, NQP and MoarVM, the C libraries MoarVM vendors under its `3rdparty/` (libuv, dyncall, DynASM, LibTomMath, cmp, libatomic_ops, mimalloc, rapidhash, zmij and the rest), SQLCipher and the Windows runner. These arrive as compiled bytes inside archives with no manifest, so there is nothing in the bundle to ask; this file is the answer, and it is data rather than code precisely so that bumping the Rakudo pin to a release whose MoarVM vendors one more library is a row here rather than a patch.
 
-  * **Each installed distribution's `META6.json`.** The `license` field, read out of the bundle's own site repository **and** the one inside the vendored runtime — which is where the `zef` that came down with Rakudo lives, and which is redistributed like everything else.
+  * **Each installed distribution's `META6.json`.** The `license` field, read out of the repository the app was installed into **and** the runtime's own `site` — which is where the `zef` that came down with Rakudo lives, and which is redistributed like everything else.
 
   * **The app's `ariza.toml`.** Its own row, and rows for whatever it ships that ariza cannot see: a font, a dataset, artwork, a vendored library of its own.
 
@@ -580,12 +586,14 @@ THE GENERATED INSTALLERS
 A bundle is self-contained, so "installing" it is unpacking it somewhere and running the launcher. The four generated scripts do exactly that, and nothing more. They are committed at the app's repository root, because `curl` has to be able to fetch them from somewhere, and what a user runs is one line:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/HEAD/install.sh | sh
 ==> Moneymoor 0.2.0 for macos-arm64
 ==> downloading https://github.com/…/moneymoor-0.2.0-macos-arm64.tar.gz
 ok  sha256 verified
 ok  added /home/you/.local/bin to PATH in /home/you/.zshrc
 ok  Moneymoor 0.2.0 installed
+==> warming up -- the first launch does the work the rest never repeat
+ok  ready
 
     run it:        moneymoor
     installed in:  /home/you/.local/share/moneymoor/versions/0.2.0
@@ -603,6 +611,10 @@ What it does:
   * Unpacks into `$XDG_DATA_HOME/<exec>/versions/<version>/ `, beside whatever is already there, and only then flips a `current` symlink and links `~/.local/bin/<exec> ` at it. A failed or interrupted download cannot damage a working install.
 
   * Adds `~/.local/bin` to `PATH` **only if it is not there already**, through one marked block in each shell rc file that exists. Re-running never duplicates it; the uninstaller removes exactly that block and nothing else.
+
+  * **Warms the install up**: runs the launcher once, with `installer.warm`'s arguments (`--version` by default), so that whatever a first launch has to do — paging a few hundred megabytes off a cold disk, creating a per-user state directory — happens here, while a line on screen says that is what is happening, rather than the first time somebody actually wants the program. Every path that reaches the parting message goes through it, including a re-run that found the version already installed.
+
+A warm-up that fails **warns and finishes**; it never fails the install and never changes the exit code. By the time it runs, the bundle has been downloaded, checksummed and put in place, so a warm-up that fails on one machine is far likelier to be that machine — no terminal, a sandbox, an over-eager scanner — than a bad release, and refusing to finish would take a working program away from somebody who has one. The message says what failed and that the app is installed and worth trying.
 
   * Keeps one previous version to roll back to, prunes anything older, and says which.
 
@@ -690,7 +702,7 @@ Read by ariza while it builds:
 
 Set by the bundle's launcher, for the app it starts:
 
-  * **`RAKULIB`** — `inst#<root>/site `, the bundle's repository and the only one. `PERL6LIB` is unset.
+  * **`RAKULIB`** — `inst#<root>/rakudo/share/perl6/vendor `, the bundle's repository and the only one. `PERL6LIB` is unset.
 
   * **`NOTCURSES_NATIVE_DATA_DIR`** — `<root>/native `, where Notcurses::Native finds its libraries and its terminfo.
 

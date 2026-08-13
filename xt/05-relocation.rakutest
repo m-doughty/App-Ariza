@@ -1,0 +1,339 @@
+use v6.d;
+use Test;
+
+use JSON::Fast;
+
+use App::Ariza::Bundle;
+use App::Ariza::Config;
+use App::Ariza::Installer;
+use App::Ariza::Platform;
+use App::Ariza::Rakudo;
+use App::Ariza::Site;
+use App::Ariza::Smoke;
+use App::Ariza::Tools;
+
+=begin comment
+
+The promise a bundle makes: every Raku dependency arrives with its
+bytecode already compiled, and the user's first launch pays for none of
+it.
+
+That promise was false for the first bundle anyone installed, and no
+test in this suite could see it. `ariza smoke` unpacks an archive
+somewhere new and runs it — but it does so on the machine that built it,
+where the build tree is still on disk, and the store's dependency
+records pointed straight at that build tree. So the bundle loaded its
+warm bytecode perfectly here, and recompiled all 52 modules (58 seconds)
+on the first machine that was not this one.
+
+This test is the missing half: build a bundle, unpack it somewhere else,
+B<delete the build tree>, and then require the relocated copy to launch
+without recompiling a single unit. Rakudo says so itself, via
+RAKUDO_MODULE_DEBUG, and the store says so by not growing.
+
+It lives in xt/ because it builds a real bundle: it downloads a Rakudo
+(once — later runs use ariza's own cache) and runs the bundled zef.
+The application is a two-module fixture written into a scratch directory
+rather than a checkout anyone has to have, because what is under test is
+Rakudo's precompilation bookkeeping and one module that depends on
+another is all it takes to exercise it.
+
+    prove6 -Ilib xt/05-relocation.rakutest
+
+=end comment
+
+plan 8;
+
+my $SLUG = detect-slug() // '';
+unless $SLUG && App::Ariza::Rakudo.fetchable-slugs.first($SLUG) {
+    skip "no upstream Rakudo build for this platform ({$SLUG || 'unknown'})", 6;
+    exit 0;
+}
+
+my $ROOT = $*TMPDIR.add("ariza-relocation-{$*PID}-{(^1_000_000).pick}");
+LEAVE { rm-rf($ROOT) }
+
+#| The application under test: a distribution whose one module uses
+#| another out of the same repository.
+#|
+#| That is the whole fixture, and it is enough — an intra-repository
+#| dependency is exactly the record Rakudo writes as an absolute path
+#| when the repository has no name, and exactly the record that has to
+#| survive the bundle being moved.
+sub write-app(IO::Path $dir --> IO::Path) {
+    ensure-dir($dir.add('lib/Ariza/Probe'));
+    ensure-dir($dir.add('bin'));
+
+    $dir.add('META6.json').spurt(q:to/JSON/);
+        {
+          "name": "Ariza::Probe",
+          "description": "A fixture application ariza's own test suite builds",
+          "version": "9.9.9",
+          "auth": "zef:example",
+          "license": "Artistic-2.0",
+          "authors": [ "Example" ],
+          "perl": "6.d",
+          "provides": {
+            "Ariza::Probe": "lib/Ariza/Probe.rakumod",
+            "Ariza::Probe::Greeting": "lib/Ariza/Probe/Greeting.rakumod"
+          },
+          "depends": [ ],
+          "resources": [ ],
+          "test-depends": [ ]
+        }
+        JSON
+
+    # `bundle.platforms` names this machine's, because the installers are
+    # rendered for the families an app declares and there is no point
+    # generating one that could only ever say "nothing for your machine".
+    # `installer.repo` is here only so that they render at all: every
+    # install below is driven with --url against the archive on disk, so
+    # nothing reaches the network.
+    $dir.add('ariza.toml').spurt(qq:to/TOML/);
+        [app]
+        name = "Ariza::Probe"
+        exec = "ariza-probe"
+        display = "Ariza Probe"
+
+        [bundle]
+        platforms = ["$SLUG"]
+
+        [installer]
+        repo = "example-org/Ariza-Probe"
+        TOML
+
+    $dir.add('lib/Ariza/Probe/Greeting.rakumod').spurt(q:to/RAKU/);
+        unit module Ariza::Probe::Greeting;
+        our sub greeting(--> Str) is export { 'ariza probe ok' }
+        RAKU
+
+    $dir.add('lib/Ariza/Probe.rakumod').spurt(q:to/RAKU/);
+        use Ariza::Probe::Greeting;
+        unit module Ariza::Probe;
+        our sub run(--> Nil) is export { say greeting() }
+        RAKU
+
+    # `fail-warm` is how the installer's failure path is exercised
+    # below: a warm-up that fails has to warn and leave the install
+    # standing, and the only honest way to check that is to fail one.
+    # Spelled without dashes because Raku's MAIN reads `--x` as a named
+    # argument, and this fixture is looking at what it was handed.
+    $dir.add('bin/ariza-probe').spurt(q:to/RAKU/);
+        use Ariza::Probe;
+        sub MAIN(*@args, *%) {
+            exit 3 if @args.first('fail-warm');
+            run();
+        }
+        RAKU
+
+    $dir
+}
+
+my $APP = write-app(ensure-dir($ROOT.add('app')));
+my $CFG = App::Ariza::Config.load($APP);
+my $OUT = ensure-dir($ROOT.add('dist'));
+
+my %built;
+{
+    CATCH {
+        default {
+            # Being offline is not a failing bundle, and this file is the
+            # only one in the suite that cannot run without a Rakudo
+            # archive. Anything else is a real failure and is rethrown.
+            my $why = .message;
+            if $why.contains('fetching') || $why.contains('download')
+                || $why.contains('curl') || $why.contains('wget')
+                || $why.contains('release index')
+            {
+                skip "could not fetch a Rakudo to bundle: {$why.lines.head}", 6;
+                exit 0;
+            }
+            .rethrow;
+        }
+    }
+    %built = App::Ariza::Bundle.build(
+        :app-dir($APP), :platform($SLUG), :out-dir($OUT), :!verbose);
+}
+
+pass "built {%built<name>}";
+
+#| Every unit in a precompilation store, by path and size: what may not
+#| change when a relocated bundle launches.
+sub units(IO::Path $store --> Hash) {
+    return %() unless $store.d;
+    my %out;
+    my @queue = $store;
+    while @queue {
+        for @queue.shift.dir -> $e {
+            if $e.d {
+                @queue.push($e);
+            }
+            elsif $e.extension ne 'lock' && $e.extension ne 'repo-id' {
+                %out{$e.absolute.substr($store.absolute.chars)} = $e.s;
+            }
+        }
+    }
+    %out
+}
+
+# Unpacked where a user would put it, and nowhere near where it was
+# built.
+my $INSTALLED = ensure-dir($ROOT.add('opt'));
+extract-archive(%built<archive>, $INSTALLED);
+my $BUNDLE = sole-child($INSTALLED);
+
+# The step that makes this test mean anything. Everything that follows
+# has to work with no trace of the build left on the machine.
+rm-rf(%built<dir>);
+nok %built<dir>.e, 'the build tree is gone, as it would be on a user\'s machine';
+
+my $SITE   = App::Ariza::Smoke.site-dir($BUNDLE, from-json(
+                 $BUNDLE.add('ariza-manifest.json').slurp));
+my %before = units($SITE.add('precomp'));
+
+subtest 'the shipped store describes itself in repository terms', {
+    plan 3;
+    my %deps = App::Ariza::Site.precomp-deps($SITE);
+    ok %deps<records> > 0, 'the store holds dependency records at all';
+    is-deeply %deps<strays>, (),
+        'and not one of them names the machine the bundle was built on';
+    ok %before.elems > 0, 'with bytecode for every module to go with them';
+};
+
+#| The relocated launcher, run the way a user runs it and with Rakudo
+#| asked to say what it did about every module it loaded.
+sub launch(--> List) {
+    my $exec = %built<manifest><app><exec>;
+    my $launcher = $BUNDLE.add('bin')
+        .add($exec ~ ($SLUG.starts-with('windows') ?? '.cmd' !! ''));
+    my %env = App::Ariza::Smoke.base-env;
+    # A scratch HOME, so that neither the developer's own ~/.raku nor
+    # the first-run marker of a previous run can influence the answer.
+    %env<HOME> = ensure-dir($ROOT.add('home')).absolute;
+    %env<USERPROFILE> = %env<HOME> if $SLUG.starts-with('windows');
+    %env<RAKUDO_MODULE_DEBUG> = '1';
+    try-run([$launcher.absolute], :%env)
+}
+
+my ($code, $out, $err) = launch();
+
+subtest 'the relocated bundle runs at all', {
+    plan 2;
+    is $code, 0, 'the launcher exits clean'
+        or diag ($err || $out).lines.tail(20).join("\n");
+    ok $out.contains('ariza probe ok'),
+        'and the app it starts is the one that was bundled';
+};
+
+subtest 'and compiles nothing while doing it', {
+    plan 3;
+
+    # Rakudo's own account of the launch. "Outdated precompiled" is the
+    # store being rejected; "Precompiling" is it paying for that.
+    my @outdated = $err.lines.grep(*.contains('Outdated precompiled'));
+    my @compiled = $err.lines.grep(*.contains('Precompiling '));
+
+    is +@outdated, 0, 'no shipped unit is declared outdated'
+        or diag @outdated.head(3).join("\n");
+    is +@compiled, 0, 'so nothing is compiled on the user\'s machine'
+        or diag @compiled.head(3).join("\n");
+
+    ok $err.contains('Loaded from') || $err.contains('Loading precompiled'),
+        'and the debug output is really Rakudo\'s, so the two above mean something';
+};
+
+subtest 'the store the bundle shipped is the store it used', {
+    plan 2;
+    my %after = units($SITE.add('precomp'));
+    is-deeply %after.keys.sort.List, %before.keys.sort.List,
+        'the launch added no compiled units';
+    is-deeply %after.values.List.sort, %before.values.List.sort,
+        'and changed none of the ones it was given';
+};
+
+subtest 'the generated installer warms the app up, and pays nothing to', {
+    plan 5;
+
+    unless have-command('sh') {
+        skip 'no sh on this machine to run the generated installer with', 5;
+        return;
+    }
+
+    # A real install of a real archive: render the app's install.sh, run
+    # it with a replaced environment and a scratch HOME, and let it do
+    # the whole thing -- unpack, link, warm. `--url` keeps it off the
+    # network; everything else is what a user's install does.
+    my $home    = ensure-dir($ROOT.add('installer-home'));
+    my $scripts = ensure-dir($ROOT.add('installer-scripts'));
+    App::Ariza::Installer.write(:out-dir($scripts), :config($CFG));
+
+    my %env =
+        HOME   => $home.absolute,
+        PATH   => '/usr/bin:/bin',
+        TERM   => 'xterm',
+        TMPDIR => $ROOT.absolute,
+    ;
+    my ($code, $out, $err) = try-run(
+        ['sh', $scripts.add('install.sh').absolute, '--url', %built<archive>.absolute],
+        :%env);
+
+    is $code, 0, 'the install exits 0' or diag ($err || $out).lines.tail(20).join("\n");
+    ok $out.contains('warming up'),
+        'and says it is warming the app up while it does it';
+    ok $out.contains('ready'),
+        'which succeeded -- the installed launcher ran and returned';
+
+    # The point of warming a bundle whose bytecode already travels: the
+    # step is a page-in, not a compile. If the store were bound to the
+    # build machine this is where the user would silently pay for it.
+    my $installed = $home.add('.local/share/ariza-probe/current');
+    my %store = units(App::Ariza::Smoke.site-dir($installed, %built<manifest>).add('precomp'));
+    is-deeply %store.keys.sort.List, %before.keys.sort.List,
+        'the warm-up compiled nothing -- it loaded what the bundle shipped';
+    is-deeply %store.values.List.sort, %before.values.List.sort,
+        'byte for byte';
+};
+
+subtest 'a warm-up that fails warns, and the install still stands', {
+    plan 5;
+
+    unless have-command('sh') {
+        skip 'no sh on this machine to run the generated installer with', 5;
+        return;
+    }
+
+    # The ruling, exercised rather than asserted: by the time the
+    # warm-up runs the bundle has been downloaded, checksummed and put
+    # in place, so a warm-up that fails on somebody's machine is far
+    # likelier to be that machine than the release — and failing the
+    # install would take a working program away from them.
+    my $home    = ensure-dir($ROOT.add('failing-home'));
+    my $scripts = ensure-dir($ROOT.add('failing-scripts'));
+    my $app     = ensure-dir($ROOT.add('failing-app'));
+    $APP.add('ariza.toml').copy($app.add('ariza.toml'));
+    $app.add('ariza.toml').spurt(
+        $app.add('ariza.toml').slurp ~ "warm = [\"fail-warm\"]\n");
+    App::Ariza::Installer.write(:out-dir($scripts),
+                                :config(App::Ariza::Config.load($app)));
+
+    my %env =
+        HOME   => $home.absolute,
+        PATH   => '/usr/bin:/bin',
+        TERM   => 'xterm',
+        TMPDIR => $ROOT.absolute,
+    ;
+    my ($code, $out, $err) = try-run(
+        ['sh', $scripts.add('install.sh').absolute, '--url', %built<archive>.absolute],
+        :%env);
+
+    is $code, 0, 'the install still exits 0'
+        or diag ($err || $out).lines.tail(20).join("\n");
+    ok ($out ~ $err).contains('warm-up failed'), 'and says the warm-up failed';
+    ok ($out ~ $err).contains('is installed and its download was verified'),
+        'and that the app is installed anyway, which it is';
+
+    my $bin = $home.add('.local/bin/ariza-probe');
+    ok $bin.l, 'the launcher is linked';
+    is try-run([$bin.absolute], :%env)[0], 0,
+        'and it runs — the warm-up was a diagnostic, not a gate';
+};

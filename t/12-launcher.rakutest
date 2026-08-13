@@ -5,11 +5,20 @@ use App::Ariza::Config;
 use App::Ariza::Launcher;
 use App::Ariza::Native;
 use App::Ariza::Resources;
+use App::Ariza::Site;
 use App::Ariza::Tools;
 
 plan 8;
 
 my constant SLUGS = 'macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64';
+
+# The repository the launcher points RAKULIB at, asked of the module
+# that decides it rather than written out here: the launcher naming a
+# different directory than the one the app was installed into is a
+# bundle with no modules in it, and a literal in this file would let
+# that ship.
+my $SITE     = App::Ariza::Site.site-rel('.');
+my $SITE-WIN = $SITE.subst('/', '\\', :g);
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-launcher-{$*PID}-{(^1_000_000).pick}");
@@ -37,7 +46,7 @@ my $CFG = config();
 sub ctx(Str $slug --> Hash) {
     App::Ariza::Launcher.context(
         :config($CFG), :$slug,
-        :target<site/bin/exampleapp.raku>,
+        :target($SITE ~ '/bin/exampleapp.raku'),
         :app-version<9.9.9>,
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
     )
@@ -133,7 +142,7 @@ subtest 'the POSIX launcher does what a bundle needs', {
     ok $sh.contains('while [ -L "$ariza_target" ]'),
         'symlinks are chased with a loop over plain readlink';
 
-    ok $sh.contains('RAKULIB="inst#$BUNDLE_ROOT/site"'),
+    ok $sh.contains("RAKULIB=\"inst#\$BUNDLE_ROOT/$SITE\""),
         'the bundle is the only module repository';
     ok $sh.contains('unset PERL6LIB'),
         "and the user's PERL6LIB cannot get in front of it";
@@ -142,7 +151,7 @@ subtest 'the POSIX launcher does what a bundle needs', {
     nok @code.first(/'NOTCURSES_NATIVE_LIB_DIR'/),
         'never via LIB_DIR, which suppresses the TERMINFO_DIRS setup';
 
-    ok $sh.contains('exec "$ARIZA_RAKU" "$BUNDLE_ROOT/site/bin/exampleapp.raku" "$@"'),
+    ok $sh.contains("exec \"\$ARIZA_RAKU\" \"\$BUNDLE_ROOT/$SITE/bin/exampleapp.raku\" \"\$\@\""),
         'and it execs the bundled interpreter on the installed script';
 
     # A quoting slip here is a bundle that only works from a path with no
@@ -172,7 +181,7 @@ subtest 'macOS and Linux differ in exactly one place', {
 
     my $none = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
         |App::Ariza::Launcher.context(:config($CFG), :slug<linux-x86_64-glibc>,
-                                      :target<site/bin/exampleapp.raku>));
+                                      :target($SITE ~ '/bin/exampleapp.raku')));
     nok $none.contains('DBIISH_SQLCIPHER_LIB'),
         'an app that does not use SQLCipher gets no SQLCipher wiring at all';
 };
@@ -183,7 +192,7 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
     LEAVE { rm-rf($dir) }
 
     my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<macos-arm64>, :target<site/bin/exampleapp.raku>,
+        :slug<macos-arm64>, :target($SITE ~ '/bin/exampleapp.raku'),
         :app-version<9.9.9>,
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
     my @written = %w<written>.list;
@@ -220,7 +229,7 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
     # thing in `write` that would otherwise reach the network. Its
     # behaviour has its own file; what is asserted here is the wiring.
     my %win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target<site/bin/exampleapp.raku>,
+        :slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
         :stage-runner(-> |c { %() }));
     is %win<written>.map(*.basename).List,
         ('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza'),
@@ -269,10 +278,10 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     # any of them mean. This is the same environment the .cmd launcher
     # sets, expressed as instructions rather than as batch.
     is directives($side).List, (
-        'target site\bin\exampleapp.raku',
+        "target $SITE-WIN\\bin\\exampleapp.raku",
         'app-exec exampleapp',
         'app-display Example App',
-        'set RAKULIB=inst#{root}\site',
+        "set RAKULIB=inst#\{root}\\$SITE-WIN",
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
         'prepend-path {root}\native\sqlcipher',
@@ -300,12 +309,12 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     # design — a future recipe adds lines here and no new executable.
     my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
         |App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
-                                      :target<site/bin/exampleapp.raku>));
+                                      :target($SITE ~ '/bin/exampleapp.raku')));
     is directives($none).List, (
-        'target site\bin\exampleapp.raku',
+        "target $SITE-WIN\\bin\\exampleapp.raku",
         'app-exec exampleapp',
         'app-display Example App',
-        'set RAKULIB=inst#{root}\site',
+        "set RAKULIB=inst#\{root}\\$SITE-WIN",
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
     ), 'an app without SQLCipher gets the same file minus its two lines';
@@ -315,7 +324,7 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
     my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target<site/bin/exampleapp.raku>,
+        :slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
         :stage-runner(-> :$bundle-dir, :$slug, :$exec {
             my $exe = $bundle-dir.IO.add('bin').add("$exec.exe");
             $exe.spurt('MZ');

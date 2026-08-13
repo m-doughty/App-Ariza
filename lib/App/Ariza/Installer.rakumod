@@ -50,14 +50,38 @@ method env-url(App::Ariza::Config:D $config --> Str) {
     $config.app-exec.uc.subst(/<-[A..Z0..9]>/, '_', :g) ~ '_BUNDLE_URL'
 }
 
+#| One word, quoted for a POSIX shell: single quotes, with any single
+#| quote in the word spliced out and back in as C<'\''>.
+#|
+#| The warm-up arguments come out of the app's C<ariza.toml> and are
+#| written into a generated script as a command line, which is the one
+#| place in these templates where somebody else's string becomes shell
+#| syntax. Quoting it here rather than trusting it there means an
+#| argument containing a space, a C<$> or a quote is an argument rather
+#| than an injection.
+method sh-quote(Str:D $word --> Str) {
+    "'" ~ $word.subst("'", "'\\''", :g) ~ "'"
+}
+
+#| The same for PowerShell, where a single quote is escaped by doubling
+#| it and nothing inside single quotes is expanded.
+method ps-quote(Str:D $word --> Str) {
+    "'" ~ $word.subst("'", "''", :g) ~ "'"
+}
+
 #| The Jinja2 context an installer template renders against.
 #|
-#| C<:$branch> is the branch the C<curl | sh> one-liner reads the scripts
-#| from; it only ever appears in a comment and a printed hint, so getting
-#| it wrong costs a user one redirect rather than a broken install.
+#| C<:$branch> is the git ref the C<curl | sh> one-liner reads the
+#| scripts from. It defaults to C<HEAD>, which raw.githubusercontent
+#| resolves to the repository's default branch whatever that branch is
+#| called — a hardcoded name is a 404 for every repository that chose
+#| the other convention (raw URLs do not redirect; the first real
+#| install attempt against a C<master>-defaulted repo proved it), and
+#| the printed uninstall hint carries the same URL, so a wrong ref here
+#| is a broken instruction in the user's terminal, not a cosmetic slip.
 method context(
     App::Ariza::Config:D :$config!,
-    Str :$branch = 'main',
+    Str :$branch = 'HEAD',
     --> Hash
 ) {
     my $repo = $config.installer-repo
@@ -68,8 +92,19 @@ method context(
     my @posix   = self.slugs-for($config, 'posix');
     my @windows = self.slugs-for($config, 'windows');
     my $env-url = self.env-url($config);
+    my @warm    = $config.warm-argv;
 
     (
+        # The warm-up: whether there is one, the argument list in each
+        # shell's own quoting, and the same thing as one flat string for
+        # the message that names what was run. `warm_display` is quoted
+        # too — it is interpolated into a shell word, and an argument
+        # with a quote in it would otherwise end the string early.
+        warm         => ?@warm,
+        warm_args    => @warm.map({ self.sh-quote($_) }).join(' '),
+        warm_args_ps => @warm.map({ self.ps-quote($_) }).join(', '),
+        warm_display    => self.sh-quote(@warm.join(' ')),
+        warm_display_ps => self.ps-quote(@warm.join(' ')),
         app_exec    => $config.app-exec,
         app_display => $config.app-display,
         app_name    => $config.app-name,
@@ -109,7 +144,7 @@ method render(Str:D :$template!, *%ctx --> Str) {
 method write(
     IO() :$out-dir!,
     App::Ariza::Config:D :$config!,
-    Str :$branch = 'main',
+    Str :$branch = 'HEAD',
     --> List
 ) {
     die "ariza: {$config.app-name} declares no bundle.platforms, so there"
@@ -176,7 +211,7 @@ uninstall.ps1
 
 =begin code :lang<console>
 
-$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/HEAD/install.sh | sh
 ==> Moneymoor 0.2.0 for macos-arm64
 ==> downloading https://github.com/…/moneymoor-0.2.0-macos-arm64.tar.gz
 ok  sha256 verified
@@ -289,6 +324,55 @@ The Linux branch probes for a C<ld-musl-*.so.1> loader before choosing
 between C<-glibc> and C<-musl>, the same conclusive test
 L<App::Ariza::Platform> uses.
 
+=head2 The install pays for the first launch
+
+The last thing an install does before the parting message is run the
+launcher it has just linked — C<< <exec> --version >> by default, or
+whatever C<installer.warm> names — with its output suppressed and a
+line on screen saying what is happening:
+
+=begin code :lang<console>
+
+ok  Moneymoor 0.3.0 installed
+==> warming up -- the first launch does the work the rest never repeat
+ok  ready
+
+=end code
+
+Whatever a first launch has to do that later ones do not — paging a few
+hundred megabytes off a cold disk, creating a per-user state directory
+— happens there, while an installer is visibly working, rather than the
+first time somebody actually wants the program. Every path that reaches
+the parting message goes through it, B<including> the re-run that found
+the version already installed: that re-run is what people try when the
+last one did not take.
+
+A warm-up that fails B<warns and the install succeeds>. No non-zero
+exit, no rollback, no "installation failed".
+
+That is a deliberate divergence from how everything else here behaves,
+and the difference is where the failure happens. C<ariza bundle> and
+C<ariza smoke> run in our own pipeline, before anything is published,
+where stopping is cheap and a false negative is expensive. This runs on
+a stranger's machine, B<after> the bundle has been downloaded,
+checksummed and moved into place — where the same signal much more
+often means the machine (no terminal, a sandbox, a scanner holding a
+file open) than the release, and where failing the install would delete
+a working program from somebody who has one. So the message says what
+did not complete, and that the app is installed and its download was
+verified, so run it.
+
+There is no timeout, on purpose: a mechanism that needed one would
+imply a warm command that might not return, and the fix for that is the
+command. Which is why an empty C<installer.warm> is a load-time error
+rather than "run it with no arguments" — see L<App::Ariza::Config>.
+
+The arguments are the one place in these templates where an app's own
+string becomes script syntax, so they are quoted here rather than
+trusted there: C<sh-quote> per word for C<sh>, C<ps-quote> per word for
+PowerShell, splatted at the call site so an argument list cannot arrive
+as one argument with spaces in it.
+
 =head2 Curl-pipeable, and therefore silent
 
 A script read from a pipe is executed as it arrives, so this one is
@@ -339,8 +423,17 @@ golden-file test compares, and an installer is a thing worth diffing.
 =head2 context(:$config!, :$branch --> Hash)
 
 The render context: the app's names, the repository, the declared slugs
-for each family, the C<< <EXEC>_BUNDLE_URL >> variable, and the two
-inlined runtime libraries.
+for each family, the C<< <EXEC>_BUNDLE_URL >> variable, the warm-up
+(C<warm>, and its arguments quoted for each shell) and the two inlined
+runtime libraries.
+
+=head2 sh-quote(Str $word --> Str) / ps-quote(Str $word --> Str)
+
+One word, quoted for C<sh> and for PowerShell respectively. The warm-up
+arguments are the only part of a generated installer that comes from
+the app rather than from ariza, and they are written into it as script
+syntax, so they are quoted where they are rendered rather than trusted
+where they land.
 
 =head2 scripts-for(App::Ariza::Config $config --> List)
 

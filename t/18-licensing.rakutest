@@ -6,6 +6,7 @@ use JSON::Fast;
 use App::Ariza::Config;
 use App::Ariza::Licensing;
 use App::Ariza::Resources;
+use App::Ariza::Site;
 use App::Ariza::Tools;
 
 plan 16;
@@ -51,7 +52,7 @@ sub fake-dist(IO() $repo, *%meta) {
 #| repository holding the app, and nothing else.
 sub fake-bundle(IO::Path $dir --> IO::Path) {
     my $bundle = ensure-dir($dir.add('bundle'));
-    fake-dist($bundle.add('site'), :name<App::ExampleApp>, :ver<9.9.9>,
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<App::ExampleApp>, :ver<9.9.9>,
               :auth<zef:apogee>, :license<Artistic-2.0>);
     $bundle
 }
@@ -388,7 +389,7 @@ subtest 'the Raku closure fails closed', {
     LEAVE { rm-rf($dir) }
     my $app = fake-app($dir.add('app'));
     my $bundle = fake-bundle($dir);
-    fake-dist($bundle.add('site'), :name<JSON::Fast>, :ver<0.19>,
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<JSON::Fast>, :ver<0.19>,
               :auth<cpan:TIMOTIMO>, :license<Artistic-2.0>,
               :authors(['Timo Paulssen']));
     fake-dist($bundle.add('rakudo/share/perl6/site'), :name<zef>, :ver<1.1.3>,
@@ -407,8 +408,8 @@ subtest 'the Raku closure fails closed', {
     nok write-licensing($bundle, $app)<rows>.first({ .<id> eq 'dist/App::ExampleApp' }),
         'the app itself is not listed twice';
 
-    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
-    fake-dist($bundle.add('site'), :name<Vague::Module>, :ver<1.0>, :auth<zef:x>,
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<Vague::Module>, :ver<1.0>, :auth<zef:x>,
               :license('Same as Perl 6'));
     throws-like { write-licensing($bundle, $app) }, Exception,
         message => /'Silent::Module declares no licence' .* 'Vague::Module'
@@ -671,7 +672,7 @@ subtest 'NOASSERTION is a declaration an app makes, never a gap ariza fills', {
     my $dir = tmp-dir;
     LEAVE { rm-rf($dir) }
     my $bundle = fake-bundle($dir);
-    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<Silent::Module>, :ver<1.0>, :auth<zef:x>);
 
     # It cannot be reached implicitly. A distribution that says nothing
     # fails exactly as before -- somebody has to look first, and then say
@@ -682,7 +683,7 @@ subtest 'NOASSERTION is a declaration an app makes, never a gap ariza fills', {
 
     # Nor by a distribution asserting it about itself: that is the same
     # "nobody looked" with different spelling.
-    fake-dist($bundle.add('site'), :name<Silent::Module>, :ver<1.0>,
+    fake-dist(App::Ariza::Site.site-dir($bundle), :name<Silent::Module>, :ver<1.0>,
               :auth<zef:x>, :license<NOASSERTION>);
     throws-like { write-licensing($bundle, fake-app($dir.add('a2'))) },
         Exception, message => /'declares NOASSERTION in its own'/,

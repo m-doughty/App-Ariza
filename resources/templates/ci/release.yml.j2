@@ -16,7 +16,9 @@
 #     with an optional `ref` so a recipe can be iterated on a branch.
 #     A broken lane costs a run, not a tag.
 #
-#   * a pushed `{{ tag_glob }}` tag does all of that, then publishes the
+#   * a pushed release tag ({{ tag_globs | join(' or ') }} — the
+#     v-prefixed shape humans write, and the bare one mi6 creates)
+#     does all of that, then publishes the
 #     archives, then installs the published one on a clean machine.
 
 name: release
@@ -32,7 +34,9 @@ on:
         type: string
   push:
     tags:
-      - '{{ tag_glob }}'
+{%- for glob in tag_globs %}
+      - '{{ glob }}'
+{%- endfor %}
 
 permissions:
   contents: write
@@ -121,7 +125,7 @@ jobs:
             ### Installing
 
             ```
-            curl -fsSL https://raw.githubusercontent.com/{{ repo }}/main/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/{{ repo }}/HEAD/install.sh | sh
             ```
 
             That script picks the right archive for the machine it runs on,

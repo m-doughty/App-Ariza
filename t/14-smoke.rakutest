@@ -4,10 +4,14 @@ use Test;
 use JSON::Fast;
 
 use App::Ariza::Platform;
+use App::Ariza::Site;
 use App::Ariza::Smoke;
 use App::Ariza::Tools;
 
-plan 10;
+plan 11;
+
+# Where a bundle keeps its modules, asked of the module that decides it.
+my $SITE = App::Ariza::Site.site-rel('.');
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-smoke-{$*PID}-{(^1_000_000).pick}");
@@ -26,6 +30,25 @@ sub tmp-dir(--> IO::Path) {
 #| evidence, which needs a process to actually start.
 sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
 
+#| One file in the shape Rakudo's precompilation store writes: the unit's
+#| checksum, its source's checksum, one NUL-separated dependency record
+#| per line, a padding line, then bytecode.
+#|
+#| C<:$src> is the dependency's source, and is the whole point of the
+#| fixture: C<vendor#sources/…> is a place in a repository and travels,
+#| an absolute path is a place on the machine that compiled it and does
+#| not.
+sub fake-unit(IO::Path $path, Str :$src!) {
+    my $id = 'A' x 40;
+    $path.spurt(
+        ('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
+      ~ ($id, $src, 'D' x 40,
+         'CompUnit::DependencySpecification.new(:short-name<Example::Dep>)'
+        ).join("\0") ~ "\n"
+      ~ "_______\n" ~ 'bytecode'
+    );
+}
+
 #| A bundle with the shape of a real one and none of the weight: a
 #| launcher, an "interpreter", an installed script, a warm precomp store
 #| and a manifest. Everything Smoke inspects, nothing it does not.
@@ -34,8 +57,15 @@ sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
 #| Windows-only checks are exercised from a machine that is not Windows:
 #| every one of them reads the manifest rather than the host, and a file
 #| called C<raku.exe> is a file whatever created it.
+#|
+#| C<:$site-rel>, C<:$legacy-manifest> and C<:$dep-src> exist so the same
+#| fixture can be an archive built before the app's repository moved into
+#| the runtime's C<vendor> prefix, and one whose store names the machine
+#| that built it.
 sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
-                :$platform = current-slug(), :$runner --> IO::Path) {
+                :$platform = current-slug(), :$runner,
+                :$site-rel = $SITE, :$legacy-manifest = False,
+                :$dep-src = 'vendor#sources/' ~ 'A' x 40 --> IO::Path) {
     my $root = ensure-dir($where.add("exampleapp-9.9.9-$platform"));
     my $win  = $platform.starts-with('windows');
 
@@ -71,20 +101,27 @@ sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
             SH
         $exe.chmod(0o755);
         $root.add('bin').add('exampleapp.ariza').spurt(
-            "target site\\bin\\exampleapp.raku\r\n"
+            "target {$SITE.subst('/', '\\', :g)}\\bin\\exampleapp.raku\r\n"
           ~ "app-exec exampleapp\r\napp-display Example App\r\n")
             unless $runner eq 'no-sidecar';
     }
 
-    ensure-dir($root.add('site/bin')).add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
-    ensure-dir($root.add('site/precomp/ABC')).add('DEF').spurt('bytecode');
+    my $site = $root.add($site-rel);
+    ensure-dir($site.add('bin')).add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
+    fake-unit(ensure-dir($site.add('precomp/ABC')).add('DEF'), :src($dep-src));
 
     $root.add('ariza-manifest.json').spurt(to-json({
         'ariza-manifest' => 1,
         platform => $platform,
         app => { name => 'App::ExampleApp', exec => 'exampleapp',
                  display => 'Example App', version => '9.9.9' },
-        launcher => { target => 'site/bin/exampleapp.raku', scripts => ['bin/exampleapp'] },
+        launcher => {
+            target => "$site-rel/bin/exampleapp.raku",
+            scripts => ['bin/exampleapp'],
+            # Absent in an archive built before the repository moved,
+            # which `ariza smoke` still has to be able to check.
+            |($legacy-manifest ?? () !! (site => $site-rel,)),
+        },
         components => { rakudo => { tag => '2026.07-01' } },
         # Trailing comma: `[ %h ]` hits the single-arg rule and flattens
         # the Hash into Pairs, producing exactly the broken shape the
@@ -117,7 +154,7 @@ subtest 'the scratch directory has a space in its name', {
 };
 
 subtest 'the environment is replaced, not filtered', {
-    plan 9;
+    plan 10;
     temp %*ENV;
     %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
     %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
@@ -140,11 +177,15 @@ subtest 'the environment is replaced, not filtered', {
     my $sqlcipher-rel = 'native/sqlcipher/libsqlcipher.so.0';
     my %rt = App::Ariza::Smoke.runtime-env($root,
         { platform => 'linux-x86_64-glibc',
+          launcher => { site => $SITE },
           components => { sqlcipher => { path => $sqlcipher-rel } } });
     ok %rt<RAKULIB>.starts-with('inst#'),
         'RAKULIB names an installation repository, not a -I path';
-    is %rt<RAKULIB>, 'inst#' ~ $root.add('site').absolute,
-        'and it is the bundle\'s own site directory';
+    is %rt<RAKULIB>, 'inst#' ~ $root.add($SITE).absolute,
+        'and it is the repository the bundle itself says it installed into';
+    is App::Ariza::Smoke.site-dir($root, { launcher => {} }).absolute,
+        $root.add('site').absolute,
+        'an archive from before that was recorded keeps its old layout';
     is %rt<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel).absolute,
         'and on Linux, where the loader needs telling, points at SQLCipher';
 
@@ -397,4 +438,33 @@ subtest 'the structural checks need nothing to be runnable', {
     ok %by<runtime><ok>, 'so is the interpreter';
     ok %by<target><ok>, 'and the script it is meant to run';
     ok %by<precomp><ok>, 'and the bytecode shipped with it';
+};
+
+subtest 'a store that only works on the machine that built it is caught', {
+    plan 5;
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+
+    # The failure this check exists for is invisible everywhere else: the
+    # store is present, the right size, and every command below it runs
+    # perfectly — on the build machine, where the paths it names still
+    # exist. Somewhere else, Rakudo throws all of it away and recompiles.
+    my %good = checks-by-name(App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
+        :work-dir($dir), :!verbose));
+    ok %good<precomp-relocatable><ok>,
+        'a dependency recorded against a repository travels with the bundle';
+    ok %good<precomp-relocatable><detail>.contains('repository-relative'),
+        'and the check says how many records it read';
+
+    my %bad = App::Ariza::Smoke.smoke(
+        :archive(pack(fake-bundle($dir.add('bad'), :smoke([]),
+            :dep-src('/build/agent/work/site/sources/' ~ 'A' x 40)))),
+        :work-dir($dir), :!verbose);
+    my %bad-by = checks-by-name(%bad);
+    nok %bad-by<precomp-relocatable><ok>,
+        'one recorded against a build-machine path does not';
+    ok %bad-by<precomp-relocatable><detail>.contains('/build/agent/work'),
+        'and the offending path is named, not merely counted';
+    nok %bad<passed>, 'so the smoke fails on a bundle every other check likes';
 };

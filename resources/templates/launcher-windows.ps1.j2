@@ -22,7 +22,10 @@ if (-not (Test-Path -LiteralPath $ArizaRaku)) {
 
 # The bundle is the only module repository; anything the user has set
 # would put modules compiled against a different Rakudo ahead of ours.
-$env:RAKULIB = 'inst#' + (Join-Path $BundleRoot 'site')
+# It is the bundled runtime's own vendor repository, which is what makes
+# the shipped bytecode usable from here rather than only where it was
+# built.
+$env:RAKULIB = 'inst#' + (Join-Path $BundleRoot '{{ site_win }}')
 Remove-Item Env:\PERL6LIB -ErrorAction SilentlyContinue
 
 # Notcurses::Native finds its prebuilt libraries here and sets

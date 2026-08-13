@@ -75,7 +75,7 @@ method cmd-installers(
     App::Ariza:U:
     Str :$app!,
     Str :$out-dir,
-    Str :$branch = 'main',
+    Str :$branch = 'HEAD',
     --> List
 ) {
     my $app-dir = $app.IO;
@@ -181,7 +181,7 @@ C<ariza bundle> produces one directory and one archive:
 
 bin/moneymoor              the launcher, and the only thing a user runs
 rakudo/                    the interpreter (plus SQLCipher, on macOS)
-site/                      every Raku module, with warm bytecode
+  share/perl6/vendor/      every Raku module, with warm bytecode
 native/                    notcurses and friends
 VERSION                    app version and component pins, one screen
 ariza-manifest.json        the same, machine-readable, plus every sha256

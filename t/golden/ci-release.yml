@@ -16,7 +16,9 @@
 #     with an optional `ref` so a recipe can be iterated on a branch.
 #     A broken lane costs a run, not a tag.
 #
-#   * a pushed `v*` tag does all of that, then publishes the
+#   * a pushed release tag (v* or [0-9]*.[0-9]*.[0-9]* — the
+#     v-prefixed shape humans write, and the bare one mi6 creates)
+#     does all of that, then publishes the
 #     archives, then installs the published one on a clean machine.
 
 name: release
@@ -33,6 +35,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '[0-9]*.[0-9]*.[0-9]*'
 
 permissions:
   contents: write
@@ -411,7 +414,7 @@ jobs:
             ### Installing
 
             ```
-            curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/main/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD/install.sh | sh
             ```
 
             That script picks the right archive for the machine it runs on,
@@ -589,6 +592,25 @@ jobs:
           $psi.EnvironmentVariables['USERPROFILE'] = $env:USERPROFILE
           $psi.EnvironmentVariables['LOCALAPPDATA'] = $env:LOCALAPPDATA
           $psi.EnvironmentVariables['TEMP'] = $env:TEMP
+          # Windows has mandatory ambient environment that `env -i` on
+          # POSIX has no analogue for, and stripping it does not make the
+          # test cleaner — it makes the OS itself malfunction. Launching
+          # any .cmd resolves the interpreter through ComSpec, so without
+          # it the batch launcher dies with ERROR_MOD_NOT_FOUND ("The
+          # specified module could not be found") before the launcher
+          # runs a line — which is exactly how the first published
+          # Windows installer smoke failed against a perfectly good
+          # bundle. SystemRoot and windir are how cmd and half of Win32
+          # find the OS; PATHEXT is how `moneymoor` resolves to .exe/.cmd
+          # at all; SystemDrive is cheap insurance of the same kind.
+          # These five belong to Windows, not to the runner's toolchain,
+          # so keeping them does not weaken the isolation the cleared
+          # environment exists to provide.
+          $psi.EnvironmentVariables['SystemRoot'] = $env:SystemRoot
+          $psi.EnvironmentVariables['windir'] = $env:windir
+          $psi.EnvironmentVariables['ComSpec'] = $env:ComSpec
+          $psi.EnvironmentVariables['PATHEXT'] = $env:PATHEXT
+          $psi.EnvironmentVariables['SystemDrive'] = $env:SystemDrive
 
           $proc = [System.Diagnostics.Process]::Start($psi)
           $out = $proc.StandardOutput.ReadToEnd()
@@ -598,4 +620,23 @@ jobs:
           if ($err) { Write-Host $err }
           if ($proc.ExitCode -ne 0) {
               throw "$exe --version exited $($proc.ExitCode)"
+          }
+
+          # The same launch through the compiled runner, when the bundle
+          # ships one. The .cmd above proves the script path; this proves
+          # the entry point PATHEXT actually hands a user who types the
+          # bare command — and unlike the .cmd it involves no cmd.exe and
+          # no ComSpec, so the two smokes fail independently.
+          $native = Join-Path $bin 'exampleapp.exe'
+          if (Test-Path -LiteralPath $native) {
+              $psi.Arguments = "-NoProfile -NonInteractive -Command & '$native' --version"
+              $proc = [System.Diagnostics.Process]::Start($psi)
+              $out = $proc.StandardOutput.ReadToEnd()
+              $err = $proc.StandardError.ReadToEnd()
+              $proc.WaitForExit()
+              Write-Host $out
+              if ($err) { Write-Host $err }
+              if ($proc.ExitCode -ne 0) {
+                  throw "$native --version exited $($proc.ExitCode)"
+              }
           }

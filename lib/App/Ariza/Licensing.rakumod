@@ -602,9 +602,9 @@ method pack-rows(
 # The Raku closure
 # ---------------------------------------------------------------- #
 
-#| One row per distribution installed in the bundle — its own C<site>
-#| repository and the one inside the vendored runtime, which is where
-#| C<zef> lives.
+#| One row per distribution installed in the bundle — the app's own
+#| repository (the vendored runtime's C<vendor> prefix) and the
+#| runtime's C<site>, which is where C<zef> lives.
 #|
 #| A distribution with no C<license> in its metadata, or one whose
 #| licence ariza has no text for, B<fails the build>. There is no
@@ -624,9 +624,14 @@ method site-rows(
         %by-name{%o<name>} = %o;
     }
 
+    # The app's closure first, then the runtime's own repository, so a
+    # distribution that appears in both is attributed to the bundle that
+    # installed it. Provenance names the directory the row was read
+    # from, so a reader can go and look.
     my @repos =
         %( dir => App::Ariza::Site.site-dir($bundle-dir),
-           provenance => 'site META (site/dist)' ),
+           provenance => 'site META ('
+                       ~ App::Ariza::Site.site-rel($bundle-dir) ~ '/dist)' ),
         %( dir => $bundle-dir.add('rakudo').add('share').add('perl6').add('site'),
            provenance => 'site META (rakudo/share/perl6/site/dist)' ),
     ;

@@ -5,7 +5,7 @@
 # file: edit ariza's resources/templates/uninstall-posix.sh.j2 and re-run
 # `ariza installers --app=<this repository>`.
 #
-#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/main/uninstall.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/example-org/App-ExampleApp/HEAD/uninstall.sh | sh
 #   sh uninstall.sh
 #
 # Removes exactly what install.sh created: the versions directory, the
@@ -111,15 +111,26 @@ ariza_verify_sha256() {
 
 ariza_persist_path() {
     # $1 = directory to put on PATH.
+    #
+    # Records whether the directory was on PATH BEFORE this function
+    # touched anything, in ARIZA_PATH_WAS_PRESENT. The parting message
+    # keys on that record, not on $PATH: this function's last act is to
+    # export the directory into this script's own PATH, so a check made
+    # after it runs always says "present" and the tell-the-user branch
+    # becomes unreachable — which is exactly how the first real install
+    # ended with a command the user's terminal could not find and no
+    # line telling them why.
     _dir=$1
     case ":${PATH:-}:" in
         *":$_dir:"*)
             # Already there for this shell, so a login shell almost
             # certainly has it too. Adding a block would be one more
             # thing to clean up later for no gain.
+            ARIZA_PATH_WAS_PRESENT=1
             return 0
             ;;
     esac
+    ARIZA_PATH_WAS_PRESENT=0
 
     _block=$(printf '%s\ncase ":$PATH:" in\n  *":%s:"*) ;;\n  *) PATH="%s:$PATH"; export PATH ;;\nesac\n%s\n' \
         "$ARIZA_PATH_MARKER" "$_dir" "$_dir" "$ARIZA_PATH_END")
