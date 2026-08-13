@@ -1,6 +1,38 @@
 Revision history for App::Ariza
 
 {{$NEXT}}
+    - Added opt-in managed-install update prompts. Apps enable them with
+      `[updates] enabled = true`; eligible interactive launches check the
+      configured GitHub repository at most once a week and offer `Install &
+      use`, `Ask next time`, or `Don't ask again for this version`. Portable
+      bundles, redirected sessions, CI, help/version invocations and guarded
+      relaunches bypass the check. Only the exact latest bare ASCII `X.Y.Z`
+      release is eligible; prereleases, `v` tags and build suffixes are not.
+    - Update-enabled bundles carry a generated, core-only Raku coordinator
+      and a trusted snapshot of their platform installer. A chosen update
+      downloads the exact candidate and mandatory SHA-256, validates the
+      extracted manifest's application, repository, protocol and paths, then
+      switches `current` transactionally. Public URL and insecure installer
+      escape hatches are unavailable to this private path.
+    - Successful updates retain exactly the new version and the physical
+      version that was current immediately before the switch, with `previous`
+      pointing at that rollback target. Windows records bounded deferred
+      cleanup when the running bundle cannot yet be removed; later installs
+      retry it without following reparse points or deleting a current,
+      previous or running version.
+    - POSIX launchers and the Windows native runner authenticate the installer
+      handoff with a per-launch 256-bit nonce and a path-free protocol record
+      before honoring reserved status 75. `Install & use` performs one guarded
+      relaunch with the original argv; an application's ordinary exit 75 is
+      returned unchanged. Update-enabled Windows builds require runner-v2 or
+      later and refuse a script-only or runner-v1 bundle.
+    - Generated release CI rejects non-bare tags for update-enabled apps, and
+      bundle manifests, smoke checks and licensing inventories now account for
+      the coordinator, installer snapshot and runner capability. Update
+      support remains absent from bundles whose config does not opt in.
+    - Generated workflows now require
+      `App::Ariza:ver<0.1.4+>:auth<zef:apogee>`, so a builder that predates the
+      `[updates]` table cannot silently ignore an app's opt-in.
 
 0.1.3  2026-08-13T13:22:42+01:00
     - Generated CI installs App::Ariza with a 0.1.2+ version floor and
