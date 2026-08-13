@@ -56,7 +56,12 @@ subtest 'bundle assembly stages only opted-in update resources', {
     is %u<installer-rel>, 'libexec/ariza/install.sh',
         'POSIX gets its local installer snapshot';
     ok %u<coordinator>.f && %u<installer>.f, 'both files are staged';
-    ok %u<installer>.x, 'the local POSIX installer is executable';
+    if $*DISTRO.is-win {
+        skip 'POSIX executable bits are not available on Windows', 1;
+    }
+    else {
+        ok %u<installer>.x, 'the local POSIX installer is executable';
+    }
     ok %u<coordinator>.slurp.contains("has Str \$.app-version   = '1.2.3'"),
         'the coordinator bakes the exact version';
     ok %u<installer>.slurp.contains('--ariza-update-candidate'),
