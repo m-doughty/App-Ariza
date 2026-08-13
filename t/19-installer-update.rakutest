@@ -243,11 +243,6 @@ $leaf = Split-Path -Leaf $Top
 & $tar.Path -c -z -f $Archive -C $parent $leaf
 if ($LASTEXITCODE -ne 0) { throw "tar.exe failed with exit $LASTEXITCODE" }
 POWERSHELL
-    my $digest-helper = $win.add('sha256.ps1');
-    $digest-helper.spurt(q:to/POWERSHELL/);
-param([string] $Path)
-(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
-POWERSHELL
     my $junction-helper = $win.add('junction.ps1');
     $junction-helper.spurt(q:to/POWERSHELL/);
 param([string] $Link, [string] $Target)
@@ -346,14 +341,7 @@ POWERSHELL
     die "PowerShell could not create the Windows installer fixture: $archive-err"
         if $archive-code != 0;
     my $digest = $win.add("$name.tar.gz.sha256");
-    my ($digest-code, $digest-out, $digest-err) = ps-run(
-        $digest-helper, $archive.absolute);
-    die "PowerShell could not hash the Windows installer fixture: $digest-err"
-        if $digest-code != 0;
-    my $digest-hex = $digest-out.trim;
-    die "PowerShell returned an invalid SHA-256 for the Windows installer fixture: $digest-hex"
-        unless $digest-hex ~~ /^ <[0..9a..fA..F]> ** 64 $/;
-    $digest.spurt($digest-hex.lc ~ "  $name.tar.gz\n");
+    $digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
 
     sub installed-root(Str $leaf --> List) {
         my $local = ensure-dir($win.add($leaf).add('local-app-data'));
@@ -431,15 +419,9 @@ POWERSHELL
     die "PowerShell could not create the bad-manifest fixture: $bad-archive-err"
         if $bad-archive-code != 0;
     my $bad-manifest-digest = $win.add("{$name}-bad-manifest.tar.gz.sha256");
-    my ($bad-digest-code, $bad-digest-out, $bad-digest-err) = ps-run(
-        $digest-helper, $bad-manifest-archive.absolute);
-    die "PowerShell could not hash the bad-manifest fixture: $bad-digest-err"
-        if $bad-digest-code != 0;
-    my $bad-digest-hex = $bad-digest-out.trim;
-    die "PowerShell returned an invalid SHA-256 for the bad-manifest fixture: $bad-digest-hex"
-        unless $bad-digest-hex ~~ /^ <[0..9a..fA..F]> ** 64 $/;
     $bad-manifest-digest.spurt(
-        $bad-digest-hex.lc ~ "  {$name}-bad-manifest.tar.gz\n");
+        sha256-file($bad-manifest-archive)
+            ~ "  {$name}-bad-manifest.tar.gz\n");
     my ($manifest-local, $manifest-root, $manifest-versions) =
         installed-root('invalid-manifest');
     my $manifest-old = ensure-dir($manifest-versions.add('5.0.0'));
