@@ -283,9 +283,9 @@ param(
     [string] $Nonce,
     [string] $ExpectedCurrent
 )
-$script:ArizaTestArchive = $Archive
-$script:ArizaTestDigest = $Digest
-$script:ArizaTestDownloadMarker = $DownloadMarker
+$global:ArizaTestArchive = $Archive
+$global:ArizaTestDigest = $Digest
+$global:ArizaTestDownloadMarker = $DownloadMarker
 function global:Invoke-WebRequest {
     [CmdletBinding()]
     param(
@@ -293,12 +293,12 @@ function global:Invoke-WebRequest {
         [Parameter(Mandatory = $true)] [string] $OutFile,
         [switch] $UseBasicParsing
     )
-    [IO.File]::AppendAllText($script:ArizaTestDownloadMarker, "$Uri`n")
+    [IO.File]::AppendAllText($global:ArizaTestDownloadMarker, "$Uri`n")
     $source = if ($Uri.EndsWith('.sha256')) {
-        $script:ArizaTestDigest
+        $global:ArizaTestDigest
     }
     else {
-        $script:ArizaTestArchive
+        $global:ArizaTestArchive
     }
     Copy-Item -LiteralPath $source -Destination $OutFile -Force
 }
@@ -412,13 +412,14 @@ POWERSHELL
         'previous is the exact physical pre-switch junction target';
     is-deeply $versions.dir.map(*.basename).sort.List, ('3.0.0', '3.1.0'),
         'Windows retention is exactly new plus exact pre-switch';
-    is $handoff.slurp, "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
+    my $handoff-text = $handoff.f ?? $handoff.slurp !! '<missing handoff>';
+    is $handoff-text, "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
         'Windows handoff bytes match protocol v1 exactly';
-    nok $handoff.slurp.contains($root.absolute),
+    nok $handoff-text.contains($root.absolute),
         'Windows handoff contains no executable or bundle path';
     nok $warm-marker.e, 'private Windows install does not warm the app';
     nok $state.add('transaction').e, 'successful Windows commit clears its journal';
-    is $download-marker.slurp.lines.elems, 2,
+    is $download-marker.f ?? $download-marker.slurp.lines.elems !! -1, 2,
         'both mocked downloads ran locally with no network request';
 
     # Repack the same structurally valid candidate with the wrong repository.
