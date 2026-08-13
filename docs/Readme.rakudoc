@@ -567,9 +567,12 @@ installers>, below, for what happens when it fails.
 says where the generated workflows install ariza from: C<"fez"> (the
 default) or anything C<zef install> accepts, such as a repository URL
 for an app whose release workflow has to exist before ariza is
-published. Whichever is not in use is rendered beside it as a comment.
-This is not a closed set, so only an B<empty> value is an error — it
-would render a step that installs nothing and succeeds.
+published. The default resolves
+C«App::Ariza:ver<0.1.2+>:auth<zef:apogee>», pinning both
+the compatibility floor and the publisher identity. Whichever source is
+not in use is rendered beside it as a comment. This is not a closed set,
+so only an B<empty> value is an error — it would render a step that
+installs nothing and succeeds.
 
 =item1 B<C<[licensing]>> is optional in every part. An app that writes
 none of it still gets a complete C<THIRD-PARTY.md>, because everything

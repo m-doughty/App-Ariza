@@ -362,10 +362,12 @@ subtest 'each lane installs what ariza needs on that platform', {
 };
 
 subtest 'where the workflows install ariza from', {
-    plan 7;
+    plan 8;
 
-    ok $RELEASE.contains('run: zef install --/test App::Ariza'),
-        'fez by default';
+    ok $RELEASE.contains(q[run: zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>']),
+        'fez by default, with its version floor and author pinned';
+    nok $RELEASE.contains('zef install --/test App::Ariza'),
+        'and never emits the unqualified package name';
     ok $RELEASE.contains('#   run: zef install --/test https://github.com/m-doughty/App-Ariza.git'),
         'with the repository beside it as a comment, for the bootstrap';
     ok $RELEASE.contains("Scaffolded by ariza {ARIZA-VERSION}."),
@@ -387,8 +389,8 @@ subtest 'where the workflows install ariza from', {
     my $from-git = render('release.yml.j2', $git);
     ok $from-git.contains('run: zef install --/test https://github.com/m-doughty/App-Ariza.git'),
         'and becomes the command';
-    ok $from-git.contains('#   run: zef install --/test App::Ariza'),
-        'with fez demoted to the comment';
+    ok $from-git.contains(q[#   run: zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>']),
+        'with the pinned fez identity demoted to the comment';
 
     throws-like {
         config("[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"

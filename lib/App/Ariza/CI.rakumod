@@ -14,7 +14,7 @@ my constant TEMPLATE-PREFIX = 'templates/ci';
 #| workflow — one as the command, the other as the comment beside it —
 #| because "install ariza from the repository" is what a bootstrap needs
 #| and "install ariza from fez" is what everything after it needs.
-our constant ARIZA-FEZ = 'App::Ariza';
+our constant ARIZA-FEZ = 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>';
 our constant ARIZA-REPO-URL = 'https://github.com/m-doughty/App-Ariza.git';
 
 #| The tag shapes the generated release workflow triggers on. Two,
@@ -134,7 +134,9 @@ method ariza-version(--> Str) {
 #| own version too, which is the only provenance a generated file has.
 method install-lines(App::Ariza::Config:D $config, Str:D :$ariza-version! --> List) {
     my $source = $config.ci-ariza-source // 'fez';
-    my $fez = "zef install --/test {ARIZA-FEZ}";
+    # Angle brackets are shell syntax in both POSIX lanes and PowerShell.
+    # Quote the whole identity so zef receives it as one literal argument.
+    my $fez = "zef install --/test '{ARIZA-FEZ}'";
     my $git = "zef install --/test {ARIZA-REPO-URL}";
 
     $source eq 'fez'
@@ -451,9 +453,10 @@ has to remember.
 
 =head2 Where ariza comes from
 
-By default the lanes run C<zef install --/test App::Ariza>, with the
-repository URL beside it as a comment. C<ci.ariza-source> in the app's
-C<ariza.toml> swaps them:
+By default the lanes run
+C«zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'»,
+with the repository URL beside it as a comment. C<ci.ariza-source> in
+the app's C<ariza.toml> swaps them:
 
 =begin code :lang<toml>
 

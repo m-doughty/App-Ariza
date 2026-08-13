@@ -622,9 +622,12 @@ app's GitHub Actions workflows.
 
 =item1 C<ariza-source> — where the generated C<release.yml> installs
 ariza itself from. C<"fez"> (the default) renders
-C<zef install --/test App::Ariza>; anything else is passed to C<zef>
-verbatim, which is how a repository URL gets used before ariza is
-published, or while a release is being tested:
+C«zef install --/test
+'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'»; the version
+floor prevents an older bundler from silently rebuilding a release and
+the author qualifier prevents a same-named distribution from satisfying
+it. Anything else is passed to C<zef> verbatim, which is how a repository
+URL gets used before ariza is published, or while a release is being tested:
 
 =begin code :lang<toml>
 

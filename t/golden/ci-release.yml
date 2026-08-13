@@ -62,7 +62,7 @@ jobs:
           raku-version: 'latest'
 
       - name: Install ariza
-        run: zef install --/test App::Ariza
+        run: zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'
         # Scaffolded by ariza 0.0.1. Before App::Ariza is
         # published, or to cut a release against an unreleased ariza,
         # install it from the repository instead:
@@ -160,7 +160,7 @@ jobs:
           echo /opt/rakudo/share/perl6/site/bin >> "$GITHUB_PATH"
 
       - name: Install ariza
-        run: zef install --/test App::Ariza
+        run: zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'
         # Scaffolded by ariza 0.0.1. Before App::Ariza is
         # published, or to cut a release against an unreleased ariza,
         # install it from the repository instead:
@@ -255,7 +255,7 @@ jobs:
           raku-version: 'latest'
 
       - name: Install ariza
-        run: zef install --/test App::Ariza
+        run: zef install --/test 'App::Ariza:ver<0.1.2+>:auth<zef:apogee>'
         # Scaffolded by ariza 0.0.1. Before App::Ariza is
         # published, or to cut a release against an unreleased ariza,
         # install it from the repository instead:
