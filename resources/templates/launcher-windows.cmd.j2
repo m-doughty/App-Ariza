@@ -27,7 +27,14 @@ set "RAKULIB=inst#%BUNDLE_ROOT%\{{ site_win }}"
 set "PERL6LIB="
 set "NOTCURSES_NATIVE_DATA_DIR=%BUNDLE_ROOT%\native"
 {%- if sqlcipher %}
+rem Each set prepends, so lower-priority SQLCipher is applied first. The
+rem final PATH starts with Notcurses, then SQLCipher, then the inherited PATH.
 set "PATH=%BUNDLE_ROOT%\{{ sqlcipher_dir_win }};%PATH%"
+{%- endif %}
+{%- if notcurses %}
+set "PATH=%BUNDLE_ROOT%\{{ notcurses_dir_win }};%PATH%"
+{%- endif %}
+{%- if sqlcipher %}
 set "DBIISH_SQLCIPHER_LIB=%BUNDLE_ROOT%\{{ sqlcipher_lib_win }}"
 {%- endif %}
 

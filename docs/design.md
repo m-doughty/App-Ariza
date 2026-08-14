@@ -195,7 +195,7 @@ staged and audited, the result re-checked independently in shell, and
 three negative controls (a planted absolute `NEEDED`, a deleted
 dependency, a stripped rpath) that must each make the audit fail.
 
-### 3.3 Windows, and why it needs no Windows machine
+### 3.3 Windows static closure, and why it needs no Windows machine
 
 PE hides it worst of all, because it records nothing to hide. A vcpkg
 `sqlcipher.dll` imports `libcrypto-3-x64.dll` by bare name — no path, no
@@ -220,24 +220,28 @@ with Visual Studio and `objdump` with neither, and a dependency walk
 that silently finds nothing when its helper is missing is how this hole
 stayed open. Everything that is not Windows' own — not `KERNEL32`, not
 the API sets, not the Visual C++ redistributable (§3.4) — is copied in
-beside the library and recursed into. There is no third step: Windows
-resolves imports from the importing module's own directory, so putting
-them in one directory *is* the relocation story.
+beside the library and recursed into. That establishes a complete,
+adjacent closure; it does not establish the live loader's search. The
+launcher separately puts this exact directory on `PATH`, because loading
+the top DLL by absolute path does not make ordinary dependent-DLL search
+inspect its sibling directory.
 
-The search space is exactly one directory: the one the library came
-from. Both Windows package managers install a port's whole runtime
-closure into a single `bin` — vcpkg's `installed/<triplet>/bin`, MSYS2's
-`ucrt64/bin` — so `sqlcipher.dll`'s OpenSSL is the file sitting next to
+The staging copy search space is exactly one directory: the one the
+library came from. Both Windows package managers install a port's whole
+runtime closure into a single `bin` — vcpkg's
+`installed/<triplet>/bin`, MSYS2's `ucrt64/bin` — so
+`sqlcipher.dll`'s OpenSSL is the file sitting next to
 it, and searching wider (`PATH`, `System32`) would find a same-named DLL
 from a different build of a different version, which is the bug a bundle
 exists to avoid. An import that is not there fails the build, naming it
 and the directory searched.
 
-And unlike the Linux pass, none of this needs the platform it is for:
+Unlike the Linux pass, this static closure work needs no target host:
 reading a PE's imports means reading bytes, not running a loader. A
 Windows bundle can be assembled, walked and audited from a Mac and get
-exactly the same verdict it would get on Windows — which makes Windows,
-counter-intuitively, the platform ariza cross-builds most completely.
+the same closure verdict it would get on Windows. That verdict does not
+claim the live loader used the launcher's `PATH`; the target-platform
+smoke proves that separately.
 
 ### 3.4 The one import that looks like Windows and is not
 
@@ -395,11 +399,12 @@ above: that run is a test of the launcher's ability to set up its own
 world. A command that starts with `{raku}` drives the bundled
 interpreter directly, standing in for code running *inside* the app, so
 it additionally gets exactly what the launcher would have exported —
-`RAKULIB`, `NOTCURSES_NATIVE_DATA_DIR`, and the SQLCipher variables:
-`LD_LIBRARY_PATH` on Linux, and on Windows a `PATH` prepended with the
-DLL's directory, since that is how Windows resolves a library by name
-(0.0.5, 2026-08-12). Without any of that it would be testing the absence
-of a launcher rather than the bundle.
+`RAKULIB`, `NOTCURSES_NATIVE_DATA_DIR`, and the native-library variables:
+`LD_LIBRARY_PATH` on Linux; on Windows, `PATH` begins with the exact
+Notcurses tag/lib directory followed by SQLCipher's directory so their
+dependent DLLs are found. `DBIISH_SQLCIPHER_LIB` names SQLCipher directly
+on both. Without any of that it would be testing the absence of a
+launcher rather than the bundle.
 
 **Nothing goes through a shell**, in any form, which is what makes it
 reasonable for an app to smoke-test its database engine rather than only
@@ -982,12 +987,20 @@ set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
+prepend-path {root}\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib
 set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
 ```
 
 `{root}` is the bundle root, resolved at run time, so nothing absolute
 survives into the file; `{{` is a literal brace. The three verbs are
 `set`, `unset` and `prepend-path`, applied top to bottom.
+
+The prepend operations are deliberately written in reverse priority order:
+each takes effect immediately, so the resulting PATH begins with the exact
+Notcurses tag/lib directory, then SQLCipher. That runtime path is a separate,
+necessary half of the Windows native contract. The PE audit proves that the
+import-table closure is complete and adjacent; loading the top DLL by absolute
+path does not make ordinary Win32 dependency search look beside it.
 
 The directives are the ruling worth recording. An earlier draft had
 `sqlcipher_dir` and `sqlcipher_lib` keys and a hardcoded
@@ -1085,6 +1098,13 @@ time through `bin/<exec>.exe` when a bundle carries one — in addition to
 the `.cmd` run, never instead of it, because the two set the same
 environment by completely different means and one passing says nothing
 about the other.
+
+It also automatically calls `nc-lib()` whenever the manifest declares
+Notcurses. On Windows, that makes Notcurses::Native's resolver eagerly load
+the full DLL with its sibling directory and prove the FFmpeg-linked closure.
+The probe then calls `ncvisual_from_rgba` and `ncvisual_destroy` through the
+core library as a one-pixel operational check. Neither step opens a terminal;
+`notcurses_version` would exercise only a core version query.
 
 ### 11.7 Unsigned, and said out loud
 
@@ -1318,5 +1338,6 @@ Everything a bundle downloads is now traceable to something published.
 | unreleased | 2026-08-12 | Windows launches from a compiled runner of ariza's own, pinned by digest; its sidecar carries ordered env directives, so a bundle's dependencies are the renderer's business and never the executable's. |
 | unreleased | 2026-08-13 | The install pays the first launch: the installers warm the app up under a visible line, and a warm-up that fails warns rather than failing an install that has already been verified. |
 | unreleased | 2026-08-13 | Weekly managed-update prompts are generated launcher policy: exact stable GitHub tags, three persisted choices, transactional exact-candidate install, exact-predecessor retention, and a nonce-authenticated one-hop handoff (runner-v2 on Windows). |
+| 0.2.2 | 2026-08-14 | Windows native correctness is closure plus search: PE audit proves adjacency, launchers put the exact Notcurses lib before SQLCipher on PATH, and clean smoke invokes the full-library resolver before a TTY-free core visual operation. |
 | unreleased | 2026-08-12 | A bundle says what it redistributes, out of four sources it reads rather than a table it remembers; a Raku distribution with no licence fails the build, an unattributed native pack is a visible row and, on request, a failure. |
 | unreleased | 2026-08-12 | `NOASSERTION` is a declaration an app makes after looking, never a gap ariza fills: not from a distribution's own metadata, not about the app itself, and not at all under `licensing.strict`. |

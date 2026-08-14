@@ -1327,7 +1327,7 @@ subtest 'pe-strays judges a resolved report, as the ELF audit does', {
 
     my $inside = "libcrypto-3-x64.dll => /b/native/sqlcipher/libcrypto-3-x64.dll";
     is-deeply pe-strays($inside, :inside(['/b'])).List, (),
-        'a dependency resolved inside the bundle is exactly right';
+        'a dependency present in the bundle closure is exactly right';
 
     is-deeply pe-strays("libcrypto-3-x64.dll => C:\\Windows\\System32\\libcrypto-3-x64.dll",
                         :inside(['C:/b'])).List,
@@ -1336,7 +1336,7 @@ subtest 'pe-strays judges a resolved report, as the ELF audit does', {
 
     is-deeply pe-strays("libcrypto-3-x64.dll => not found", :inside(['/b'])).List,
         ('libcrypto-3-x64.dll => not found',),
-        'a dependency that is nowhere the loader looks is a finding too';
+        'a dependency absent from the staged adjacency closure is a finding too';
 
     # The Windows spelling of the same containment question the ELF audit
     # asks: a native-separator path against a forward-slashed prefix.
@@ -1448,8 +1448,8 @@ subtest 'the Windows audit resolves imports, and is no longer a presence check',
         'a DLL whose imports all sit beside it passes';
 
     # The hole this closes: sqlcipher.dll alone in the bundle is a
-    # perfectly good PE, and fails at LoadLibrary on the user's machine
-    # because nothing in the bundle answers for its OpenSSL.
+    # perfectly good PE, but has an incomplete import closure. The audit
+    # proves the DLL adjacency that launch-time PATH will expose.
     $sql.add('libcrypto-3-x64.dll').unlink;
     throws-like {
         App::Ariza::Native.audit(:bundle-dir($dir), :slug<windows-x86_64>)

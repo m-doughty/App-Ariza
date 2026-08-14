@@ -158,11 +158,12 @@ ok   runtime        rakudo 2026.07-01
 ok   target         rakudo/share/perl6/vendor/bin/moneymoor.raku
 ok   precomp        417 precompiled artefacts ship with the bundle
 ok   precomp-relocatable 2938 dependency records, all repository-relative
-ok   native-audit   26 native binaries resolve inside the bundle
+ok   native-audit   26 native binaries have bundled dependency closure
+ok   notcurses-load {raku} → exit 0: full libnotcurses resolver and core visual passed
 ok   smoke[0]       {exec} → exit 0: App::Moneymoor 0.2.0
 ok   smoke[1]       {raku} → exit 0: ok: encrypted database created, written and reopened
 
-ariza: 10 checks passed
+ariza: 11 checks passed
 ```
 
 Two things about that run are worth knowing before you write a smoke command. The scratch directory it unpacks into has **a space in its name**, deliberately, so a launcher whose quoting slips is caught here rather than by a user with `~/Application Support/`. And each command runs with a **replaced** environment — `PATH`, `HOME`, `TERM`, and on Windows the handful of variables without which no process starts — so a bundle cannot pass by borrowing something from your shell. The commands themselves come from the archive's own `ariza-manifest.json`, so an archive can be checked with no access to the app's repository.
@@ -260,7 +261,7 @@ moneymoor-0.2.0-windows-x86_64/
   …
 ```
 
-  * **The launcher**, `bin/<exec> ` — it resolves its own physical path (through a `readlink` loop, not `readlink -f`, which is a GNU extension), takes the directory above it as the bundle root, points `RAKULIB` and `NOTCURSES_NATIVE_DATA_DIR` at the bundle, adds SQLCipher's location on the platforms that need it, and execs the bundled interpreter. Everything is quoted, so a path with spaces works. On Windows it is `<exec>.exe ` — see **The Windows runner** below — with `<exec>.cmd ` and `<exec>.ps1 ` shipped beside it.
+  * **The launcher**, `bin/<exec> ` — it resolves its own physical path (through a `readlink` loop, not `readlink -f`, which is a GNU extension), takes the directory above it as the bundle root, points `RAKULIB` and `NOTCURSES_NATIVE_DATA_DIR` at the bundle, adds the exact staged native-library directories to the platforms' loader paths, and execs the bundled interpreter. On Windows that means the tag-selected Notcurses `lib/` directory first on `PATH`, followed by SQLCipher. Everything is quoted, so a path with spaces works. On Windows it is `<exec>.exe ` — see **The Windows runner** below — with `<exec>.cmd ` and `<exec>.ps1 ` shipped beside it.
 
   * **`rakudo/`** — the official runtime archive from `rakudo.org`, pinned by `[rakudo]` in `versions.toml`. On macOS the staged SQLCipher lives in `rakudo/lib`, which is already on the loader's path.
 
@@ -268,7 +269,7 @@ moneymoor-0.2.0-windows-x86_64/
 
 The location is not decorative. Rakudo records what a compiled module depends on relative to its repository — `vendor#sources/<id> ` — but only for the four repositories the registry has a **name** for: `core`, `vendor` and `site` under the running interpreter's own prefix, and `home` under `$HOME`. Put the app anywhere else, name it in `RAKULIB`, and the dependencies are recorded as absolute paths on the machine that built it — so the first user to unpack the bundle somewhere else gets every one of those units declared outdated and recompiles the entire closure, once, silently. The runtime's own `vendor` prefix is a repository that *has* a name, which is what makes the shipped bytecode usable anywhere. `ariza smoke` checks the records rather than trusting them.
 
-  * **`native/`** — the staged native libraries. Everything in here has been through the audit: every Mach-O, ELF or PE in the bundle must resolve inside it, or the build fails naming the file and the dependency.
+  * **`native/`** — the staged native libraries. Everything in here has been through the audit. Mach-O and ELF must resolve inside the bundle; PE import tables must have a complete, adjacent closure inside it. The Windows launcher separately puts the exact staged directories on PATH, which a static PE audit cannot prove.
 
   * **`VERSION`** — for a human in a bug report: the app, the platform, one line per pinned component.
 
@@ -301,10 +302,11 @@ set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
+prepend-path {root}\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib
 set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
 ```
 
-`{root}` is the bundle root, worked out at run time from the executable's own location, so nothing absolute is baked in and the bundle stays movable. The `set`, `unset` and `prepend-path` directives are applied top to bottom, and **the runner has no idea what any of them mean** — every fact about Rakudo's repository, notcurses' data directory or a bundled DLL lives in ariza's renderer, exactly as it does in the `.cmd` template. A bundle that grows a native dependency grows a line in this file rather than needing a new executable.
+`{root}` is the bundle root, worked out at run time from the executable's own location, so nothing absolute is baked in and the bundle stays movable. The `set`, `unset` and `prepend-path` directives are applied top to bottom, and **the runner has no idea what any of them mean** — every fact about Rakudo's repository, notcurses' data directory or a bundled DLL lives in ariza's renderer, exactly as it does in the `.cmd` template. A bundle that grows a native dependency grows a line in this file rather than needing a new executable. Since each `prepend-path` is applied immediately, writing lower-priority SQLCipher first leaves Notcurses first in the resulting `PATH`.
 
 Pinning, and the two states of the pin file
 -------------------------------------------
@@ -378,7 +380,7 @@ spdx-license = "Artistic-2.0"
 
   * **`updates.enabled`** opts a bundle into managed-install update prompts. It defaults to `false`, must be a TOML boolean, and requires `installer.repo` because that exact repository is the only release source the generated coordinator will trust. See **Managed-install update prompts**, below.
 
-  * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. The default resolves `App::Ariza:ver<0.1.4+>:auth<zef:apogee>`, pinning both the compatibility floor and the publisher identity. Whichever source is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
+  * **`ci.ariza-source`** is read only by `ariza scaffold-ci`, and says where the generated workflows install ariza from: `"fez"` (the default) or anything `zef install` accepts, such as a repository URL for an app whose release workflow has to exist before ariza is published. The default resolves `App::Ariza:ver<0.2.2+>:auth<zef:apogee>`, pinning both the compatibility floor and the publisher identity. Whichever source is not in use is rendered beside it as a comment. This is not a closed set, so only an **empty** value is an error — it would render a step that installs nothing and succeeds.
 
   * **`[licensing]`** is optional in every part. An app that writes none of it still gets a complete `THIRD-PARTY.md`, because everything in that document is read out of the bundle rather than declared. The table is for the two things that cannot be: how strict to be about a payload nobody attributed, and what the app itself ships that ariza cannot see. See **Licensing**, below.
 
@@ -411,7 +413,9 @@ Each argv word is expanded against the unpacked bundle:
 
   * `{tmp}` — a writable scratch directory beside the unpacked bundle.
 
-Which environment a command gets depends on how it starts. One starting with `{exec}` goes through the launcher and so gets nothing but `PATH`, `HOME` and `TERM`: that run is a test *of* the launcher's ability to set up its own world. One starting with `{raku}` additionally gets exactly what the launcher would have exported — `RAKULIB`, `NOTCURSES_NATIVE_DATA_DIR` and the SQLCipher variables — because it is standing in for code running *inside* the app.
+Which environment a command gets depends on how it starts. One starting with `{exec}` goes through the launcher and so gets nothing but `PATH`, `HOME` and `TERM`: that run is a test *of* the launcher's ability to set up its own world. One starting with `{raku}` additionally gets exactly what the launcher would have exported — `RAKULIB`, `NOTCURSES_NATIVE_DATA_DIR` and the native-library variables, including the exact Notcurses-then-SQLCipher `PATH` on Windows — because it is standing in for code running *inside* the app.
+
+When the manifest declares Notcurses, `ariza smoke` also runs an automatic terminal-free probe. It calls `nc-lib()` first; on Windows, Notcurses::Native's resolver eagerly loads the full library with its sibling directory and proves the FFmpeg-linked dependency closure. It then constructs and destroys a one-pixel `ncvisual` through the core library as an operational check. This catches failures that `--version` — or the core-only `notcurses_version` query — cannot, without asking CI for a TTY.
 
 Unknown keys warn; wrong types die
 ----------------------------------
@@ -482,7 +486,7 @@ Two overrides beat the package managers, in this order:
 
 Both are how a cross-build works, and they are the only way to be honest about one: a library installed on this machine is built **for** this machine, so ariza refuses to take one when the platform being built is not the platform it is building on. Missing entirely, on any platform, is a death naming the package to install **and** the override to pass — never a silent bundle without a database.
 
-Whatever is staged is then made self-contained: every library it names outside the bundle is copied in beside it and rewritten to load from there (`install_name_tool` on macOS, `patchelf --set-rpath '$ORIGIN'` on Linux, one directory on Windows, which is how PE resolves imports anyway), and the audit refuses to ship the bundle if anything still points off the machine. `docs/design.md` has the per-format detail, including why a Linux bundle has to be built on Linux and a Windows one does not have to be built on Windows.
+Whatever is staged is then made self-contained: every library it names outside the bundle is copied in beside it. Mach-O load commands are rewritten with `install_name_tool`; ELF gets `patchelf --set-rpath '$ORIGIN'`; PE gets a complete adjacent import closure and the generated launcher puts that exact directory on `PATH`. The PE audit proves the closure, not Win32's live search — loading the top DLL by absolute path does not make ordinary dependency search inspect its sibling directory. `docs/design.md` has the per-format detail, including why a Linux bundle has to be built on Linux, while a Windows closure can be assembled and audited off-target even though its live smoke must run on Windows.
 
 LICENSING
 =========
@@ -740,6 +744,8 @@ Set by the bundle's launcher, for the app it starts:
   * **`RAKULIB`** — `inst#<root>/rakudo/share/perl6/vendor `, the bundle's repository and the only one. `PERL6LIB` is unset.
 
   * **`NOTCURSES_NATIVE_DATA_DIR`** — `<root>/native `, where Notcurses::Native finds its libraries and its terminfo.
+
+  * **`PATH`** — Windows only: the exact staged Notcurses tag/lib directory first, followed by the bundle's SQLCipher directory. The inherited PATH follows them.
 
   * **`LD_LIBRARY_PATH`** — Linux only: the bundle's SQLCipher directory, prepended.
 

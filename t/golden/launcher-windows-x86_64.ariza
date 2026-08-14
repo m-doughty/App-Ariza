@@ -33,5 +33,8 @@ app-display Example App
 set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
+# `prepend-path` is applied immediately, so add the lower-priority
+# SQLCipher directory first. The resulting PATH begins with Notcurses.
 prepend-path {root}\native\sqlcipher
+prepend-path {root}\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib
 set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll

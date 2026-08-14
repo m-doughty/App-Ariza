@@ -60,6 +60,7 @@ method context(
     Str:D :$target!,
     Str:D :$site = App::Ariza::Site.site-rel('.'),
     Str :$app-version = '',
+    Str :$notcurses-rel,
     Str :$sqlcipher-rel,
     --> Hash
 ) {
@@ -79,6 +80,9 @@ method context(
         target_win  => $target.subst('/', '\\', :g),
         site        => $site,
         site_win    => $site.subst('/', '\\', :g),
+        notcurses   => $notcurses-rel.defined,
+        notcurses_dir     => $notcurses-rel // '',
+        notcurses_dir_win => ($notcurses-rel // '').subst('/', '\\', :g),
         sqlcipher   => $sqlcipher-rel.defined,
         sqlcipher_lib     => $sqlcipher-rel // '',
         sqlcipher_dir     => $sql-dir // '',
@@ -119,12 +123,13 @@ method write(
     Str:D :$target!,
     Str:D :$site = App::Ariza::Site.site-rel($bundle-dir),
     Str :$app-version = '',
+    Str :$notcurses-rel,
     Str :$sqlcipher-rel,
     :&stage-runner = -> |c { App::Ariza::Runner.stage(|c) },
     --> Hash
 ) {
     my %ctx = self.context(:$config, :$slug, :$target, :$site, :$app-version,
-                           :$sqlcipher-rel);
+                           :$notcurses-rel, :$sqlcipher-rel);
     my $bin = ensure-dir($bundle-dir.add('bin'));
 
     my @written;
@@ -214,6 +219,12 @@ where Notcurses::Native looks for them — and, crucially, is B<not>
 C<NOTCURSES_NATIVE_LIB_DIR>, which suppresses that module's own
 C<TERMINFO_DIRS> setup and leaves a TUI without terminfo.
 
+=item1 On Windows, puts the exact tag-selected Notcurses C<lib/>
+directory first on C<PATH>. NativeCall can find C<libnotcurses.dll> by
+absolute path from C<NOTCURSES_NATIVE_DATA_DIR>, but ordinary Win32
+dependency search does not thereby search beside that top DLL. SQLCipher's
+directory follows Notcurses when both are staged, then the inherited PATH.
+
 =item1 On Linux, additionally puts the bundle's SQLCipher directory on
 C<LD_LIBRARY_PATH> and points C<DBIISH_SQLCIPHER_LIB> at the library.
 macOS needs neither: the library is staged inside C<rakudo/lib>, which
@@ -278,6 +289,7 @@ set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
+prepend-path {root}\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib
 set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
 
 =end code
@@ -291,6 +303,11 @@ lives is B<here>, in the renderer, exactly as it is in the C<.cmd>
 template. A bundle that grows a native dependency grows a line in this
 file; it does not need a new executable, and an executable pinned
 several releases ago still launches it.
+
+Because each C<prepend-path> takes effect immediately, the lower-priority
+SQLCipher directory is written first above. The resulting C<PATH> begins
+with Notcurses, then SQLCipher, matching the C<.cmd>, C<.ps1> and smoke
+environments.
 
 =item1 C<< <exec>.cmd >> and C<< <exec>.ps1 >> — still written and still
 supported as transparent launchers. In an update-disabled bundle they carry
@@ -311,7 +328,7 @@ endings is a difference nobody should have to think about.
 
 =head1 METHODS
 
-=head2 write(:$bundle-dir!, :$config!, :$slug!, :$target!, :$app-version, :$sqlcipher-rel, :&stage-runner --> Hash)
+=head2 write(:$bundle-dir!, :$config!, :$slug!, :$target!, :$app-version, :$notcurses-rel, :$sqlcipher-rel, :&stage-runner --> Hash)
 
 Render and write every launcher the slug needs into
 C<< <bundle>/bin >>, C<chmod 0755> for the POSIX one, stage the compiled
@@ -329,7 +346,9 @@ platform, and a Windows platform built while
 C<resources/runner-checksums.txt> is still empty.
 
 C<:$target> is the bundle-relative script the launcher hands to the
-interpreter — L<App::Ariza::Site>'s C<target-rel>. C<:$sqlcipher-rel> is
+interpreter — L<App::Ariza::Site>'s C<target-rel>. C<:$notcurses-rel> is
+the exact tag-selected library directory from that Site result, and
+C<:$sqlcipher-rel> is
 the bundle-relative library path; omitting it renders a launcher with no
 SQLCipher wiring at all, which is what an app that does not use it
 should get.
@@ -340,7 +359,7 @@ One template, as text. Exposed separately because that is what a
 golden-file test compares, and a launcher is a thing worth diffing
 rather than merely running.
 
-=head2 context(:$config!, :$slug!, :$target!, :$app-version, :$sqlcipher-rel --> Hash)
+=head2 context(:$config!, :$slug!, :$target!, :$app-version, :$notcurses-rel, :$sqlcipher-rel --> Hash)
 
 The render context. Every path in it is relative to the bundle root:
 absolute paths baked in at build time are exactly what makes an archive

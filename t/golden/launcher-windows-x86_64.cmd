@@ -24,7 +24,10 @@ rem from here rather than only where it was built.
 set "RAKULIB=inst#%BUNDLE_ROOT%\rakudo\share\perl6\vendor"
 set "PERL6LIB="
 set "NOTCURSES_NATIVE_DATA_DIR=%BUNDLE_ROOT%\native"
+rem Each set prepends, so lower-priority SQLCipher is applied first. The
+rem final PATH starts with Notcurses, then SQLCipher, then the inherited PATH.
 set "PATH=%BUNDLE_ROOT%\native\sqlcipher;%PATH%"
+set "PATH=%BUNDLE_ROOT%\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib;%PATH%"
 set "DBIISH_SQLCIPHER_LIB=%BUNDLE_ROOT%\native\sqlcipher\sqlcipher.dll"
 
 set "ARIZA_STATE_DIR=%LOCALAPPDATA%\exampleapp"

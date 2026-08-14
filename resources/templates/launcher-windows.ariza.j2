@@ -37,6 +37,13 @@ set NOTCURSES_NATIVE_DATA_DIR={root}\native
 set ARIZA_UPDATES_ENABLED=1
 {%- endif %}
 {%- if sqlcipher %}
+# `prepend-path` is applied immediately, so add the lower-priority
+# SQLCipher directory first. The resulting PATH begins with Notcurses.
 prepend-path {root}\{{ sqlcipher_dir_win }}
+{%- endif %}
+{%- if notcurses %}
+prepend-path {root}\{{ notcurses_dir_win }}
+{%- endif %}
+{%- if sqlcipher %}
 set DBIISH_SQLCIPHER_LIB={root}\{{ sqlcipher_lib_win }}
 {%- endif %}

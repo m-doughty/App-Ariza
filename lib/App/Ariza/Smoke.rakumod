@@ -29,12 +29,25 @@ method scratch-dir(IO() :$work-dir = $*TMPDIR --> IO::Path) {
 #| C<DBIISH_SQLCIPHER_LIB> pointing at Homebrew, a C<RAKULIB> with the
 #| app already installed in it.
 method base-env(--> Hash) {
-    my %env = PATH => ($*DISTRO.is-win ?? %*ENV<PATH> // '' !! '/usr/bin:/bin');
+    my $path = '/usr/bin:/bin';
+    if $*DISTRO.is-win {
+        # Do not copy the runner image's PATH: it contains MSYS2, Visual
+        # Studio, vcpkg and whatever else could accidentally satisfy a
+        # missing bundled DLL. Absolute bundle entry points need only the
+        # Windows system directory. The ambient PATH is a last-resort
+        # fallback for an already-malformed Windows environment with no
+        # system-root variables at all.
+        my $system-root = %*ENV<SystemRoot> // %*ENV<windir> // '';
+        $path = $system-root.chars
+            ?? $system-root.IO.add('System32').absolute.Str
+            !! (%*ENV<PATH> // '');
+    }
+    my %env = PATH => $path;
     %env<HOME> = ~$_ with %*ENV<HOME>;
     %env<TERM> = ~$_ with %*ENV<TERM>;
     # Windows processes cannot start without these; they are not
     # "the user's environment" in any meaningful sense.
-    for <SystemRoot windir TEMP TMP USERPROFILE> -> $k {
+    for <SystemRoot windir SystemDrive ComSpec PATHEXT TEMP TMP USERPROFILE> -> $k {
         %env{$k} = ~$_ with %*ENV{$k};
     }
     %env
@@ -53,6 +66,19 @@ method site-dir(IO() $root, %manifest --> IO::Path) {
     $root.add(%manifest<launcher><site> // 'site')
 }
 
+#| The exact staged notcurses library directory recorded by the bundle.
+#| Older manifests recorded only the tag, so retain that unambiguous
+#| derivation for archives built before C<components.notcurses.path>.
+method notcurses-lib-dir(IO() $root, %manifest --> IO::Path) {
+    with %manifest<components><notcurses><path> -> $rel {
+        return $root.add($rel);
+    }
+    with %manifest<components><notcurses><tag> -> $tag {
+        return $root.add('native').add('Notcurses-Native').add($tag).add('lib');
+    }
+    IO::Path
+}
+
 #| The extra variables the launcher would have exported, for commands
 #| that run the bundled interpreter directly instead of going through it.
 method runtime-env(IO() $root, %manifest --> Hash) {
@@ -60,26 +86,61 @@ method runtime-env(IO() $root, %manifest --> Hash) {
         RAKULIB => 'inst#' ~ self.site-dir($root, %manifest).absolute,
         NOTCURSES_NATIVE_DATA_DIR => $root.add('native').absolute,
     ;
-    with %manifest<components><sqlcipher><path> -> $rel {
-        my $platform = %manifest<platform> // '';
-        my $lib = $root.add($rel);
-        if $platform.starts-with('windows') {
-            # Windows has no loader-time library path — a DLL is found
-            # by walking PATH, the same way the launcher templates do it.
-            # base-env's own Windows PATH *is* %*ENV<PATH> verbatim (see
-            # above), so prepending onto that here — rather than onto
-            # whatever base-env computed — lands on the same value while
-            # keeping this method self-contained.
+    my $platform = %manifest<platform> // '';
+    if $platform.starts-with('windows') {
+        # NativeCall gives LoadLibraryW an absolute libnotcurses.dll path,
+        # but ordinary dependent-DLL lookup does not thereby search that
+        # DLL's sibling directory. PATH is the live-loader contract. Keep
+        # Notcurses ahead of SQLCipher so a same-named runtime dependency
+        # is taken from the closure it was audited with.
+        my @path;
+        my $notcurses = self.notcurses-lib-dir($root, %manifest);
+        @path.push($notcurses.absolute) if $notcurses.defined;
+
+        with %manifest<components><sqlcipher><path> -> $rel {
+            my $lib = $root.add($rel);
             %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
-            %env<PATH> = $lib.parent.absolute
-                ~ (%*ENV<PATH> ?? ';' ~ %*ENV<PATH> !! '');
+            @path.push($lib.parent.absolute);
         }
-        elsif !$platform.starts-with('macos') {
-            %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
-            %env<LD_LIBRARY_PATH> = $lib.parent.absolute;
+
+        my $base-path = self.base-env<PATH> // '';
+        @path.push($base-path) if $base-path.chars;
+        %env<PATH> = @path.join(';');
+    }
+    else {
+        with %manifest<components><sqlcipher><path> -> $rel {
+            my $lib = $root.add($rel);
+            unless $platform.starts-with('macos') {
+                %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
+                %env<LD_LIBRARY_PATH> = $lib.parent.absolute;
+            }
         }
     }
     %env
+}
+
+#| A terminal-free Notcurses loader and operational probe. Calling C<nc-lib>
+#| first invokes Notcurses::Native's resolver; on Windows that resolver
+#| eagerly loads C<libnotcurses.dll> with its sibling directory, proving the
+#| full FFmpeg-linked dependency closure. A one-pixel C<ncvisual_from_rgba>
+#| and C<ncvisual_destroy> pair then proves the core library is operational.
+#| No terminal or notcurses context is opened, and C<notcurses_version> is not
+#| enough because it would prove only a core version query.
+method notcurses-probe-program(--> Str) {
+    q:to/RAKU/;
+        use NativeCall;
+        use Notcurses::Native;
+
+        my Str $full = nc-lib();
+        die 'nc-lib did not resolve to an existing full libnotcurses'
+            unless $full.IO.e;
+
+        my $rgba = Buf.new(0, 0, 0, 255);
+        my $visual = ncvisual_from_rgba(nativecast(Pointer, $rgba), 1, 4, 1);
+        die 'ncvisual_from_rgba returned null' unless $visual.defined;
+        ncvisual_destroy($visual);
+        say 'full libnotcurses resolver and core visual passed';
+        RAKU
 }
 
 #| Unpack a bundle archive and prove it works somewhere it has never been.
@@ -150,6 +211,7 @@ method smoke(
     if $root.defined && %manifest {
         @checks.append: self!layout-checks($root, %manifest);
         @checks.append: self!audit-check($root, %manifest);
+        @checks.append: self!notcurses-load-check($root, %manifest, $verbose);
         @checks.append: self!command-checks($root, %manifest, $verbose);
     }
 
@@ -367,9 +429,20 @@ method !audit-check(IO::Path $root, %manifest --> List) {
         }
         %result = App::Ariza::Native.audit(
             :bundle-dir($root), :slug(%manifest<platform> // ''), :extra(@extra));
-        $detail = "{%result<checked>} native binaries resolve inside the bundle";
+        $detail = "{%result<checked>} native binaries have bundled dependency closure";
     }
     ({ name => 'native-audit', ok => $ok, detail => $detail },)
+}
+
+method !notcurses-load-check(IO::Path $root, %manifest, Bool $verbose --> List) {
+    return () without %manifest<components><notcurses>;
+
+    my $win = (%manifest<platform> // '').starts-with('windows');
+    my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
+    my %env = self.base-env, self.runtime-env($root, %manifest);
+    my @argv = $raku.absolute, '-e', self.notcurses-probe-program;
+    (self!run-check('notcurses-load', ('{raku}', '<notcurses-loader-probe>'),
+                    @argv, %env, $verbose),)
 }
 
 method !command-checks(IO::Path $root, %manifest, Bool $verbose --> List) {
@@ -496,7 +569,8 @@ for %r<checks> -> %c {
 # ok   target: rakudo/share/perl6/vendor/bin/moneymoor.raku
 # ok   precomp: 395 precompiled artefacts ship with the bundle
 # ok   precomp-relocatable: 2938 dependency records, all repository-relative
-# ok   native-audit: 32 native binaries resolve inside the bundle
+# ok   native-audit: 32 native binaries have bundled dependency closure
+# ok   notcurses-load: {raku} → exit 0: full libnotcurses resolver and core visual passed
 # ok   smoke[0]: {exec} → exit 0: App::Moneymoor 0.2.0
 # ok   smoke[1]: {raku} → exit 0: ok: encrypted database created …
 
@@ -518,8 +592,10 @@ a user with C<~/Application Support/> or C<C:\Program Files\> does.
 
 C<run>'s C<:env> substitutes the child's whole environment, which is
 C<env -i> without needing C<env>. Commands get C<PATH=/usr/bin:/bin>,
-C<HOME> and C<TERM> (plus C<SystemRoot> and friends on Windows, without
-which no process starts at all) — and nothing else.
+C<HOME> and C<TERM>. Windows gets only C<SystemRoot\System32> on PATH,
+plus C<SystemRoot>, C<ComSpec>, C<PATHEXT> and the other small set without
+which processes cannot start — never the runner image's MSYS2/vcpkg/Visual
+Studio toolchain PATH.
 
 That is the entire point. The failure this catches is a bundle that
 quietly relies on the developer's shell: a system Rakudo on C<PATH>, a
@@ -536,9 +612,10 @@ ability to set up its own world.
 A command that starts with C<{raku}> drives the bundled interpreter
 directly. It is standing in for code running I<inside> the app, so it
 additionally gets exactly what the launcher would have exported —
-C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR>, and the SQLCipher variables:
+C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR>, and the native-library variables:
 C<LD_LIBRARY_PATH> on Linux, and on Windows a C<PATH> prepended with the
-DLL's directory, since that is how Windows resolves a library by name.
+exact Notcurses tag/lib directory followed by SQLCipher's directory, since
+that is how their dependent DLLs are found.
 C<DBIISH_SQLCIPHER_LIB> is set on both, exactly as the launcher templates
 set it. Without any of that it would be testing the absence of a
 launcher rather than the bundle.
@@ -601,6 +678,13 @@ commands.
 =item1 B<native-audit> — L<App::Ariza::Native>'s audit, re-run over the
 B<unpacked> tree rather than the build directory, because that is the
 tree a user has.
+=item1 B<notcurses-load> — when the manifest declares Notcurses, first
+calls C<nc-lib>. On Windows, Notcurses::Native's resolver eagerly loads the
+full library with C<LoadLibraryExW> and its sibling dependency directory,
+so the FFmpeg-linked closure is genuinely exercised. It then creates and
+destroys a one-pixel visual through the core library as an operational
+check. A C<notcurses_version> query would prove only a version binding; no
+terminal or Notcurses context is opened here.
 =item1 B<smoke[n]> — each declared command, in order.
 =item1 B<smoke[n].exe> — on Windows, each C<{exec}> command again
 through C<< bin/<exec>.exe >>, when the bundle carries one. In addition
@@ -631,6 +715,19 @@ C<{ name, ok, detail }>, and command checks also carry C<output>.
 =head2 base-env(--> Hash) / runtime-env(IO() $root, %manifest --> Hash)
 
 The replacement environment, and the launcher-equivalent additions.
+
+=head2 notcurses-lib-dir(IO() $root, %manifest --> IO::Path)
+
+The exact staged Notcurses library directory recorded by the manifest,
+with the tag-based derivation retained for older manifests.
+
+=head2 notcurses-probe-program(--> Str)
+
+The terminal-free Raku program used by C<notcurses-load>. It explicitly
+calls C<nc-lib> first, then creates and destroys a one-pixel visual through
+the core library without initializing a terminal or a Notcurses context.
+Exposed so call order and the no-terminal contract can be inspected without
+executing a native library in a unit test.
 
 =head2 site-dir(IO() $root, %manifest --> IO::Path)
 

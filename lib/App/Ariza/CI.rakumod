@@ -14,7 +14,7 @@ my constant TEMPLATE-PREFIX = 'templates/ci';
 #| workflow — one as the command, the other as the comment beside it —
 #| because "install ariza from the repository" is what a bootstrap needs
 #| and "install ariza from fez" is what everything after it needs.
-our constant ARIZA-FEZ = 'App::Ariza:ver<0.1.4+>:auth<zef:apogee>';
+our constant ARIZA-FEZ = 'App::Ariza:ver<0.2.2+>:auth<zef:apogee>';
 our constant ARIZA-REPO-URL = 'https://github.com/m-doughty/App-Ariza.git';
 
 #| The tag shapes the generated release workflow triggers on. Two,
@@ -455,7 +455,7 @@ has to remember.
 =head2 Where ariza comes from
 
 By default the lanes run
-C«zef install --/test 'App::Ariza:ver<0.1.4+>:auth<zef:apogee>'»,
+C«zef install --/test 'App::Ariza:ver<0.2.2+>:auth<zef:apogee>'»,
 with the repository URL beside it as a comment. C<ci.ariza-source> in
 the app's C<ariza.toml> swaps them:
 

@@ -121,6 +121,7 @@ method build(
         :bundle-dir($work), :$config, :slug($platform),
         :target($launcher-target), :site(%site<site-rel>),
         :app-version($version),
+        :notcurses-rel(%site<notcurses-lib-rel> // Str),
         :sqlcipher-rel(%sqlcipher<rel> // Str));
     my @launchers = %launchers<written>.list;
 
@@ -212,10 +213,7 @@ method !manifest(
     ;
 
     with %site<notcurses-tag> -> $tag {
-        %m<components><notcurses> = {
-            tag  => $tag,
-            path => "native/Notcurses-Native/$tag/lib",
-        };
+        %m<components><notcurses> = self.notcurses-component(%site);
     }
 
     %m<components><sqlcipher> = self.sqlcipher-component(%sqlcipher) if %sqlcipher;
@@ -289,6 +287,19 @@ method runner-component(%runner, IO::Path $work --> Hash) {
         path     => (%runner<path>.defined
                         ?? %runner<path>.relative($work).subst('\\', '/', :g)
                         !! ''),
+    )
+}
+
+#| The manifest's notcurses entry. The exact library directory discovered
+#| by L<App::Ariza::Site> is retained rather than reconstructed by each
+#| launcher or smoke implementation; on Windows that directory is part of
+#| the live loader contract as well as component metadata.
+method notcurses-component(%site --> Hash) {
+    my $tag = %site<notcurses-tag> // '';
+    %(
+        tag  => $tag,
+        path => %site<notcurses-lib-rel>
+             // ($tag.chars ?? "native/Notcurses-Native/$tag/lib" !! ''),
     )
 }
 
@@ -605,6 +616,13 @@ so it is recorded like the runtime archive is — without this it would be
 the one binary in a bundle a reader could not trace back to something
 published, which for the file a Windows user actually runs is the worst
 place to have a gap.
+
+=head2 notcurses-component(%site --> Hash)
+
+The manifest's Notcurses tag and exact staged C<lib/> directory from
+L<App::Ariza::Site>. Windows launchers and smoke consume the same path;
+reconstructing it independently would let metadata and the live loader
+contract drift apart.
 
 =head2 sqlcipher-component(%sqlcipher --> Hash)
 

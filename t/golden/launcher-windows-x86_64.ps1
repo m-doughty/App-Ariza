@@ -32,10 +32,14 @@ Remove-Item Env:\PERL6LIB -ErrorAction SilentlyContinue
 # TERMINFO_DIRS from the same place.
 $env:NOTCURSES_NATIVE_DATA_DIR = Join-Path $BundleRoot 'native'
 
-# Windows resolves a DLL by name from PATH, and DBIish pre-loads it by
-# absolute path when told where it is.
+# Each assignment prepends, so lower-priority SQLCipher is applied first.
+# The final PATH starts with Notcurses, then SQLCipher, then the inherited PATH.
 $SqlcipherDir = Join-Path $BundleRoot 'native\sqlcipher'
 $env:PATH = $SqlcipherDir + ';' + $env:PATH
+$NotcursesDir = Join-Path $BundleRoot 'native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib'
+$env:PATH = $NotcursesDir + ';' + $env:PATH
+
+# DBIish pre-loads SQLCipher by absolute path when told where it is.
 $env:DBIISH_SQLCIPHER_LIB = Join-Path $BundleRoot 'native\sqlcipher\sqlcipher.dll'
 
 $ArizaStateRoot = $env:LOCALAPPDATA

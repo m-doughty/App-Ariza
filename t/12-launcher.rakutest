@@ -19,6 +19,8 @@ my constant SLUGS = 'macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64';
 # that ship.
 my $SITE     = App::Ariza::Site.site-rel('.');
 my $SITE-WIN = $SITE.subst('/', '\\', :g);
+my $NOTCURSES = 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib';
+my $NOTCURSES-WIN = $NOTCURSES.subst('/', '\\', :g);
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-launcher-{$*PID}-{(^1_000_000).pick}");
@@ -48,6 +50,7 @@ sub ctx(Str $slug --> Hash) {
         :config($CFG), :$slug,
         :target($SITE ~ '/bin/exampleapp.raku'),
         :app-version<9.9.9>,
+        :notcurses-rel($NOTCURSES),
         :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
     )
 }
@@ -236,8 +239,8 @@ subtest 'the POSIX launcher is syntactically valid, and writes where it should',
         'and Windows gets both twins plus the runner\'s sidecar';
 };
 
-subtest 'Windows output is CRLF', {
-    plan 4;
+subtest 'Windows output is CRLF and preserves native PATH priority', {
+    plan 6;
     my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>,
                                           |ctx('windows-x86_64'));
     # cmd.exe mis-parses an LF-only batch file in ways that look nothing
@@ -253,6 +256,19 @@ subtest 'Windows output is CRLF', {
                                            |ctx('windows-x86_64'));
     nok $side.subst("\r\n", '', :g).contains("\n"),
         'and the runner\'s sidecar agrees with them';
+
+    # Each statement prepends immediately. SQLCipher is rendered first
+    # so the final value is Notcurses;SQLCipher;system PATH: a same-named
+    # transitive DLL must come from the closure audited with Notcurses.
+    ok $cmd.index("set \"PATH=%BUNDLE_ROOT%\\native\\sqlcipher;%PATH%\"")
+       < $cmd.index("set \"PATH=%BUNDLE_ROOT%\\$NOTCURSES-WIN;%PATH%\""),
+        'the cmd operations produce Notcurses before SQLCipher on PATH';
+
+    my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
+                                          |ctx('windows-x86_64'));
+    ok $ps1.index("Join-Path \$BundleRoot 'native\\sqlcipher'")
+       < $ps1.index("Join-Path \$BundleRoot '$NOTCURSES-WIN'"),
+        'and PowerShell applies the same effective ordering';
 
     my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
                                          |ctx('macos-arm64'));
@@ -336,6 +352,7 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
         'prepend-path {root}\native\sqlcipher',
+        'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
         'set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll',
     ), 'every directive, in the order the runner will apply them';
 
@@ -360,7 +377,8 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
     # design — a future recipe adds lines here and no new executable.
     my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
         |App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
-                                      :target($SITE ~ '/bin/exampleapp.raku')));
+                                      :target($SITE ~ '/bin/exampleapp.raku'),
+                                      :notcurses-rel($NOTCURSES)));
     is directives($none).List, (
         "target $SITE-WIN\\bin\\exampleapp.raku",
         'app-exec exampleapp',
@@ -368,7 +386,8 @@ subtest 'the sidecar tells the compiled launcher what it cannot know', {
         "set RAKULIB=inst#\{root}\\$SITE-WIN",
         'unset PERL6LIB',
         'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
-    ), 'an app without SQLCipher gets the same file minus its two lines';
+        'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
+    ), 'an app without SQLCipher still puts its staged Notcurses closure on PATH';
 
     # The runner is named after the exec, beside the sidecar, so the
     # executable can find its own configuration from its own path.

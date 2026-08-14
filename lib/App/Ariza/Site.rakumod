@@ -148,6 +148,9 @@ method build-site(
     self!check-precomp($site, +@warmed);
 
     my $tag = self!notcurses-tag($native, $config);
+    my $notcurses-lib = $tag.defined
+        ?? $native.add(NOTCURSES-DIR).add($tag).add('lib')
+        !! IO::Path;
 
     {
         site          => $site,
@@ -159,9 +162,14 @@ method build-site(
         target        => $target,
         target-rel    => $target.relative($bundle-dir).subst('\\', '/', :g),
         notcurses-tag => $tag,
-        notcurses-lib => ($tag.defined
-            ?? $native.add(NOTCURSES-DIR).add($tag).add('lib')
-            !! IO::Path),
+        notcurses-lib => $notcurses-lib,
+        # Carry the exact tag-selected directory forward. On Windows it
+        # must be put on PATH before NativeCall loads libnotcurses.dll;
+        # NOTCURSES_NATIVE_DATA_DIR tells the Raku module where the top
+        # DLL is, but does not extend Win32's dependency search path.
+        notcurses-lib-rel => ($notcurses-lib.defined
+            ?? $notcurses-lib.relative($bundle-dir).subst('\\', '/', :g)
+            !! Str),
         warmed        => @warmed.List,
     }
 }
@@ -489,7 +497,7 @@ method !files-under(IO::Path $dir --> List) {
 #| The C<BINARY_TAG> Notcurses-Native staged under, read back off disk.
 #|
 #| Never hardcoded: the tag names a notcurses build
-#| (C<binaries-notcurses-3.0.17-r9>) and changes whenever that
+#| (C<binaries-notcurses-3.0.17-r11>) and changes whenever that
 #| distribution rebuilds its libraries. Absent is only acceptable when
 #| the app never asked for notcurses.
 method !notcurses-tag(IO::Path $native, App::Ariza::Config:D $config --> Str) {
@@ -539,7 +547,8 @@ my %site = App::Ariza::Site.build-site(
 say %site<site-rel>;        # rakudo/share/perl6/vendor
 say %site<target-rel>;      # rakudo/share/perl6/vendor/bin/moneymoor.raku
 say %site<app-version>;     # 0.2.0
-say %site<notcurses-tag>;   # binaries-notcurses-3.0.17-r9
+say %site<notcurses-tag>;   # binaries-notcurses-3.0.17-r11
+say %site<notcurses-lib-rel>; # native/Notcurses-Native/…-r11/lib
 say +%site<dists>;          # 8
 say +%site<warmed>;         # 50
 
@@ -694,7 +703,7 @@ Pointing that variable at C<< <bundle>/native >> during the install puts
 them straight into the bundle, and pointing it at the same place at run
 time is how they are found again — which is the launcher's job.
 
-The tag (C<binaries-notcurses-3.0.17-r9>) names a notcurses build, not
+The tag (C<binaries-notcurses-3.0.17-r11>) names a notcurses build, not
 anything of ariza's, and changes whenever that distribution rebuilds. It
 is read back off disk after the install and carried into the manifest.
 Exactly one staged tag is expected; more than one means a stale build is
@@ -710,7 +719,9 @@ without terminfo is a blank screen.
 
 Install, warm, check. Returns C<site>, C<site-rel>, C<native>, C<dists>,
 C<app>, C<app-version>, C<target>, C<target-rel>, C<notcurses-tag>,
-C<notcurses-lib> and C<warmed>.
+C<notcurses-lib>, C<notcurses-lib-rel> and C<warmed>. The relative form
+is the exact tag-selected directory launchers and smoke put on Windows
+C<PATH>.
 
 C<:$attempts> (default 2) retries the C<zef> run, but B<only> when the
 failure looks like a fetch or resolution problem — a CDN hiccup aborts

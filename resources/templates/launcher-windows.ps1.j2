@@ -40,10 +40,18 @@ Remove-Item Env:\PERL6LIB -ErrorAction SilentlyContinue
 $env:NOTCURSES_NATIVE_DATA_DIR = Join-Path $BundleRoot 'native'
 {%- if sqlcipher %}
 
-# Windows resolves a DLL by name from PATH, and DBIish pre-loads it by
-# absolute path when told where it is.
+# Each assignment prepends, so lower-priority SQLCipher is applied first.
+# The final PATH starts with Notcurses, then SQLCipher, then the inherited PATH.
 $SqlcipherDir = Join-Path $BundleRoot '{{ sqlcipher_dir_win }}'
 $env:PATH = $SqlcipherDir + ';' + $env:PATH
+{%- endif %}
+{%- if notcurses %}
+$NotcursesDir = Join-Path $BundleRoot '{{ notcurses_dir_win }}'
+$env:PATH = $NotcursesDir + ';' + $env:PATH
+{%- endif %}
+{%- if sqlcipher %}
+
+# DBIish pre-loads SQLCipher by absolute path when told where it is.
 $env:DBIISH_SQLCIPHER_LIB = Join-Path $BundleRoot '{{ sqlcipher_lib_win }}'
 {%- endif %}
 

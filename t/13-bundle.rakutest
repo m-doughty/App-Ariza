@@ -6,7 +6,7 @@ use JSON::Fast;
 use App::Ariza::Bundle;
 use App::Ariza::Tools;
 
-plan 7;
+plan 8;
 
 sub tmp-dir(--> IO::Path) {
     my $dir = $*TMPDIR.add("ariza-bundle-{$*PID}-{(^1_000_000).pick}");
@@ -38,7 +38,8 @@ my constant MANIFEST = {
     components => {
         rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
         sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
-        notcurses => { tag => 'binaries-notcurses-3.0.17-r9' },
+        notcurses => { tag => 'binaries-notcurses-3.0.17-r11',
+                       path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib' },
         runner => { tag => 'runner-v1', artifact => 'ariza-runner-windows-x86_64.exe',
                     sha256 => 'f' x 64, url => 'https://example.invalid/r.exe',
                     path => 'bin/exampleapp.exe' },
@@ -130,13 +131,34 @@ subtest 'VERSION is one screen a human can quote in a bug report', {
     ok @lines.first(/^ 'app' \s+ 'App::ExampleApp 9.9.9'/), 'the distribution';
     ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
     ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
-    ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r9'/),
+    ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r11'/),
         'the notcurses build, by the tag it was actually staged under';
     ok @lines.first(/^ 'runner' \s+ 'runner-v1'/),
         'the compiled Windows launcher, by the release it was pinned from';
     ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
     ok $text.contains('Run bin/exampleapp'),
         'ending with the one thing the reader has to do';
+};
+
+subtest 'the manifest keeps Site\'s exact notcurses library directory', {
+    plan 3;
+    my %component = App::Ariza::Bundle.notcurses-component(%(
+        notcurses-tag => 'binaries-notcurses-3.0.17-r11',
+        notcurses-lib-rel =>
+            'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+    ));
+    is %component<tag>, 'binaries-notcurses-3.0.17-r11',
+        'the staged binary tag is recorded';
+    is %component<path>,
+        'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+        'with the exact tag-selected lib directory passed out by Site';
+
+    my %legacy = App::Ariza::Bundle.notcurses-component(%(
+        notcurses-tag => 'binaries-notcurses-3.0.17-r10',
+    ));
+    is %legacy<path>,
+        'native/Notcurses-Native/binaries-notcurses-3.0.17-r10/lib',
+        'and an older Site result still has one canonical derivation';
 };
 
 subtest 'the manifest records the SQLCipher that was staged, not the pin', {

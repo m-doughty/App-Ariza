@@ -214,11 +214,12 @@ ok   runtime        rakudo 2026.07-01
 ok   target         rakudo/share/perl6/vendor/bin/moneymoor.raku
 ok   precomp        417 precompiled artefacts ship with the bundle
 ok   precomp-relocatable 2938 dependency records, all repository-relative
-ok   native-audit   26 native binaries resolve inside the bundle
+ok   native-audit   26 native binaries have bundled dependency closure
+ok   notcurses-load {raku} → exit 0: full libnotcurses resolver and core visual passed
 ok   smoke[0]       {exec} → exit 0: App::Moneymoor 0.2.0
 ok   smoke[1]       {raku} → exit 0: ok: encrypted database created, written and reopened
 
-ariza: 10 checks passed
+ariza: 11 checks passed
 
 =end code
 
@@ -347,9 +348,11 @@ moneymoor-0.2.0-windows-x86_64/
 =item1 B<The launcher>, C<< bin/<exec> >> — it resolves its own physical
 path (through a C<readlink> loop, not C<readlink -f>, which is a GNU
 extension), takes the directory above it as the bundle root, points
-C<RAKULIB> and C<NOTCURSES_NATIVE_DATA_DIR> at the bundle, adds
-SQLCipher's location on the platforms that need it, and execs the
-bundled interpreter. Everything is quoted, so a path with spaces works.
+C<RAKULIB> and C<NOTCURSES_NATIVE_DATA_DIR> at the bundle, adds the exact
+staged native-library directories to the platforms' loader paths, and
+execs the bundled interpreter. On Windows that means the tag-selected
+Notcurses C<lib/> directory first on C<PATH>, followed by SQLCipher.
+Everything is quoted, so a path with spaces works.
 On Windows it is C<< <exec>.exe >> — see B<The Windows runner> below —
 with C<< <exec>.cmd >> and C<< <exec>.ps1 >> shipped beside it.
 
@@ -379,9 +382,10 @@ the shipped bytecode usable anywhere. C<ariza smoke> checks the records
 rather than trusting them.
 
 =item1 B<C<native/>> — the staged native libraries. Everything in here
-has been through the audit: every Mach-O, ELF or PE in the bundle must
-resolve inside it, or the build fails naming the file and the
-dependency.
+has been through the audit. Mach-O and ELF must resolve inside the bundle;
+PE import tables must have a complete, adjacent closure inside it. The
+Windows launcher separately puts the exact staged directories on PATH,
+which a static PE audit cannot prove.
 
 =item1 B<C<VERSION>> — for a human in a bug report: the app, the
 platform, one line per pinned component.
@@ -445,6 +449,7 @@ set RAKULIB=inst#{root}\rakudo\share\perl6\vendor
 unset PERL6LIB
 set NOTCURSES_NATIVE_DATA_DIR={root}\native
 prepend-path {root}\native\sqlcipher
+prepend-path {root}\native\Notcurses-Native\binaries-notcurses-3.0.17-r11\lib
 set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll
 
 =end code
@@ -456,7 +461,9 @@ directives are applied top to bottom, and B<the runner has no idea what
 any of them mean> — every fact about Rakudo's repository, notcurses' data
 directory or a bundled DLL lives in ariza's renderer, exactly as it does
 in the C<.cmd> template. A bundle that grows a native dependency grows a
-line in this file rather than needing a new executable.
+line in this file rather than needing a new executable. Since each
+C<prepend-path> is applied immediately, writing lower-priority SQLCipher
+first leaves Notcurses first in the resulting C<PATH>.
 
 =head2 Pinning, and the two states of the pin file
 
@@ -577,7 +584,7 @@ says where the generated workflows install ariza from: C<"fez"> (the
 default) or anything C<zef install> accepts, such as a repository URL
 for an app whose release workflow has to exist before ariza is
 published. The default resolves
-C«App::Ariza:ver<0.1.4+>:auth<zef:apogee>», pinning both
+C«App::Ariza:ver<0.2.2+>:auth<zef:apogee>», pinning both
 the compatibility floor and the publisher identity. Whichever source is
 not in use is rendered beside it as a comment. This is not a closed set,
 so only an B<empty> value is an error — it would render a step that
@@ -626,8 +633,17 @@ with C<{exec}> goes through the launcher and so gets nothing but
 C<PATH>, C<HOME> and C<TERM>: that run is a test I<of> the launcher's
 ability to set up its own world. One starting with C<{raku}>
 additionally gets exactly what the launcher would have exported —
-C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR> and the SQLCipher variables —
-because it is standing in for code running I<inside> the app.
+C<RAKULIB>, C<NOTCURSES_NATIVE_DATA_DIR> and the native-library variables,
+including the exact Notcurses-then-SQLCipher C<PATH> on Windows — because
+it is standing in for code running I<inside> the app.
+
+When the manifest declares Notcurses, C<ariza smoke> also runs an
+automatic terminal-free probe. It calls C<nc-lib()> first; on Windows,
+Notcurses::Native's resolver eagerly loads the full library with its sibling
+directory and proves the FFmpeg-linked dependency closure. It then constructs
+and destroys a one-pixel C<ncvisual> through the core library as an operational
+check. This catches failures that C<--version> — or the core-only
+C<notcurses_version> query — cannot, without asking CI for a TTY.
 
 =head2 Unknown keys warn; wrong types die
 
@@ -754,13 +770,16 @@ is a death naming the package to install B<and> the override to pass —
 never a silent bundle without a database.
 
 Whatever is staged is then made self-contained: every library it names
-outside the bundle is copied in beside it and rewritten to load from
-there (C<install_name_tool> on macOS, C<patchelf --set-rpath '$ORIGIN'>
-on Linux, one directory on Windows, which is how PE resolves imports
-anyway), and the audit refuses to ship the bundle if anything still
-points off the machine. C<docs/design.md> has the per-format detail,
-including why a Linux bundle has to be built on Linux and a Windows one
-does not have to be built on Windows.
+outside the bundle is copied in beside it. Mach-O load commands are
+rewritten with C<install_name_tool>; ELF gets
+C<patchelf --set-rpath '$ORIGIN'>; PE gets a complete adjacent import
+closure and the generated launcher puts that exact directory on C<PATH>.
+The PE audit proves the closure, not Win32's live search — loading the top
+DLL by absolute path does not make ordinary dependency search inspect its
+sibling directory. C<docs/design.md> has the per-format detail, including
+why a Linux bundle has to be built on Linux, while a Windows closure can
+be assembled and audited off-target even though its live smoke must run
+on Windows.
 
 =head1 LICENSING
 
@@ -1239,6 +1258,9 @@ Set by the bundle's launcher, for the app it starts:
 bundle's repository and the only one. C<PERL6LIB> is unset.
 =item1 B<C<NOTCURSES_NATIVE_DATA_DIR>> — C<< <root>/native >>, where
 Notcurses::Native finds its libraries and its terminfo.
+=item1 B<C<PATH>> — Windows only: the exact staged Notcurses tag/lib
+directory first, followed by the bundle's SQLCipher directory. The
+inherited PATH follows them.
 =item1 B<C<LD_LIBRARY_PATH>> — Linux only: the bundle's SQLCipher
 directory, prepended.
 =item1 B<C<DBIISH_SQLCIPHER_LIB>> — the staged SQLCipher library, by

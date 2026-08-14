@@ -241,8 +241,8 @@ my sub glob-match(Str:D $name, Str:D $pattern --> Bool) {
 #| been the cause of a failure here, so it is left alone rather than
 #| folding case for a normalisation this narrow.)
 #|
-#| Shared by the ELF and PE audits, which ask exactly the same question
-#| of two different loaders.
+#| Shared by the ELF loader audit and the PE closure audit. The latter
+#| compares the adjacency model ariza packages, not a live Win32 search.
 my sub path-inside(Str:D $target, @inside --> Bool) {
     my $path = $target.subst('\\', '/', :g);
     so @inside.first({ $path.starts-with($_.subst('\\', '/', :g) ~ '/') })
@@ -1408,11 +1408,11 @@ method !set-origin-rpath(IO::Path $file, :&run!) {
 #| Returns the extra files copied alongside, for the manifest and the
 #| audit.
 #|
-#| There is no rpath step and no rewriting: Windows resolves an import by
-#| name, and the first place it looks is the directory of the module
-#| doing the importing. Putting the DLLs in one directory I<is> the
-#| relocation story, which is why this pass is shorter than the other
-#| two and why its audit is a containment check rather than a tag check.
+#| There is no rpath step and no rewriting: PE records imports by name.
+#| Putting the whole closure in one directory gives the launcher one exact
+#| directory to add to PATH. Adjacency alone is not the live-loader story:
+#| loading the top DLL by absolute path does not make ordinary dependent-DLL
+#| search use its sibling directory.
 #|
 #| Nor is there a host guard. C<pe-imports> reads the file rather than
 #| asking the machine, so a Windows bundle assembled from an archive on a
@@ -1518,8 +1518,8 @@ method !find-under(IO::Path $dir, Str:D $name --> IO::Path) {
 #| Every dependency a PE audit can object to.
 #|
 #| The report is the same C<< name => path >> shape C<ldd> produces, one
-#| line per non-system import, with C<not found> for an import that is
-#| nowhere the loader would look. Any other non-empty line is a finding
+#| line per non-system import, with C<not found> for an import absent from
+#| the staged closure directory. Any other non-empty line is a finding
 #| in its own words — that is how C<empty file> and C<not a PE file>
 #| reach the failure message.
 #|
@@ -1576,14 +1576,13 @@ my sub redist-finding(Str:D $name, Str:D $where --> Str) {
 }
 
 #| The report the PE audit judges: every non-system import of a staged
-#| DLL, resolved the way Windows resolves it for a bundled library —
-#| beside the file that imports it.
+#| DLL, matched against the closure staged beside the importing file.
 #|
-#| Beside, and nowhere else, is the whole rule. The loader searches the
-#| loading module's own directory first, and everything ariza stages for
-#| Windows lands in one directory, so an import that is not there is one
-#| the user's C<PATH> would have to answer for — which is the failure
-#| this audit exists to catch.
+#| Beside, and nowhere else, is ariza's packaging rule. This is a static
+#| closure/adjacency proof, not a simulation of Win32's live search. The
+#| launcher separately puts that exact directory on PATH; without that
+#| runtime step an absolute top-level DLL can still fail with error 0x7e
+#| despite every imported DLL being present beside it.
 #|
 #| The path is resolved before it is reported, so a link pointing out of
 #| the bundle is judged by where it goes rather than by where it sits.
@@ -1606,8 +1605,9 @@ my sub pe-report(IO::Path $file --> Str) {
 #| Audit every native binary ariza put into the bundle.
 #|
 #| Returns C<{ checked, skipped, findings, family }>. Dies — loudly,
-#| naming each offending file and each offending dependency — if anything
-#| would load from outside the bundle at run time.
+#| naming each offending file and each offending dependency — if a Mach-O
+#| or ELF would load outside the bundle, or if a PE's staged adjacency
+#| closure is incomplete or escapes the bundle.
 #|
 #| C<:@extra> adds paths outside C<native/>; that is how the macOS
 #| SQLCipher library gets audited, since it lives in C<rakudo/lib> beside
@@ -1787,7 +1787,8 @@ say App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>)<origin>;
 # Stage from a file instead — an air-gapped build, or a cross-build:
 App::Ariza::Native.stage-sqlcipher(..., :archive('/tmp/libsqlcipher-linux-x86_64.tar.gz'));
 
-# Everything ariza put in the bundle must resolve inside it:
+# Everything ariza put in the bundle must be self-contained. For PE this
+# proves closure and adjacency; the launcher still supplies the live PATH:
 my %audit = App::Ariza::Native.audit(
     :bundle-dir($work), :slug<macos-arm64>, :extra(%sql<staged>));
 say %audit<checked>;        # 31
@@ -1816,7 +1817,10 @@ say pe-redist-dll('ucrtbase.dll');          # False — that one is the OS
 =head1 DESCRIPTION
 
 Two jobs, deliberately together: putting native libraries into a bundle,
-and refusing to ship one that would load a library from anywhere else.
+and refusing to ship one whose native dependency closure is not contained.
+Mach-O and ELF additionally prove loader resolution; PE proves the static
+closure staged together, while the generated Windows launchers put that
+directory on the live loader's C<PATH>.
 
 The notcurses side needs no work here — L<App::Ariza::Site> stages it as
 a side effect of the C<zef> install, by pointing
@@ -2099,10 +2103,11 @@ C<xt/03-pe-imports.rakutest> re-measures against the published pack.
 B<C<libcrypto> is not on it>, for the same reason it is not on the ELF
 one.
 
-=item1 B<Nothing else.> There is no third step. Windows resolves an
-import by name from the directory of the module doing the importing, so
-putting the DLLs in one directory I<is> the relocation story — no
-C<install_name_tool>, no C<patchelf>, nothing to re-sign.
+=item1 B<No binary rewrite.> PE has no rpath to edit. Putting the DLLs in
+one directory establishes the closure, and the generated Windows launcher
+puts that directory on C<PATH> before loading. Both halves are required:
+an absolute C<LoadLibrary> of the top DLL does not make ordinary dependency
+search inspect its sibling directory.
 
 The search space for the copy is one directory: the one the staged
 library itself came from. That is a contract with the source rather than
@@ -2118,19 +2123,21 @@ a fallback worth having. An import that is not in that directory is
 fatal, and the death names the import, the directory, and the two things
 it could mean.
 
-Unlike the ELF pass, this one needs no host of its own. Reading a PE's
-imports needs no Windows, so a Windows bundle assembled from
-C<--sqlcipher-archive> on a Mac gets the same walk, the same copies and
-the same audit as one built on Windows. Windows is, as of this pass, the
-platform ariza cross-builds most completely.
+Unlike the ELF pass, this static closure work needs no host of its own.
+Reading a PE's imports needs no Windows, so a Windows bundle assembled
+from C<--sqlcipher-archive> on a Mac gets the same walk, the same copies
+and the same closure audit as one built on Windows. It does not get the
+target-platform loader proof; C<ariza smoke> supplies that separately.
 
 =head1 THE AUDIT
 
 C<audit> walks every file ariza put into the bundle's native
 directories, plus C<:@extra> (the macOS SQLCipher library, which lives
 among Rakudo's own files and so cannot be found by walking a directory),
-and fails the build if any of them would load a library from outside the
-bundle.
+and fails the build if its native closure is not contained. Mach-O and ELF
+inspect loader resolution. PE inspects import-table closure and adjacency;
+the launcher is responsible for making that directory searchable at run
+time.
 
 This is not a formality. It is the difference between a bundle that
 works on the machine that built it and one that works anywhere, and it
@@ -2203,20 +2210,21 @@ its own staging leaves is worse than no audit, because it is quoted in
 the release notes.
 
 So the audit reads the same import table C<pe-imports> reads for
-staging, drops the C<PE-SYSTEM-DLLS> names, and resolves what is left
-against the directory the file sits in — which is how Windows itself
-resolves it for a bundled DLL, and everything ariza stages for Windows
-lands in one directory. C<not found> is a finding; so is a dependency
+staging, drops the C<PE-SYSTEM-DLLS> names, and matches what is left
+against the directory the file sits in — the closure ariza stages and
+whose exact path the launcher prepends to C<PATH>. C<not found> is a
+finding; so is a dependency
 that resolves outside C<:@inside> (the bundle), by the same
 separator-normalised containment check the ELF audit uses. A file named
 like a DLL that is not a PE, or is empty, is a finding in those words,
 and a PE the parser cannot read stops the audit rather than passing
 through it as "checked".
 
-It needs no Windows to do any of this: the file is read, not run. The
-Windows verdict is as strong from a Mac as it is on the machine the
-bundle is for — which is the opposite of the ELF story, and worth saying
-because the platforms are usually assumed to rank the other way round.
+It needs no Windows to do this static half: the file is read, not run.
+The closure verdict is as strong from a Mac as it is on the machine the
+bundle is for. It does not claim to validate the launcher's PATH or a live
+C<LoadLibrary>; C<App::Ariza::Smoke>'s full-libnotcurses probe does that on
+the target platform.
 
 =head3 The redistributable gate
 
@@ -2235,7 +2243,7 @@ gives. It is the exact shape of gap this audit exists to close, made
 worse by the fact that every machine likely to run the audit is a
 machine where the gap is invisible.
 
-So an import from that family which does not resolve inside the bundle
+So an import from that family which is not present inside the bundle
 is a finding, and the finding carries the whole argument — consequence,
 and both ways out — rather than a bare path, because the reader has just
 watched the bundle work:

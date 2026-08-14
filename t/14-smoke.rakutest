@@ -8,7 +8,7 @@ use App::Ariza::Site;
 use App::Ariza::Smoke;
 use App::Ariza::Tools;
 
-plan 11;
+plan 12;
 
 # Where a bundle keeps its modules, asked of the module that decides it.
 my $SITE = App::Ariza::Site.site-rel('.');
@@ -64,6 +64,7 @@ sub fake-unit(IO::Path $path, Str :$src!) {
 #| that built it.
 sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
                 :$platform = current-slug(), :$runner,
+                Bool :$notcurses = False,
                 :$site-rel = $SITE, :$legacy-manifest = False,
                 :$dep-src = 'vendor#sources/' ~ 'A' x 40 --> IO::Path) {
     my $root = ensure-dir($where.add("exampleapp-9.9.9-$platform"));
@@ -122,7 +123,15 @@ sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
             # which `ariza smoke` still has to be able to check.
             |($legacy-manifest ?? () !! (site => $site-rel,)),
         },
-        components => { rakudo => { tag => '2026.07-01' } },
+        components => {
+            rakudo => { tag => '2026.07-01' },
+            |($notcurses
+                ?? (notcurses => {
+                    tag => 'binaries-notcurses-3.0.17-r11',
+                    path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+                },)
+                !! ()),
+        },
         # Trailing comma: `[ %h ]` hits the single-arg rule and flattens
         # the Hash into Pairs, producing exactly the broken shape the
         # manifest check exists to catch.
@@ -154,10 +163,11 @@ subtest 'the scratch directory has a space in its name', {
 };
 
 subtest 'the environment is replaced, not filtered', {
-    plan 10;
+    plan 14;
     temp %*ENV;
     %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
     %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
+    %*ENV<PATH> = 'developer-toolchain';
 
     my %env = App::Ariza::Smoke.base-env;
     nok %env<ARIZA_LEAK_MARKER>:exists, 'nothing arbitrary survives';
@@ -165,6 +175,10 @@ subtest 'the environment is replaced, not filtered', {
         'least of all a library path into Homebrew, which is the exact'
       ~ ' variable that makes a broken bundle look perfect here';
     ok %env<PATH>:exists, 'PATH is set, so a shebang can find /bin/sh';
+    nok %env<PATH>.contains('developer-toolchain'),
+        'and the Windows implementation does not inherit a toolchain PATH';
+    isnt %env<PATH>, %*ENV<PATH>,
+        'the replacement PATH is not the caller\'s value';
 
     # A stand-in bundle root, and every expectation below derived from
     # that same IO::Path rather than written out as a POSIX literal:
@@ -193,16 +207,63 @@ subtest 'the environment is replaced, not filtered', {
     # variable, so it gets a different pair of exports — the same ones
     # the launcher templates set.
     my $sqlcipher-rel-win = 'native/sqlcipher/sqlcipher.dll';
+    my $notcurses-rel-win =
+        'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib';
     my %rt-win = App::Ariza::Smoke.runtime-env($root,
         { platform => 'windows-x86_64',
-          components => { sqlcipher => { path => $sqlcipher-rel-win } } });
+          components => {
+              notcurses => {
+                  tag => 'binaries-notcurses-3.0.17-r11',
+                  path => $notcurses-rel-win,
+              },
+              sqlcipher => { path => $sqlcipher-rel-win },
+          } });
     is %rt-win<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel-win).absolute,
         'on Windows, the same verbatim-path preload';
-    ok %rt-win<PATH>.contains($root.add($sqlcipher-rel-win).parent.absolute),
-        'with the DLL\'s directory prepended onto PATH, because that is'
-      ~ ' how Windows finds it';
+    my @win-path = %rt-win<PATH>.split(';');
+    is @win-path[0], $root.add($notcurses-rel-win).absolute,
+        'the exact staged Notcurses lib directory is first on Windows PATH';
+    is @win-path[1], $root.add($sqlcipher-rel-win).parent.absolute,
+        'with SQLCipher second, matching every generated launcher';
     nok %rt-win<LD_LIBRARY_PATH>:exists,
         'and none of the POSIX-only variable, which means nothing there';
+    is App::Ariza::Smoke.notcurses-lib-dir($root, {
+            components => { notcurses => { tag => 'legacy-r9' } },
+        }).absolute,
+        $root.add('native/Notcurses-Native/legacy-r9/lib').absolute,
+        'older manifests derive the same tag-selected directory';
+};
+
+subtest 'notcurses smoke loads the full library without opening a terminal', {
+    plan 8;
+    my $program = App::Ariza::Smoke.notcurses-probe-program;
+    my $full-at = $program.index('my Str $full = nc-lib();');
+    my $visual-at = $program.index('ncvisual_from_rgba');
+    ok $full-at.defined, 'the probe explicitly invokes the full-library resolver';
+    ok $visual-at.defined, 'and creates a one-pixel visual as an operational proof';
+    cmp-ok $full-at, '<', $visual-at,
+        'the full-library resolver runs before the core visual binding';
+    ok $program.index('ncvisual_destroy', $visual-at).defined,
+        'the core visual handle is destroyed after it is created';
+    nok $program.contains('notcurses_version'),
+        'a core-only version query cannot stand in for either proof';
+    nok ($program.contains('notcurses_init') || $program.contains('ncdirect_init')),
+        'and no terminal or Notcurses context is opened';
+
+    my $dir = tmp-dir;
+    LEAVE { rm-rf($dir) }
+    if !runnable-fixtures() {
+        skip 'a shell-script fixture cannot stand in for raku.exe on Windows', 2;
+    }
+    else {
+        my %r = App::Ariza::Smoke.smoke(
+            :archive(pack(fake-bundle($dir, :smoke([]), :notcurses))),
+            :work-dir($dir), :!verbose);
+        my %check = checks-by-name(%r)<notcurses-load>;
+        ok %check<ok>, 'a bundle that records notcurses gets the automatic load check';
+        ok %check<output>.contains('raku ok'),
+            'and it runs through the bundled interpreter under runtime-env';
+    }
 };
 
 subtest 'macOS gets no SQLCipher variables, because it does not need them', {
