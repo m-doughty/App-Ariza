@@ -2,6 +2,31 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.2.3  2026-08-14T21:54:28+01:00
+    - Fix Windows Notcurses startup failures with error 0x7e. Bundle
+      launchers now put the exact staged Notcurses tag/lib directory first
+      on PATH, followed by SQLCipher, across the .cmd, PowerShell and native
+      runner sidecar implementations. NOTCURSES_NATIVE_DATA_DIR still points
+      at the data root so Notcurses::Native retains its terminfo setup.
+    - Give direct `{raku}` smoke commands the identical Windows PATH order,
+      built on a minimal System32-only base instead of the CI host's MSYS2,
+      Visual Studio and vcpkg toolchain PATH. This prevents a missing bundle
+      dependency from being borrowed from the build machine.
+    - Automatically exercise Notcurses in every declared bundle smoke without
+      opening a terminal. The probe calls `nc-lib()` first, which makes the
+      Windows resolver load the full FFmpeg-linked DLL closure with its sibling
+      directory, then creates and destroys a one-pixel visual through the core
+      library as an operational proof. A core-only version query can no longer
+      hide a broken multimedia DLL closure.
+    - Correct the Windows PE-audit contract: it proves that import-table
+      closure is complete and adjacent inside the bundle, not that Win32's
+      live loader will search beside an absolute top-level DLL. The launcher
+      PATH and the target-platform full-library smoke are the runtime proof.
+    - Scaffolded workflows now require
+      `App::Ariza:ver<0.2.2+>:auth<zef:apogee>`, preventing a release lane
+      from resolving an older builder that still emits the broken Windows
+      launcher environment or lacks the full-library smoke.
+
 0.2.1  2026-08-13T23:28:11+01:00
     - Correct the runner-v2 checksums shipped in 0.2.0. Windows bundle
       builds now accept the published x86_64 and ARM64 runners while still
