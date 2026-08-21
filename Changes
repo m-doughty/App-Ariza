@@ -2,6 +2,10 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.2.4  2026-08-21T22:34:22+01:00
+    - Require Template::Jinja2 0.3.0 (Python method dispatch, Jinja2-faithful
+      filters, better template error messages).
+
 0.2.3  2026-08-14T21:54:28+01:00
     - Fix Windows Notcurses startup failures with error 0x7e. Bundle
       launchers now put the exact staged Notcurses tag/lib directory first
