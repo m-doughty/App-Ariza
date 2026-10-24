@@ -10,14 +10,14 @@ my constant PINS-RESOURCE = 'runner-checksums.txt';
 #| runner is ariza's own artefact — the only binary in this distribution
 #| that is not somebody else's software.
 our constant RELEASE-BASE =
-    'https://github.com/m-doughty/App-Ariza/releases/download';
+	'https://github.com/m-doughty/App-Ariza/releases/download';
 
 # Platform slug -> the architecture the published artefact is named
 # after. Deliberately partial: a slug with no entry is a platform with no
 # runner, which is every non-Windows one and is not an error anywhere.
 my constant %ARCH =
-    'windows-x86_64' => 'x86_64',
-    'windows-arm64'  => 'aarch64',
+	'windows-x86_64' => 'x86_64',
+	'windows-arm64'  => 'aarch64',
 ;
 
 # The bootstrap notice is per-process, not per-bundle: a `for` loop over
@@ -29,9 +29,9 @@ my $bootstrap-warned = False;
 # runner-v1 launches the coordinator but would simply return its reserved 75
 # after a successful install instead of relaunching managed `current`.
 method update-handoff-capable(Mu $tag --> Bool:D) {
-    return False unless $tag.defined;
-    my $match = $tag ~~ /^ 'runner-v' (<[0..9]>+) $/;
-    $match.defined && +$match[0] >= 2
+	return False unless $tag.defined;
+	my $match = $tag ~~ /^ 'runner-v' (<[0..9]>+) $/;
+	$match.defined && +$match[0] >= 2
 }
 
 #| The architecture a slug's runner is built for, or the undefined
@@ -40,16 +40,16 @@ method arch-for(Str:D $slug --> Str) { %ARCH{$slug} // Str }
 
 #| The published artefact's filename for a slug, or the undefined C<Str>.
 method artifact-name(Str:D $slug --> Str) {
-    my $arch = self.arch-for($slug);
-    $arch.defined ?? "ariza-runner-windows-$arch.exe" !! Str
+	my $arch = self.arch-for($slug);
+	$arch.defined ?? "ariza-runner-windows-$arch.exe" !! Str
 }
 
 #| The release tag the pinned runner comes from, from
 #| C<resources/RUNNER_VERSION>. The undefined C<Str> when that file is
 #| empty, which is one half of the bootstrap state below.
 method tag(--> Str) {
-    my $text = resource(TAG-RESOURCE).slurp.trim;
-    $text.chars ?? $text !! Str
+	my $text = resource(TAG-RESOURCE).slurp.trim;
+	$text.chars ?? $text !! Str
 }
 
 #| The recorded digests, as C<< artefact => sha256 >>.
@@ -71,27 +71,27 @@ method tag(--> Str) {
 #| testing. A pin file is a few hundred bytes; there is nothing to
 #| stream.
 method pins(IO() $path = resource(PINS-RESOURCE) --> Hash) {
-    my %pins;
-    for $path.slurp.lines.kv -> $i, $line {
-        my $text = $line.trim;
-        next unless $text.chars;
-        next if $text.starts-with('#');
-        my $m = $text ~~ / ^ (<[0..9a..fA..F]> ** 64) \s+ (\S+) $ /;
-        die "ariza: {$path.basename} line {$i + 1} is neither a comment nor"
-          ~ " a `<sha256>  <artefact>` entry: $text"
-            unless $m;
-        %pins{~$m[1]} = (~$m[0]).lc;
-    }
-    %pins
+	my %pins;
+	for $path.slurp.lines.kv -> $i, $line {
+		my $text = $line.trim;
+		next unless $text.chars;
+		next if $text.starts-with('#');
+		my $m = $text ~~ / ^ (<[0..9a..fA..F]> ** 64) \s+ (\S+) $ /;
+		die "ariza: {$path.basename} line {$i + 1} is neither a comment nor"
+		  ~ " a `<sha256>  <artefact>` entry: $text"
+			unless $m;
+		%pins{~$m[1]} = (~$m[0]).lc;
+	}
+	%pins
 }
 
 #| The download URL for a slug's runner.
 method url(Str:D :$slug!, Str :$tag = self.tag --> Str) {
-    my $name = self.artifact-name($slug)
-        // die "ariza: no runner is published for '$slug'";
-    die "ariza: no runner release tag in resources/{TAG-RESOURCE}"
-        unless $tag.defined && $tag.chars;
-    "{RELEASE-BASE}/$tag/$name"
+	my $name = self.artifact-name($slug)
+		// die "ariza: no runner is published for '$slug'";
+	die "ariza: no runner release tag in resources/{TAG-RESOURCE}"
+		unless $tag.defined && $tag.chars;
+	"{RELEASE-BASE}/$tag/$name"
 }
 
 #| The download cache root: C<$XDG_CACHE_HOME/ariza/runner>, falling
@@ -99,8 +99,8 @@ method url(Str:D :$slug!, Str :$tag = self.tag --> Str) {
 #| two ariza versions on one machine never hand each other's runner to a
 #| bundle.
 method cache-dir(--> IO::Path) {
-    my $base = %*ENV<XDG_CACHE_HOME> || $*HOME.add('.cache').absolute;
-    $base.IO.add('ariza').add('runner')
+	my $base = %*ENV<XDG_CACHE_HOME> || $*HOME.add('.cache').absolute;
+	$base.IO.add('ariza').add('runner')
 }
 
 #| Download a slug's runner into the cache, or reuse the cached copy,
@@ -110,43 +110,43 @@ method cache-dir(--> IO::Path) {
 #| executable that will be run on a user's machine, so a copy that does
 #| not hash to the pin is deleted and the build stops.
 method fetch(
-    Str:D :$slug!,
-    IO() :$cache-dir = self.cache-dir,
-    :%pins = self.pins,
-    Str :$tag = self.tag,
-    :&download = &http-download,
-    --> IO::Path
+	Str:D :$slug!,
+	IO() :$cache-dir = self.cache-dir,
+	:%pins = self.pins,
+	Str :$tag = self.tag,
+	:&download = &http-download,
+	--> IO::Path
 ) {
-    my $name = self.artifact-name($slug)
-        // die "ariza: no runner is published for '$slug'";
-    my $want = %pins{$name}
-        // die "ariza: {PINS-RESOURCE} records no digest for $name"
-             ~ " — a runner that cannot be verified is not one to ship";
+	my $name = self.artifact-name($slug)
+		// die "ariza: no runner is published for '$slug'";
+	my $want = %pins{$name}
+		// die "ariza: {PINS-RESOURCE} records no digest for $name"
+			 ~ " — a runner that cannot be verified is not one to ship";
 
-    my $dir  = ensure-dir(ensure-dir($cache-dir).add($tag));
-    my $file = $dir.add($name);
+	my $dir  = ensure-dir(ensure-dir($cache-dir).add($tag));
+	my $file = $dir.add($name);
 
-    if $file.f {
-        my $have = sha256-file($file);
-        return $file if $have eq $want;
-        # A cached executable that no longer matches its pin is either a
-        # half-written download or something that changed under us.
-        # Either way it is not the file the pin describes.
-        note "ariza: cached $name failed its recorded digest, re-downloading";
-        $file.unlink;
-    }
+	if $file.f {
+		my $have = sha256-file($file);
+		return $file if $have eq $want;
+		# A cached executable that no longer matches its pin is either a
+		# half-written download or something that changed under us.
+		# Either way it is not the file the pin describes.
+		note "ariza: cached $name failed its recorded digest, re-downloading";
+		$file.unlink;
+	}
 
-    download(self.url(:$slug, :$tag), $file);
+	download(self.url(:$slug, :$tag), $file);
 
-    my $have = sha256-file($file);
-    unless $have eq $want {
-        $file.unlink;
-        die "ariza: the runner downloaded for $slug does not match its pin\n"
-          ~ "    expected  $want\n"
-          ~ "    got       $have\n"
-          ~ "    from      {self.url(:$slug, :$tag)}";
-    }
-    $file
+	my $have = sha256-file($file);
+	unless $have eq $want {
+		$file.unlink;
+		die "ariza: the runner downloaded for $slug does not match its pin\n"
+		  ~ "    expected  $want\n"
+		  ~ "    got       $have\n"
+		  ~ "    from      {self.url(:$slug, :$tag)}";
+	}
+	$file
 }
 
 #| Stage the runner into C<< <bundle>/bin/<exec>.exe >> and return what
@@ -168,46 +168,46 @@ method fetch(
 #| explains why. That is the bootstrap state, and it ends the moment a
 #| runner release is published and its checksums are committed.
 method stage(
-    IO() :$bundle-dir!,
-    Str:D :$slug!,
-    Str:D :$exec!,
-    IO() :$cache-dir = self.cache-dir,
-    IO() :$pins-path,
-    :&download = &http-download,
-    --> Hash
+	IO() :$bundle-dir!,
+	Str:D :$slug!,
+	Str:D :$exec!,
+	IO() :$cache-dir = self.cache-dir,
+	IO() :$pins-path,
+	:&download = &http-download,
+	--> Hash
 ) {
-    return %() unless self.arch-for($slug).defined;
+	return %() unless self.arch-for($slug).defined;
 
-    my $tag  = self.tag;
-    my %pins = $pins-path.defined ?? self.pins($pins-path) !! self.pins;
+	my $tag  = self.tag;
+	my %pins = $pins-path.defined ?? self.pins($pins-path) !! self.pins;
 
-    unless $tag.defined && %pins {
-        unless $bootstrap-warned {
-            $bootstrap-warned = True;
-            note "ariza: no pinned runner build yet, so this Windows bundle"
-               ~ " ships without bin/$exec.exe.\n"
-               ~ "    The .cmd and .ps1 launchers are there and work; what is"
-               ~ " missing is the compiled\n"
-               ~ "    entry point that survives script-execution policy and"
-               ~ " passes arguments through\n"
-               ~ "    verbatim. Publish a {$tag // 'runner'} release from"
-               ~ " runner/ and record its checksums\n"
-               ~ "    in resources/{PINS-RESOURCE} to turn it on.";
-        }
-        return %();
-    }
+	unless $tag.defined && %pins {
+		unless $bootstrap-warned {
+			$bootstrap-warned = True;
+			note "ariza: no pinned runner build yet, so this Windows bundle"
+			   ~ " ships without bin/$exec.exe.\n"
+			   ~ "    The .cmd and .ps1 launchers are there and work; what is"
+			   ~ " missing is the compiled\n"
+			   ~ "    entry point that survives script-execution policy and"
+			   ~ " passes arguments through\n"
+			   ~ "    verbatim. Publish a {$tag // 'runner'} release from"
+			   ~ " runner/ and record its checksums\n"
+			   ~ "    in resources/{PINS-RESOURCE} to turn it on.";
+		}
+		return %();
+	}
 
-    my $name = self.artifact-name($slug);
-    my $src  = self.fetch(:$slug, :$cache-dir, :%pins, :$tag, :&download);
-    my $dst  = ensure-dir($bundle-dir.add('bin')).add("$exec.exe");
+	my $name = self.artifact-name($slug);
+	my $src  = self.fetch(:$slug, :$cache-dir, :%pins, :$tag, :&download);
+	my $dst  = ensure-dir($bundle-dir.add('bin')).add("$exec.exe");
 
-    %(
-        path     => copy-writable($src, $dst),
-        artifact => $name,
-        tag      => $tag,
-        url      => self.url(:$slug, :$tag),
-        sha256   => %pins{$name},
-    )
+	%(
+		path     => copy-writable($src, $dst),
+		artifact => $name,
+		tag      => $tag,
+		url      => self.url(:$slug, :$tag),
+		sha256   => %pins{$name},
+	)
 }
 
 =begin pod

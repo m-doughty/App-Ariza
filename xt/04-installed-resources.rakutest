@@ -33,8 +33,8 @@ plan 4;
 
 my $zef = have-command('zef');
 unless $zef {
-    skip 'no zef on this machine to install with', 4;
-    exit 0;
+	skip 'no zef on this machine to install with', 4;
+	exit 0;
 }
 
 my $root = $*TMPDIR.add("ariza-installed-{$*PID}-{(^1_000_000).pick}");
@@ -43,21 +43,21 @@ LEAVE { rm-rf($root) }
 
 my $dist = $?FILE.IO.parent(2).absolute;
 my ($code, $out, $err) = try-run(
-    ['zef', 'install', $dist, "--to=inst#{$repo.absolute}", '--/test',
-     '--force-install']);
+	['zef', 'install', $dist, "--to=inst#{$repo.absolute}", '--/test',
+	 '--force-install']);
 unless $code == 0 {
-    diag(($err || $out).lines.tail(10).join("\n"));
-    flunk 'ariza installs into a throwaway repository';
-    skip 'nothing installed to interrogate', 3;
-    exit 1;
+	diag(($err || $out).lines.tail(10).join("\n"));
+	flunk 'ariza installs into a throwaway repository';
+	skip 'nothing installed to interrogate', 3;
+	exit 1;
 }
 pass 'ariza installs into a throwaway repository';
 
 #| Run a snippet under the INSTALLED copy, and give back its output.
 sub installed(Str:D $program --> Str) {
-    my ($c, $o, $e) = try-run(['raku', "-Iinst#{$repo.absolute}", '-e', $program]);
-    die "ariza: the installed copy failed: {($e || $o).trim}" unless $c == 0;
-    $o.trim
+	my ($c, $o, $e) = try-run(['raku', "-Iinst#{$repo.absolute}", '-e', $program]);
+	die "ariza: the installed copy failed: {($e || $o).trim}" unless $c == 0;
+	$o.trim
 }
 
 my @texts = installed(q:to/RAKU/).lines;
@@ -66,9 +66,9 @@ my @texts = installed(q:to/RAKU/).lines;
     RAKU
 
 is @texts.grep({ !.contains('-') && !.contains('.txt') }).List, (),
-    'the installed licence texts are keyed by name, not by content hash';
+	'the installed licence texts are keyed by name, not by content hash';
 ok @texts.first('MIT.txt').defined,
-    'so a row citing LICENSES/MIT.txt finds the text it names';
+	'so a row citing LICENSES/MIT.txt finds the text it names';
 
 my $provenance = installed(q:to/RAKU/);
     use App::Ariza::Licensing;
@@ -79,5 +79,5 @@ my $provenance = installed(q:to/RAKU/);
     RAKU
 
 is $provenance, 'ariza runtime data (runtime-third-party.json)',
-    'and a row names the data file a reader can go and look at, rather'
+	'and a row names the data file a reader can go and look at, rather'
   ~ ' than the digest zef staged it under';

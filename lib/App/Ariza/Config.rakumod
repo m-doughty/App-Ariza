@@ -22,25 +22,25 @@ has      $.warnings = ();
 has IO::Path $.path;
 
 my sub die-with-key(Str:D $key, Str:D $expected) {
-    die "ariza: $key must be $expected";
+	die "ariza: $key must be $expected";
 }
 
 my sub as-str(Str:D $key, $value --> Str) {
-    die-with-key($key, 'a string') unless $value.defined && $value ~~ Str;
-    $value.Str
+	die-with-key($key, 'a string') unless $value.defined && $value ~~ Str;
+	$value.Str
 }
 
 my sub as-str-list(Str:D $key, $value --> List) {
-    die-with-key($key, 'an array of strings') unless $value.defined && $value ~~ Positional;
-    for $value.list -> $elem {
-        die-with-key($key, 'an array of strings') unless $elem.defined && $elem ~~ Str;
-    }
-    (|$value,).List
+	die-with-key($key, 'an array of strings') unless $value.defined && $value ~~ Positional;
+	for $value.list -> $elem {
+		die-with-key($key, 'an array of strings') unless $elem.defined && $elem ~~ Str;
+	}
+	(|$value,).List
 }
 
 my sub as-hash(Str:D $key, $value) {
-    die-with-key($key, 'a table') unless $value.defined && $value ~~ Associative;
-    $value
+	die-with-key($key, 'a table') unless $value.defined && $value ~~ Associative;
+	$value
 }
 
 # `bundle.smoke` is one of:
@@ -51,63 +51,63 @@ my sub as-hash(Str:D $key, $value) {
 # The nested-array form exists so a command containing spaces, quotes or
 # a whole Raku program can be written as argv and never go near a shell.
 my constant SMOKE-SHAPE =
-    'a string, or an array whose entries are strings or arrays of strings';
+	'a string, or an array whose entries are strings or arrays of strings';
 
 my sub as-smoke(Str:D $key, $value) {
-    return $value if $value ~~ Str;
-    die-with-key($key, SMOKE-SHAPE) unless $value.defined && $value ~~ Positional;
-    for $value.list -> $entry {
-        next if $entry ~~ Str;
-        die-with-key($key, SMOKE-SHAPE) unless $entry.defined && $entry ~~ Positional;
-        die "ariza: $key contains an empty command" unless $entry.list;
-        for $entry.list -> $word {
-            die-with-key($key, SMOKE-SHAPE) unless $word.defined && $word ~~ Str;
-        }
-    }
-    $value
+	return $value if $value ~~ Str;
+	die-with-key($key, SMOKE-SHAPE) unless $value.defined && $value ~~ Positional;
+	for $value.list -> $entry {
+		next if $entry ~~ Str;
+		die-with-key($key, SMOKE-SHAPE) unless $entry.defined && $entry ~~ Positional;
+		die "ariza: $key contains an empty command" unless $entry.list;
+		for $entry.list -> $word {
+			die-with-key($key, SMOKE-SHAPE) unless $word.defined && $word ~~ Str;
+		}
+	}
+	$value
 }
 
 my sub parse-app($value, %attrs, @warnings) {
-    my %obj = as-hash('app', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'name'    { %attrs<app-name>    = as-str('app.name', $v); }
-            when 'exec'    { %attrs<app-exec>    = as-str('app.exec', $v); }
-            when 'display' { %attrs<app-display> = as-str('app.display', $v); }
-            default {
-                @warnings.push("unknown key 'app.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('app', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'name'    { %attrs<app-name>    = as-str('app.name', $v); }
+			when 'exec'    { %attrs<app-exec>    = as-str('app.exec', $v); }
+			when 'display' { %attrs<app-display> = as-str('app.display', $v); }
+			default {
+				@warnings.push("unknown key 'app.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 my sub parse-bundle($value, %attrs, @warnings) {
-    my %obj = as-hash('bundle', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'platforms' {
-                my @slugs = as-str-list('bundle.platforms', $v);
-                # A misspelled slug is not a forward-compatibility
-                # problem — the supported set is a closed enumeration of
-                # what ariza itself can build — and silently dropping it
-                # would ship a release quietly missing a platform. Fail
-                # at load time instead, naming the whole set.
-                for @slugs -> $slug {
-                    die "ariza: bundle.platforms contains unknown platform '$slug'"
-                      ~ " (expected one of: {known-slugs.join(', ')})"
-                        unless known-slug($slug);
-                }
-                %attrs<bundle-platforms> = @slugs;
-            }
-            when 'native' { %attrs<bundle-native> = as-str-list('bundle.native', $v); }
-            when 'smoke'  { %attrs<bundle-smoke>  = as-smoke('bundle.smoke', $v); }
-            default {
-                @warnings.push("unknown key 'bundle.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('bundle', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'platforms' {
+				my @slugs = as-str-list('bundle.platforms', $v);
+				# A misspelled slug is not a forward-compatibility
+				# problem — the supported set is a closed enumeration of
+				# what ariza itself can build — and silently dropping it
+				# would ship a release quietly missing a platform. Fail
+				# at load time instead, naming the whole set.
+				for @slugs -> $slug {
+					die "ariza: bundle.platforms contains unknown platform '$slug'"
+					  ~ " (expected one of: {known-slugs.join(', ')})"
+						unless known-slug($slug);
+				}
+				%attrs<bundle-platforms> = @slugs;
+			}
+			when 'native' { %attrs<bundle-native> = as-str-list('bundle.native', $v); }
+			when 'smoke'  { %attrs<bundle-smoke>  = as-smoke('bundle.smoke', $v); }
+			default {
+				@warnings.push("unknown key 'bundle.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 # A GitHub `owner/name`, and nothing else: it is interpolated straight
@@ -133,88 +133,88 @@ my constant WARM-DEFAULT = ('--version',);
 my constant WARM-SHAPE = 'a string, an array of strings, or false';
 
 my sub as-warm(Str:D $key, $value) {
-    return $value if $value ~~ Bool;
-    if $value ~~ Str {
-        # An empty string is not "the default" and it is not "off"; it is
-        # a launcher run with no arguments, which for a full-screen
-        # application never returns. Both intentions have a spelling, so
-        # say which one is meant rather than guessing.
-        die "ariza: $key is empty — use `false` to skip the warm-up, or"
-          ~ " arguments the app returns from"
-            unless $value.words;
-        return $value;
-    }
-    die-with-key($key, WARM-SHAPE) unless $value.defined && $value ~~ Positional;
-    die "ariza: $key is empty — use `false` to skip the warm-up, or"
-      ~ " arguments the app returns from"
-        unless $value.list;
-    for $value.list -> $word {
-        die-with-key($key, WARM-SHAPE) unless $word.defined && $word ~~ Str;
-    }
-    $value
+	return $value if $value ~~ Bool;
+	if $value ~~ Str {
+		# An empty string is not "the default" and it is not "off"; it is
+		# a launcher run with no arguments, which for a full-screen
+		# application never returns. Both intentions have a spelling, so
+		# say which one is meant rather than guessing.
+		die "ariza: $key is empty — use `false` to skip the warm-up, or"
+		  ~ " arguments the app returns from"
+			unless $value.words;
+		return $value;
+	}
+	die-with-key($key, WARM-SHAPE) unless $value.defined && $value ~~ Positional;
+	die "ariza: $key is empty — use `false` to skip the warm-up, or"
+	  ~ " arguments the app returns from"
+		unless $value.list;
+	for $value.list -> $word {
+		die-with-key($key, WARM-SHAPE) unless $word.defined && $word ~~ Str;
+	}
+	$value
 }
 
 my sub parse-installer($value, %attrs, @warnings) {
-    my %obj = as-hash('installer', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'warm' { %attrs<installer-warm> = as-warm('installer.warm', $v); }
-            when 'repo' {
-                my $repo = as-str('installer.repo', $v);
-                # A closed shape, like a platform slug: a typo here cannot
-                # be a future feature, and the failure it causes lands on
-                # a stranger's machine rather than on the author's.
-                die "ariza: installer.repo must look like 'owner/name'"
-                  ~ " (got '$repo')"
-                    unless $repo ~~ REPO-SHAPE;
-                %attrs<installer-repo> = $repo;
-            }
-            default {
-                @warnings.push("unknown key 'installer.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('installer', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'warm' { %attrs<installer-warm> = as-warm('installer.warm', $v); }
+			when 'repo' {
+				my $repo = as-str('installer.repo', $v);
+				# A closed shape, like a platform slug: a typo here cannot
+				# be a future feature, and the failure it causes lands on
+				# a stranger's machine rather than on the author's.
+				die "ariza: installer.repo must look like 'owner/name'"
+				  ~ " (got '$repo')"
+					unless $repo ~~ REPO-SHAPE;
+				%attrs<installer-repo> = $repo;
+			}
+			default {
+				@warnings.push("unknown key 'installer.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 my sub parse-updates($value, %attrs, @warnings) {
-    my %obj = as-hash('updates', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'enabled' {
-                die-with-key('updates.enabled', 'true or false')
-                    unless $v.defined && $v ~~ Bool;
-                %attrs<updates-enabled> = $v;
-            }
-            default {
-                @warnings.push("unknown key 'updates.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('updates', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'enabled' {
+				die-with-key('updates.enabled', 'true or false')
+					unless $v.defined && $v ~~ Bool;
+				%attrs<updates-enabled> = $v;
+			}
+			default {
+				@warnings.push("unknown key 'updates.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 my sub parse-ci($value, %attrs, @warnings) {
-    my %obj = as-hash('ci', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'ariza-source' {
-                my $src = as-str('ci.ariza-source', $v).trim;
-                # Not a closed set — anything `zef install` accepts is
-                # valid, and naming them here would date badly — but an
-                # empty one renders `zef install --/test` with nothing to
-                # install, which is a workflow that succeeds at nothing.
-                die "ariza: ci.ariza-source must not be empty"
-                  ~ " (use \"fez\", or a URL zef can install from)"
-                    unless $src.chars;
-                %attrs<ci-ariza-source> = $src;
-            }
-            default {
-                @warnings.push("unknown key 'ci.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('ci', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'ariza-source' {
+				my $src = as-str('ci.ariza-source', $v).trim;
+				# Not a closed set — anything `zef install` accepts is
+				# valid, and naming them here would date badly — but an
+				# empty one renders `zef install --/test` with nothing to
+				# install, which is a workflow that succeeds at nothing.
+				die "ariza: ci.ariza-source must not be empty"
+				  ~ " (use \"fez\", or a URL zef can install from)"
+					unless $src.chars;
+				%attrs<ci-ariza-source> = $src;
+			}
+			default {
+				@warnings.push("unknown key 'ci.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 # The fields of a licensing row, which is the same shape everywhere:
@@ -223,8 +223,8 @@ my sub parse-ci($value, %attrs, @warnings) {
 # the vocabulary identical is what lets an app describe a bundled font
 # in the same words the notcurses pack describes FFmpeg in.
 my constant ROW-STRINGS =
-    <id name version spdx-license conveyed-under copyright project-url
-     source notes>;
+	<id name version spdx-license conveyed-under copyright project-url
+	 source notes>;
 my constant ROW-LISTS = <license-files files>;
 
 # What each of the three tables accepts. `licensing.app` has no `id`
@@ -233,136 +233,136 @@ my constant ROW-LISTS = <license-files files>;
 # already found, so it names it and corrects it rather than inventing
 # provenance for it.
 my constant APP-KEYS =
-    <name version spdx-license conveyed-under copyright project-url source
-     notes license-files>;
+	<name version spdx-license conveyed-under copyright project-url source
+	 notes license-files>;
 my constant THIRD-PARTY-KEYS = (|ROW-STRINGS, |ROW-LISTS);
 my constant DIST-KEYS =
-    <name version spdx-license conveyed-under copyright project-url notes
-     license-files>;
+	<name version spdx-license conveyed-under copyright project-url notes
+	 license-files>;
 
 my sub parse-row(Str:D $key, $value, @warnings, :@allow!, :@require = () --> Hash) {
-    my %obj = as-hash($key, $value);
-    my %row;
-    for %obj.kv -> $k, $v {
-        next if $k.starts-with('//');
-        my $dotted = $key ~ '.' ~ $k;
-        unless @allow.first($k) {
-            @warnings.push("unknown key '$dotted' in ariza.toml (ignored)");
-            next;
-        }
-        %row{$k} = ROW-LISTS.first($k)
-            ?? as-str-list($dotted, $v)
-            !! as-str($dotted, $v);
-    }
-    for @require -> $required {
-        die "ariza: {$key}.{$required} is required"
-            unless %row{$required}.defined && %row{$required}.chars;
-    }
-    %row
+	my %obj = as-hash($key, $value);
+	my %row;
+	for %obj.kv -> $k, $v {
+		next if $k.starts-with('//');
+		my $dotted = $key ~ '.' ~ $k;
+		unless @allow.first($k) {
+			@warnings.push("unknown key '$dotted' in ariza.toml (ignored)");
+			next;
+		}
+		%row{$k} = ROW-LISTS.first($k)
+			?? as-str-list($dotted, $v)
+			!! as-str($dotted, $v);
+	}
+	for @require -> $required {
+		die "ariza: {$key}.{$required} is required"
+			unless %row{$required}.defined && %row{$required}.chars;
+	}
+	%row
 }
 
 my sub parse-rows(Str:D $key, $value, @warnings, :@allow!, :@require = () --> List) {
-    die-with-key($key, 'an array of tables')
-        unless $value.defined && $value ~~ Positional;
-    # An explicit loop, not `.map(...).List`: the map is lazy, so a row
-    # missing a required key would not be complained about until
-    # something happened to consume the result — which is outside
-    # whatever the caller wrapped this in, and a long way from the file
-    # that is wrong.
-    my @rows;
-    @rows.push(parse-row($key, $_, @warnings, :@allow, :@require))
-        for $value.list;
-    @rows.List
+	die-with-key($key, 'an array of tables')
+		unless $value.defined && $value ~~ Positional;
+	# An explicit loop, not `.map(...).List`: the map is lazy, so a row
+	# missing a required key would not be complained about until
+	# something happened to consume the result — which is outside
+	# whatever the caller wrapped this in, and a long way from the file
+	# that is wrong.
+	my @rows;
+	@rows.push(parse-row($key, $_, @warnings, :@allow, :@require))
+		for $value.list;
+	@rows.List
 }
 
 my sub parse-licensing($value, %attrs, @warnings) {
-    my %obj = as-hash('licensing', $value);
-    for %obj.kv -> $key, $v {
-        next if $key.starts-with('//');
-        given $key {
-            when 'strict' {
-                die-with-key('licensing.strict', 'true or false')
-                    unless $v.defined && $v ~~ Bool;
-                %attrs<licensing-strict> = $v;
-            }
-            when 'app' {
-                %attrs<licensing-app> =
-                    parse-row('licensing.app', $v, @warnings, :allow(APP-KEYS));
-            }
-            when 'third-party' {
-                %attrs<licensing-third-party> =
-                    parse-rows('licensing.third-party', $v, @warnings,
-                               :allow(THIRD-PARTY-KEYS),
-                               :require(<name spdx-license>));
-            }
-            when 'dists' {
-                %attrs<licensing-dists> =
-                    parse-rows('licensing.dists', $v, @warnings,
-                               :allow(DIST-KEYS), :require(('name',)));
-            }
-            default {
-                @warnings.push("unknown key 'licensing.$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	my %obj = as-hash('licensing', $value);
+	for %obj.kv -> $key, $v {
+		next if $key.starts-with('//');
+		given $key {
+			when 'strict' {
+				die-with-key('licensing.strict', 'true or false')
+					unless $v.defined && $v ~~ Bool;
+				%attrs<licensing-strict> = $v;
+			}
+			when 'app' {
+				%attrs<licensing-app> =
+					parse-row('licensing.app', $v, @warnings, :allow(APP-KEYS));
+			}
+			when 'third-party' {
+				%attrs<licensing-third-party> =
+					parse-rows('licensing.third-party', $v, @warnings,
+							   :allow(THIRD-PARTY-KEYS),
+							   :require(<name spdx-license>));
+			}
+			when 'dists' {
+				%attrs<licensing-dists> =
+					parse-rows('licensing.dists', $v, @warnings,
+							   :allow(DIST-KEYS), :require(('name',)));
+			}
+			default {
+				@warnings.push("unknown key 'licensing.$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 }
 
 #| Load `ariza.toml` from an app's repository. `$dir` is the repository
 #| root; the filename is fixed.
 method load(App::Ariza::Config:U: IO() $dir = $*CWD --> App::Ariza::Config) {
-    self.load-file($dir.add('ariza.toml'));
+	self.load-file($dir.add('ariza.toml'));
 }
 
 #| Load a config from an exact path, for callers that keep the file
 #| somewhere other than the repository root (tests, mostly).
 method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
-    die "ariza: no ariza.toml at $path" unless $path.f;
+	die "ariza: no ariza.toml at $path" unless $path.f;
 
-    my $content = do {
-        CATCH { default { die "ariza: could not read $path: {.message}" } }
-        $path.slurp;
-    };
+	my $content = do {
+		CATCH { default { die "ariza: could not read $path: {.message}" } }
+		$path.slurp;
+	};
 
-    # An empty document is valid TOML — an empty table — but Config::TOML
-    # rejects it outright. Short-circuit so an empty manifest fails the
-    # honest way, on its missing required keys, rather than as "malformed".
-    my $data = $content.trim
-        ?? do {
-            CATCH { default { die "ariza: malformed TOML in $path: {.message}" } }
-            from-toml($content);
-        }
-        !! {};
+	# An empty document is valid TOML — an empty table — but Config::TOML
+	# rejects it outright. Short-circuit so an empty manifest fails the
+	# honest way, on its missing required keys, rather than as "malformed".
+	my $data = $content.trim
+		?? do {
+			CATCH { default { die "ariza: malformed TOML in $path: {.message}" } }
+			from-toml($content);
+		}
+		!! {};
 
-    die "ariza: $path must contain a TOML table"
-        unless $data.defined && $data ~~ Associative;
+	die "ariza: $path must contain a TOML table"
+		unless $data.defined && $data ~~ Associative;
 
-    my @warnings;
-    my %attrs;
+	my @warnings;
+	my %attrs;
 
-    for $data.kv -> $key, $value {
-        next if $key.starts-with('//');
-        given $key {
-            when 'app'       { parse-app($value, %attrs, @warnings); }
-            when 'bundle'    { parse-bundle($value, %attrs, @warnings); }
-            when 'installer' { parse-installer($value, %attrs, @warnings); }
-            when 'updates'   { parse-updates($value, %attrs, @warnings); }
-            when 'ci'        { parse-ci($value, %attrs, @warnings); }
-            when 'licensing' { parse-licensing($value, %attrs, @warnings); }
-            default {
-                @warnings.push("unknown key '$key' in ariza.toml (ignored)");
-            }
-        }
-    }
+	for $data.kv -> $key, $value {
+		next if $key.starts-with('//');
+		given $key {
+			when 'app'       { parse-app($value, %attrs, @warnings); }
+			when 'bundle'    { parse-bundle($value, %attrs, @warnings); }
+			when 'installer' { parse-installer($value, %attrs, @warnings); }
+			when 'updates'   { parse-updates($value, %attrs, @warnings); }
+			when 'ci'        { parse-ci($value, %attrs, @warnings); }
+			when 'licensing' { parse-licensing($value, %attrs, @warnings); }
+			default {
+				@warnings.push("unknown key '$key' in ariza.toml (ignored)");
+			}
+		}
+	}
 
-    for <app.name app.exec app.display> -> $required {
-        my $attr = $required.subst('.', '-');
-        die "ariza: $required is required in $path" unless %attrs{$attr}.defined;
-    }
+	for <app.name app.exec app.display> -> $required {
+		my $attr = $required.subst('.', '-');
+		die "ariza: $required is required in $path" unless %attrs{$attr}.defined;
+	}
 
-    die "ariza: updates.enabled requires installer.repo in $path"
-        if %attrs<updates-enabled> && !%attrs<installer-repo>.defined;
+	die "ariza: updates.enabled requires installer.repo in $path"
+		if %attrs<updates-enabled> && !%attrs<installer-repo>.defined;
 
-    App::Ariza::Config.new(|%attrs, :$path, :warnings(@warnings.List));
+	App::Ariza::Config.new(|%attrs, :$path, :warnings(@warnings.List));
 }
 
 #| The arguments a generated installer runs the newly installed launcher
@@ -374,12 +374,12 @@ method load-file(App::Ariza::Config:U: IO() $path --> App::Ariza::Config) {
 #| is a full-screen program that never returns, inside an installer with
 #| no timeout.
 method warm-argv(--> List) {
-    return () if $!installer-warm ~~ Bool && !$!installer-warm;
-    return WARM-DEFAULT.List
-        if !$!installer-warm.defined || $!installer-warm ~~ Bool;
-    $!installer-warm ~~ Str
-        ?? $!installer-warm.words.List
-        !! $!installer-warm.list.map(*.Str).List
+	return () if $!installer-warm ~~ Bool && !$!installer-warm;
+	return WARM-DEFAULT.List
+		if !$!installer-warm.defined || $!installer-warm ~~ Bool;
+	$!installer-warm ~~ Str
+		?? $!installer-warm.words.List
+		!! $!installer-warm.list.map(*.Str).List
 }
 
 #| Whether the generated installers warm this app up at all.
@@ -390,12 +390,12 @@ method warm-enabled(--> Bool) { so self.warm-argv }
 #| A string entry is split on whitespace; an array entry is taken word
 #| for word. Empty entries are dropped rather than run.
 method smoke-argvs(--> List) {
-    return () without $!bundle-smoke;
-    my @entries = $!bundle-smoke ~~ Str ?? ($!bundle-smoke,) !! $!bundle-smoke.list;
-    my @argvs = @entries.map({
-        $_ ~~ Str ?? .words.List !! .list.map(*.Str).List
-    }).grep(*.elems);
-    @argvs.List
+	return () without $!bundle-smoke;
+	my @entries = $!bundle-smoke ~~ Str ?? ($!bundle-smoke,) !! $!bundle-smoke.list;
+	my @argvs = @entries.map({
+		$_ ~~ Str ?? .words.List !! .list.map(*.Str).List
+	}).grep(*.elems);
+	@argvs.List
 }
 
 #| Every smoke command as argv, with C<{placeholder}> substitutions
@@ -407,33 +407,33 @@ method smoke-argvs(--> List) {
 #| than an empty string: a smoke command with a hole in it would "pass"
 #| by running something entirely different.
 method smoke-commands(*%vars --> List) {
-    my %all = exec => $!app-exec // '', |%vars;
-    # Built eagerly, into an Array: a lazy `.map` would defer the
-    # unknown-placeholder check until the caller happened to consume the
-    # result, which is outside whatever `try` they wrapped this in.
-    my @commands;
-    for self.smoke-argvs -> @argv {
-        my @words;
-        for @argv -> $word {
-            my $out = $word;
-            $out = $out.subst("\{$_\}", ~%all{$_}, :g) for %all.keys;
-            die "ariza: bundle.smoke has an unknown placeholder in '$word'"
-              ~ " (known: {%all.keys.sort.map({ "\{$_\}" }).join(', ')})"
-                if $out ~~ / '{' <[a..z-]>+ '}' /;
-            @words.push($out);
-        }
-        @commands.push(@words.List);
-    }
-    @commands.List
+	my %all = exec => $!app-exec // '', |%vars;
+	# Built eagerly, into an Array: a lazy `.map` would defer the
+	# unknown-placeholder check until the caller happened to consume the
+	# result, which is outside whatever `try` they wrapped this in.
+	my @commands;
+	for self.smoke-argvs -> @argv {
+		my @words;
+		for @argv -> $word {
+			my $out = $word;
+			$out = $out.subst("\{$_\}", ~%all{$_}, :g) for %all.keys;
+			die "ariza: bundle.smoke has an unknown placeholder in '$word'"
+			  ~ " (known: {%all.keys.sort.map({ "\{$_\}" }).join(', ')})"
+				if $out ~~ / '{' <[a..z-]>+ '}' /;
+			@words.push($out);
+		}
+		@commands.push(@words.List);
+	}
+	@commands.List
 }
 
 #| The first smoke command as a single display string, with C<{exec}>
 #| expanded, or the undefined C<Str> when none is configured. This is for
 #| showing a human what will run; C<smoke-commands> is for running it.
 method smoke-command(--> Str) {
-    my @argvs = self.smoke-argvs;
-    return Str unless @argvs;
-    @argvs[0].map({ .subst('{exec}', $!app-exec // '', :g) }).join(' ')
+	my @argvs = self.smoke-argvs;
+	return Str unless @argvs;
+	@argvs[0].map({ .subst('{exec}', $!app-exec // '', :g) }).join(' ')
 }
 
 =begin pod

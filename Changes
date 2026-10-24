@@ -2,6 +2,54 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.3.0  2026-10-24T22:16:15+01:00
+
+    - Requires JSON::Fast 0.21.0 or later (zef:timo). 0.19 (cpan:TIMOTIMO)
+      fails its own tests under the RakuAST compiler frontend that Rakudo
+      2026.09 makes the default, so installing this distribution stopped
+      at that dependency.
+    - Scaffolded test.yml now runs the suite on every runner under each
+      Rakudo release in the new `rakudo.test-versions` pin in
+      versions.toml, currently 2026.07 (the last release on the legacy
+      compiler frontend) and 2026.09 (RakuAST as the default frontend).
+      The matrix gains a `raku-version` axis, jobs are named
+      `<os> / <release>`, and setup-raku installs the matrix release
+      instead of `latest`. The pin is independent of `[rakudo]`
+      `version`/`revision`, which remain the runtime a bundle embeds.
+      Because scaffold-ci never rewrites an existing test.yml, apps pick
+      this up by hand or with `ariza scaffold-ci --force`.
+    - `rakudo.test-versions` is validated at load: it must be a non-empty
+      array of quoted release names (`YYYY.MM` or `YYYY.MM.N`), none
+      repeated, oldest first, and anything else dies naming the key. An
+      unquoted `2026.10` is refused with a hint rather than read as the
+      TOML number 2026.1. A versions.toml without the key still loads,
+      but scaffold-ci refuses to render against it.
+    - [2026-10-24] On Rakudo 2026.09 under macOS, a build leaked a file
+      descriptor every time it looked for a tool, aliased or re-signed a
+      staged library, or built a smoke environment, and kept them all
+      until it finished. That Rakudo builds $*DISTRO afresh on every read
+      ($*KERNEL.name asks it too), and on macOS each build leaves a pipe
+      open. Whether the host is Windows, and its kernel's name, are now
+      read once, when each module is compiled. t/22 counts the process's
+      handles around a few hundred of each.
+    - [2026-10-24] Linux installs and audits no longer need patchelf, or
+      readelf. The native audit died before reading a single file on a
+      Linux machine without patchelf, and on any machine without
+      readelf (every Mac), even for a bundle with no ELF in it, so
+      `ariza smoke` -- and this distribution's own tests -- failed on a
+      stock machine. A new module, App::Ariza::ELF, reads DT_NEEDED,
+      DT_RPATH and DT_RUNPATH out of an ELF file's bytes (32- and 64-bit,
+      either byte order) and dies naming the file and the fault on
+      anything malformed or truncated. The audit uses it on every host,
+      and asks a Linux machine only for `ldd`; the staging pass uses it
+      where there is no `ldd`. Building a Linux bundle that carries
+      SQLCipher still needs patchelf, which writes $ORIGIN into each
+      staged library, and a missing one is now reported before the
+      build starts, as the README always said, rather than after the
+      runtime was downloaded and the app installed. `Bundle.build` takes
+      `:host-kernel` and `:run`, and `Native.preflight` is new. Tests
+      read real ELF fixtures built by t/fixtures/elf/build.sh.
+
 0.2.4  2026-08-21T22:34:22+01:00
     - Require Template::Jinja2 0.3.0 (Python method dispatch, Jinja2-faithful
       filters, better template error messages).

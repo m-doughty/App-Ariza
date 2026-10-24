@@ -2,27 +2,26 @@ use v6.d;
 use Test;
 
 use App::Ariza::Config;
-use App::Ariza::Resources;
 
 plan 14;
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-config-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 sub rm-rf(IO::Path $d) {
-    return unless $d.d;
-    .&rm-rf for $d.dir.grep(*.d);
-    .unlink for $d.dir.grep(*.f);
-    $d.rmdir;
+	return unless $d.d;
+	.&rm-rf for $d.dir.grep(*.d);
+	.unlink for $d.dir.grep(*.f);
+	$d.rmdir;
 }
 
 sub write-config(IO::Path $dir, Str $content --> IO::Path) {
-    my $path = $dir.add('ariza.toml');
-    $path.spurt($content);
-    $path;
+	my $path = $dir.add('ariza.toml');
+	$path.spurt($content);
+	$path;
 }
 
 my constant FULL = q:to/TOML/;
@@ -48,57 +47,60 @@ display = "Kelpie"
 TOML
 
 subtest 'the v1 schema, in full', {
-    plan 9;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    write-config($dir, FULL);
+	plan 9;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	write-config($dir, FULL);
 
-    my $cfg = App::Ariza::Config.load($dir);
-    is $cfg.app-name, 'App::ExampleApp', 'app.name is the dist name';
-    is $cfg.app-exec, 'exampleapp', 'app.exec is the launcher name';
-    is $cfg.app-display, 'Example App', 'app.display is the human name';
-    is-deeply $cfg.bundle-platforms.List,
-        ('macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64'),
-        'bundle.platforms keeps its order';
-    is-deeply $cfg.bundle-native.List, ('notcurses', 'sqlcipher'),
-        'bundle.native';
-    is $cfg.bundle-smoke, '{exec} --version', 'bundle.smoke is stored raw';
-    is $cfg.smoke-command, 'exampleapp --version', '{exec} expands to app.exec';
-    is $cfg.installer-repo, 'example-org/App-ExampleApp',
-        'installer.repo is where the generated installers download from';
-    is-deeply $cfg.warnings.List, (), 'a clean manifest warns about nothing';
+	my $cfg = App::Ariza::Config.load($dir);
+	is $cfg.app-name, 'App::ExampleApp', 'app.name is the dist name';
+	is $cfg.app-exec, 'exampleapp', 'app.exec is the launcher name';
+	is $cfg.app-display, 'Example App', 'app.display is the human name';
+	is-deeply $cfg.bundle-platforms.List,
+		('macos-arm64', 'linux-x86_64-glibc', 'windows-x86_64'),
+		'bundle.platforms keeps its order';
+	is-deeply $cfg.bundle-native.List, ('notcurses', 'sqlcipher'),
+		'bundle.native';
+	is $cfg.bundle-smoke, '{exec} --version', 'bundle.smoke is stored raw';
+	is $cfg.smoke-command, 'exampleapp --version', '{exec} expands to app.exec';
+	is $cfg.installer-repo, 'example-org/App-ExampleApp',
+		'installer.repo is where the generated installers download from';
+	is-deeply $cfg.warnings.List, (), 'a clean manifest warns about nothing';
 };
 
 subtest 'App-ExampleApp ships the first real manifest', {
-    plan 6;
+	plan 6;
 
-    # App-ExampleApp is checked out beside App-Ariza on a development box;
-    # skip rather than fail if this checkout is somewhere else entirely.
-    my $repo = checkout-root().parent.add('App-ExampleApp');
-    if $repo.add('ariza.toml').f {
-        my $cfg = App::Ariza::Config.load($repo);
-        is $cfg.app-name, 'App::ExampleApp', 'names the distribution';
-        is $cfg.app-exec, 'exampleapp', 'names the launcher';
-        is $cfg.app-display, 'Example App', 'names the product';
-        is $cfg.smoke-command, 'exampleapp --version', 'has a usable smoke command';
-        like $cfg.installer-repo, / ^ <-[/]>+ '/' <-[/]>+ $ /,
-            'and names the repository its installers download from';
-        is-deeply $cfg.warnings.List, (), 'and parses without warnings';
-    } else {
-        skip 'App-ExampleApp is not a sibling of this checkout', 6;
-    }
+	# App-ExampleApp is checked out beside App-Ariza on a development box;
+	# skip rather than fail if this checkout is somewhere else entirely.
+	# Found from this file rather than checkout-root(), which has nothing
+	# to report when `zef install` runs the suite against a staging
+	# repository.
+	my $repo = $*PROGRAM.resolve.parent(3).add('App-ExampleApp');
+	if $repo.add('ariza.toml').f {
+		my $cfg = App::Ariza::Config.load($repo);
+		is $cfg.app-name, 'App::ExampleApp', 'names the distribution';
+		is $cfg.app-exec, 'exampleapp', 'names the launcher';
+		is $cfg.app-display, 'Example App', 'names the product';
+		is $cfg.smoke-command, 'exampleapp --version', 'has a usable smoke command';
+		like $cfg.installer-repo, / ^ <-[/]>+ '/' <-[/]>+ $ /,
+			'and names the repository its installers download from';
+		is-deeply $cfg.warnings.List, (), 'and parses without warnings';
+	} else {
+		skip 'App-ExampleApp is not a sibling of this checkout', 6;
+	}
 };
 
 subtest 'bundle.smoke: a string, a list, or argv arrays', {
-    plan 7;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 7;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $one = App::Ariza::Config.load-file(write-config($dir, FULL));
-    is-deeply $one.smoke-argvs, (('{exec}', '--version'),),
-        'a string command is split on whitespace';
+	my $one = App::Ariza::Config.load-file(write-config($dir, FULL));
+	is-deeply $one.smoke-argvs, (('{exec}', '--version'),),
+		'a string command is split on whitespace';
 
-    my $many = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
+	my $many = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
     [app]
     name = "A"
     exec = "k"
@@ -106,13 +108,13 @@ subtest 'bundle.smoke: a string, a list, or argv arrays', {
     [bundle]
     smoke = ["{exec} --version", "{exec} --help"]
     TOML
-    is +$many.smoke-argvs, 2, 'a list of strings is several commands';
-    is $many.smoke-command, 'k --version',
-        'and smoke-command shows the first one, for a human';
+	is +$many.smoke-argvs, 2, 'a list of strings is several commands';
+	is $many.smoke-command, 'k --version',
+		'and smoke-command shows the first one, for a human';
 
-    # The shape that exists so a command can carry a whole program
-    # without a shell-quoting layer to get wrong.
-    my $argv = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
+	# The shape that exists so a command can carry a whole program
+	# without a shell-quoting layer to get wrong.
+	my $argv = App::Ariza::Config.load-file(write-config($dir, q:to/TOML/));
     [app]
     name = "A"
     exec = "k"
@@ -123,70 +125,70 @@ subtest 'bundle.smoke: a string, a list, or argv arrays', {
         ["{raku}", "-e", "say 'a b  c'", "{tmp}"],
     ]
     TOML
-    is-deeply $argv.smoke-argvs[1],
-        ('{raku}', '-e', "say 'a b  c'", '{tmp}'),
-        'an argv array keeps spaces and quotes exactly as written';
+	is-deeply $argv.smoke-argvs[1],
+		('{raku}', '-e', "say 'a b  c'", '{tmp}'),
+		'an argv array keeps spaces and quotes exactly as written';
 
-    my @expanded = $argv.smoke-commands(:raku</b/raku>, :tmp("/a dir/tmp"));
-    is-deeply @expanded[0], ('k', '--version'), '{exec} defaults to app.exec';
-    is-deeply @expanded[1], ('/b/raku', '-e', "say 'a b  c'", '/a dir/tmp'),
-        'and every other placeholder comes from the caller';
+	my @expanded = $argv.smoke-commands(:raku</b/raku>, :tmp("/a dir/tmp"));
+	is-deeply @expanded[0], ('k', '--version'), '{exec} defaults to app.exec';
+	is-deeply @expanded[1], ('/b/raku', '-e', "say 'a b  c'", '/a dir/tmp'),
+		'and every other placeholder comes from the caller';
 
-    # A hole in a smoke command does not fail — it runs something else.
-    throws-like { $argv.smoke-commands(:raku</b/raku>) }, Exception,
-        message => /'unknown placeholder'/,
-        'an unsupplied placeholder is an error, not an empty string';
+	# A hole in a smoke command does not fail — it runs something else.
+	throws-like { $argv.smoke-commands(:raku</b/raku>) }, Exception,
+		message => /'unknown placeholder'/,
+		'an unsupplied placeholder is an error, not an empty string';
 };
 
 subtest 'bundle.smoke rejects shapes it cannot run', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[bundle]\n";
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[bundle]\n";
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = 1\n"))
-    }, Exception, message => /'bundle.smoke must be'/, 'a number';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = 1\n"))
+	}, Exception, message => /'bundle.smoke must be'/, 'a number';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[1, 2]]\n"))
-    }, Exception, message => /'bundle.smoke must be'/, 'an argv of non-strings';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[1, 2]]\n"))
+	}, Exception, message => /'bundle.smoke must be'/, 'an argv of non-strings';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[]]\n"))
-    }, Exception, message => /'empty command'/,
-        'and an empty command, which would silently pass by doing nothing';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "smoke = [[]]\n"))
+	}, Exception, message => /'empty command'/,
+		'and an empty command, which would silently pass by doing nothing';
 };
 
 subtest '[bundle] is optional', {
-    plan 8;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    write-config($dir, MINIMAL);
+	plan 8;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	write-config($dir, MINIMAL);
 
-    my $cfg = App::Ariza::Config.load($dir);
-    is $cfg.app-name, 'App::Kelpie', 'the app section still loads';
-    is-deeply $cfg.bundle-platforms.List, (), 'platforms defaults to empty';
-    is-deeply $cfg.bundle-native.List, (), 'native defaults to empty';
-    is $cfg.smoke-command, Str, 'no smoke command is undefined, not empty';
+	my $cfg = App::Ariza::Config.load($dir);
+	is $cfg.app-name, 'App::Kelpie', 'the app section still loads';
+	is-deeply $cfg.bundle-platforms.List, (), 'platforms defaults to empty';
+	is-deeply $cfg.bundle-native.List, (), 'native defaults to empty';
+	is $cfg.smoke-command, Str, 'no smoke command is undefined, not empty';
 
-    # Every [licensing] value is empty-but-defined for a manifest that
-    # omits the table, so nothing downstream has to test for it — an app
-    # that says nothing about licensing still gets a complete
-    # THIRD-PARTY.md, built out of what ariza can read from the bundle.
-    is $cfg.licensing-strict, False, 'licensing is not strict unless asked';
-    is-deeply $cfg.licensing-app.Hash, {}, 'the app row defaults to nothing';
-    is-deeply $cfg.licensing-third-party.List, (),
-        'and so do the rows for what ariza cannot see';
-    is-deeply $cfg.licensing-dists.List, (), 'and the dist corrections';
+	# Every [licensing] value is empty-but-defined for a manifest that
+	# omits the table, so nothing downstream has to test for it — an app
+	# that says nothing about licensing still gets a complete
+	# THIRD-PARTY.md, built out of what ariza can read from the bundle.
+	is $cfg.licensing-strict, False, 'licensing is not strict unless asked';
+	is-deeply $cfg.licensing-app.Hash, {}, 'the app row defaults to nothing';
+	is-deeply $cfg.licensing-third-party.List, (),
+		'and so do the rows for what ariza cannot see';
+	is-deeply $cfg.licensing-dists.List, (), 'and the dist corrections';
 };
 
 subtest 'unknown keys warn, they never die', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $path = write-config($dir, q:to/TOML/);
+	my $path = write-config($dir, q:to/TOML/);
     [app]
     name = "App::Kelpie"
     exec = "kelpie"
@@ -200,19 +202,19 @@ subtest 'unknown keys warn, they never die', {
     team = "ABCD1234"
     TOML
 
-    my $cfg = App::Ariza::Config.load-file($path);
-    is $cfg.app-name, 'App::Kelpie', 'the recognised keys still load';
-    is +$cfg.warnings, 3, 'each unknown key warned once';
-    ok $cfg.warnings.first(/"'app.icon'"/), 'a nested unknown key is dotted';
-    ok $cfg.warnings.first(/"'notarize'"/), 'an unknown top-level table is named';
+	my $cfg = App::Ariza::Config.load-file($path);
+	is $cfg.app-name, 'App::Kelpie', 'the recognised keys still load';
+	is +$cfg.warnings, 3, 'each unknown key warned once';
+	ok $cfg.warnings.first(/"'app.icon'"/), 'a nested unknown key is dotted';
+	ok $cfg.warnings.first(/"'notarize'"/), 'an unknown top-level table is named';
 };
 
 subtest '//-prefixed keys are ignored silently', {
-    plan 2;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 2;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $path = write-config($dir, q:to/TOML/);
+	my $path = write-config($dir, q:to/TOML/);
     "// note" = "manifest for the nightly channel"
 
     [app]
@@ -222,230 +224,230 @@ subtest '//-prefixed keys are ignored silently', {
     display = "Kelpie"
     TOML
 
-    my $cfg = App::Ariza::Config.load-file($path);
-    is-deeply $cfg.warnings.List, (), 'no warnings for comment keys';
-    is $cfg.app-exec, 'kelpie', 'and the real keys are unaffected';
+	my $cfg = App::Ariza::Config.load-file($path);
+	is-deeply $cfg.warnings.List, (), 'no warnings for comment keys';
+	is $cfg.app-exec, 'kelpie', 'and the real keys are unaffected';
 };
 
 subtest 'wrong types die naming the key', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = 42\nexec = \"k\"\ndisplay = \"K\"\n"))
-    }, Exception, message => /'app.name must be a string'/, 'app.name';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = 42\nexec = \"k\"\ndisplay = \"K\"\n"))
+	}, Exception, message => /'app.name must be a string'/, 'app.name';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
-            ~ "[bundle]\nplatforms = \"macos-arm64\"\n"))
-    }, Exception, message => /'bundle.platforms must be an array of strings'/,
-        'a bare string where a list belongs';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+			~ "[bundle]\nplatforms = \"macos-arm64\"\n"))
+	}, Exception, message => /'bundle.platforms must be an array of strings'/,
+		'a bare string where a list belongs';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
-            ~ "[bundle]\nnative = [1, 2]\n"))
-    }, Exception, message => /'bundle.native must be an array of strings'/,
-        'a list of the wrong element type';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+			~ "[bundle]\nnative = [1, 2]\n"))
+	}, Exception, message => /'bundle.native must be an array of strings'/,
+		'a list of the wrong element type';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
-            ~ "[bundle]\nsmoke = 1\n"))
-    }, Exception, message => /'bundle.smoke must be a string'/, 'bundle.smoke';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+			~ "[bundle]\nsmoke = 1\n"))
+	}, Exception, message => /'bundle.smoke must be a string'/, 'bundle.smoke';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, "app = \"App::Kelpie\"\n"))
-    }, Exception, message => /'app must be a table'/, 'a scalar where a table belongs';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, "app = \"App::Kelpie\"\n"))
+	}, Exception, message => /'app must be a table'/, 'a scalar where a table belongs';
 };
 
 subtest 'an unknown platform slug is a hard error', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $typo = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
-             ~ "[bundle]\nplatforms = [\"macos-arm64\", \"macos-aarch64\"]\n";
+	my $typo = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+			 ~ "[bundle]\nplatforms = [\"macos-arm64\", \"macos-aarch64\"]\n";
 
-    throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
-        Exception, message => /'unknown platform' .* 'macos-aarch64'/,
-        'the offending slug is named';
-    throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
-        Exception, message => /'macos-arm64'/,
-        'and the supported set is listed, so the fix is obvious';
+	throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
+		Exception, message => /'unknown platform' .* 'macos-aarch64'/,
+		'the offending slug is named';
+	throws-like { App::Ariza::Config.load-file(write-config($dir, $typo)) },
+		Exception, message => /'macos-arm64'/,
+		'and the supported set is listed, so the fix is obvious';
 
-    # Contrast: an unknown *key* is forward-compatible and only warns.
-    my $future = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
-               ~ "[bundle]\nchannels = [\"nightly\"]\n";
-    lives-ok { App::Ariza::Config.load-file(write-config($dir, $future)) },
-        'while an unknown key in the same table only warns';
+	# Contrast: an unknown *key* is forward-compatible and only warns.
+	my $future = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n"
+			   ~ "[bundle]\nchannels = [\"nightly\"]\n";
+	lives-ok { App::Ariza::Config.load-file(write-config($dir, $future)) },
+		'while an unknown key in the same table only warns';
 };
 
 subtest 'the [installer] table', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
 
-    is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).installer-repo,
-        Str, 'an app that publishes nowhere has no repo, not an empty string';
+	is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).installer-repo,
+		Str, 'an app that publishes nowhere has no repo, not an empty string';
 
-    # The value is interpolated straight into three release URLs, so its
-    # shape is closed for the same reason a platform slug's is: a typo
-    # cannot be a future feature, and the 404 lands on a stranger.
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            $head ~ "repo = \"https://github.com/o/n\"\n"))
-    }, Exception, message => /"must look like 'owner/name'"/,
-        'a full URL is rejected';
+	# The value is interpolated straight into three release URLs, so its
+	# shape is closed for the same reason a platform slug's is: a typo
+	# cannot be a future feature, and the 404 lands on a stranger.
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			$head ~ "repo = \"https://github.com/o/n\"\n"))
+	}, Exception, message => /"must look like 'owner/name'"/,
+		'a full URL is rejected';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = \"justaname\"\n"))
-    }, Exception, message => /"must look like 'owner/name'"/,
-        'and so is a bare name';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = \"justaname\"\n"))
+	}, Exception, message => /"must look like 'owner/name'"/,
+		'and so is a bare name';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = 42\n"))
-    }, Exception, message => /'installer.repo must be a string'/,
-        'a wrong type dies naming the dotted path, as everywhere else';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "repo = 42\n"))
+	}, Exception, message => /'installer.repo must be a string'/,
+		'a wrong type dies naming the dotted path, as everywhere else';
 
-    my $future = App::Ariza::Config.load-file(write-config($dir,
-        $head ~ "repo = \"o/n\"\nchannel = \"nightly\"\n"));
-    ok $future.warnings.first(/"'installer.channel'"/),
-        'while an unknown key in the table only warns';
+	my $future = App::Ariza::Config.load-file(write-config($dir,
+		$head ~ "repo = \"o/n\"\nchannel = \"nightly\"\n"));
+	ok $future.warnings.first(/"'installer.channel'"/),
+		'while an unknown key in the table only warns';
 };
 
 subtest 'the [updates] table', {
-    plan 9;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n";
+	plan 9;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n";
 
-    is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).updates-enabled,
-        False, 'updates are off when the table is omitted';
-    is App::Ariza::Config.load-file(write-config($dir,
-        $head ~ "[updates]\nenabled = false\n")).updates-enabled,
-        False, 'and explicit false is off';
+	is App::Ariza::Config.load-file(write-config($dir, MINIMAL)).updates-enabled,
+		False, 'updates are off when the table is omitted';
+	is App::Ariza::Config.load-file(write-config($dir,
+		$head ~ "[updates]\nenabled = false\n")).updates-enabled,
+		False, 'and explicit false is off';
 
-    # TOML preserves table order. This places [updates] before [installer]
-    # to prove the cross-field requirement is checked only after every table
-    # has been parsed.
-    my $enabled = App::Ariza::Config.load-file(write-config($dir,
-        $head ~ "[updates]\nenabled = true\n[installer]\nrepo = \"o/n\"\n"));
-    ok $enabled.updates-enabled, 'true enables update-aware bundles';
+	# TOML preserves table order. This places [updates] before [installer]
+	# to prove the cross-field requirement is checked only after every table
+	# has been parsed.
+	my $enabled = App::Ariza::Config.load-file(write-config($dir,
+		$head ~ "[updates]\nenabled = true\n[installer]\nrepo = \"o/n\"\n"));
+	ok $enabled.updates-enabled, 'true enables update-aware bundles';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            $head ~ "[updates]\nenabled = true\n"))
-    }, Exception, message => /'updates.enabled requires installer.repo'/,
-        'enabled updates require a release repository';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			$head ~ "[updates]\nenabled = true\n"))
+	}, Exception, message => /'updates.enabled requires installer.repo'/,
+		'enabled updates require a release repository';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            $head ~ "[updates]\nenabled = \"yes\"\n"))
-    }, Exception, message => /'updates.enabled must be true or false'/,
-        'a string is not a boolean';
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            $head ~ "[updates]\nenabled = 1\n"))
-    }, Exception, message => /'updates.enabled must be true or false'/,
-        'a number is not a boolean';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			$head ~ "[updates]\nenabled = \"yes\"\n"))
+	}, Exception, message => /'updates.enabled must be true or false'/,
+		'a string is not a boolean';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			$head ~ "[updates]\nenabled = 1\n"))
+	}, Exception, message => /'updates.enabled must be true or false'/,
+		'a number is not a boolean';
 
-    my $future = App::Ariza::Config.load-file(write-config($dir,
-        $head ~ "[installer]\nrepo = \"o/n\"\n[updates]\nenabled = true\n"
-      ~ "cadence = 60\n"));
-    ok $future.warnings.first(/"'updates.cadence'"/),
-        'unknown dotted keys warn';
+	my $future = App::Ariza::Config.load-file(write-config($dir,
+		$head ~ "[installer]\nrepo = \"o/n\"\n[updates]\nenabled = true\n"
+	  ~ "cadence = 60\n"));
+	ok $future.warnings.first(/"'updates.cadence'"/),
+		'unknown dotted keys warn';
 
-    my $comment = App::Ariza::Config.load-file(write-config($dir,
-        $head ~ "[installer]\nrepo = \"o/n\"\n[updates]\n"
-      ~ "\"// note\" = \"manual cadence is not configurable\"\n"
-      ~ "enabled = true\n"));
-    is-deeply $comment.warnings.List, (), 'comment keys remain silent';
-    ok $comment.updates-enabled, 'a comment key does not affect enablement';
+	my $comment = App::Ariza::Config.load-file(write-config($dir,
+		$head ~ "[installer]\nrepo = \"o/n\"\n[updates]\n"
+	  ~ "\"// note\" = \"manual cadence is not configurable\"\n"
+	  ~ "enabled = true\n"));
+	is-deeply $comment.warnings.List, (), 'comment keys remain silent';
+	ok $comment.updates-enabled, 'a comment key does not affect enablement';
 };
 
 subtest 'installer.warm: what the installers run once, or nothing', {
-    plan 9;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
+	plan 9;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $head = "[app]\nname = \"A\"\nexec = \"k\"\ndisplay = \"K\"\n[installer]\n";
 
-    sub warm-of(Str $tail --> List) {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ $tail)).warm-argv
-    }
+	sub warm-of(Str $tail --> List) {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ $tail)).warm-argv
+	}
 
-    is warm-of(''), ('--version',),
-        'an app that says nothing gets --version: the one invocation every'
-      ~ ' bundled app answers, and returns from';
-    is warm-of("warm = true\n"), ('--version',),
-        'and so does one that asks for the default out loud';
-    is warm-of("warm = \"--check --quiet\"\n"), ('--check', '--quiet'),
-        'a string is a command line, split on whitespace';
-    is warm-of(qq{warm = ["--path", "with space"]\n}), ('--path', 'with space'),
-        'an array is taken word for word, which is how an argument keeps its space';
+	is warm-of(''), ('--version',),
+		'an app that says nothing gets --version: the one invocation every'
+	  ~ ' bundled app answers, and returns from';
+	is warm-of("warm = true\n"), ('--version',),
+		'and so does one that asks for the default out loud';
+	is warm-of("warm = \"--check --quiet\"\n"), ('--check', '--quiet'),
+		'a string is a command line, split on whitespace';
+	is warm-of(qq{warm = ["--path", "with space"]\n}), ('--path', 'with space'),
+		'an array is taken word for word, which is how an argument keeps its space';
 
-    is warm-of("warm = false\n"), (),
-        'false is no warm-up at all';
-    nok App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = false\n"))
-        .warm-enabled, 'which warm-enabled says in one word';
-    ok App::Ariza::Config.load-file(write-config($dir, MINIMAL)).warm-enabled,
-        'while an app with no [installer] table at all still gets warmed';
+	is warm-of("warm = false\n"), (),
+		'false is no warm-up at all';
+	nok App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = false\n"))
+		.warm-enabled, 'which warm-enabled says in one word';
+	ok App::Ariza::Config.load-file(write-config($dir, MINIMAL)).warm-enabled,
+		'while an app with no [installer] table at all still gets warmed';
 
-    # Neither "the default" nor "off": running the launcher with no
-    # arguments starts the application, and a full-screen application
-    # does not return. Both intentions have a spelling; this is not one.
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = \"\"\n"))
-    }, Exception, message => /'installer.warm is empty' .* 'false'/,
-        'an empty string is refused, and told which spelling was meant';
+	# Neither "the default" nor "off": running the launcher with no
+	# arguments starts the application, and a full-screen application
+	# does not return. Both intentions have a spelling; this is not one.
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = \"\"\n"))
+	}, Exception, message => /'installer.warm is empty' .* 'false'/,
+		'an empty string is refused, and told which spelling was meant';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = [1, 2]\n"))
-    }, Exception, message => /'installer.warm must be'/,
-        'and a wrong type dies naming the dotted path, as everywhere else';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir, $head ~ "warm = [1, 2]\n"))
+	}, Exception, message => /'installer.warm must be'/,
+		'and a wrong type dies naming the dotted path, as everywhere else';
 };
 
 subtest 'missing files and missing required keys', {
-    plan 6;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 6;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    throws-like { App::Ariza::Config.load($dir) }, Exception,
-        message => /'no ariza.toml at'/, 'no manifest at all';
+	throws-like { App::Ariza::Config.load($dir) }, Exception,
+		message => /'no ariza.toml at'/, 'no manifest at all';
 
-    throws-like { App::Ariza::Config.load-file(write-config($dir, "= = =\n")) },
-        Exception, message => /'malformed TOML in'/, 'a file that is not TOML';
+	throws-like { App::Ariza::Config.load-file(write-config($dir, "= = =\n")) },
+		Exception, message => /'malformed TOML in'/, 'a file that is not TOML';
 
-    throws-like { App::Ariza::Config.load-file(write-config($dir, '')) },
-        Exception, message => /'app.name is required'/,
-        'an empty manifest fails on its missing keys, not as malformed';
+	throws-like { App::Ariza::Config.load-file(write-config($dir, '')) },
+		Exception, message => /'app.name is required'/,
+		'an empty manifest fails on its missing keys, not as malformed';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nexec = \"k\"\ndisplay = \"K\"\n"))
-    }, Exception, message => /'app.name is required'/, 'app.name is required';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nexec = \"k\"\ndisplay = \"K\"\n"))
+	}, Exception, message => /'app.name is required'/, 'app.name is required';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = \"A\"\ndisplay = \"K\"\n"))
-    }, Exception, message => /'app.exec is required'/, 'app.exec is required';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = \"A\"\ndisplay = \"K\"\n"))
+	}, Exception, message => /'app.exec is required'/, 'app.exec is required';
 
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir,
-            "[app]\nname = \"A\"\nexec = \"k\"\n"))
-    }, Exception, message => /'app.display is required'/, 'app.display is required';
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir,
+			"[app]\nname = \"A\"\nexec = \"k\"\n"))
+	}, Exception, message => /'app.display is required'/, 'app.display is required';
 };
 
 subtest 'the [licensing] table', {
-    plan 10;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 10;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $path = write-config($dir, q:to/TOML/);
+	my $path = write-config($dir, q:to/TOML/);
     [app]
     name = "App::Kelpie"
     exec = "kelpie"
@@ -471,39 +473,39 @@ subtest 'the [licensing] table', {
     spdx-license = "Artistic-2.0"
     TOML
 
-    my $cfg = App::Ariza::Config.load-file($path);
-    is $cfg.licensing-strict, True, 'strict is read as a boolean';
-    is $cfg.licensing-app<copyright>, 'Copyright 2026 A Person',
-        'the app can say what it is not derivable from its META6';
-    is +$cfg.licensing-third-party, 1, 'one declared third-party row';
-    is $cfg.licensing-third-party[0]<name>, 'Inter', 'with its name';
-    is-deeply $cfg.licensing-third-party[0]<license-files>.List,
-        ('licenses/OFL-1.1.txt',),
-        'and the paths in its own repository the texts live at';
-    is $cfg.licensing-dists[0]<name>, 'Some::Module',
-        'a dist correction names the distribution it corrects';
+	my $cfg = App::Ariza::Config.load-file($path);
+	is $cfg.licensing-strict, True, 'strict is read as a boolean';
+	is $cfg.licensing-app<copyright>, 'Copyright 2026 A Person',
+		'the app can say what it is not derivable from its META6';
+	is +$cfg.licensing-third-party, 1, 'one declared third-party row';
+	is $cfg.licensing-third-party[0]<name>, 'Inter', 'with its name';
+	is-deeply $cfg.licensing-third-party[0]<license-files>.List,
+		('licenses/OFL-1.1.txt',),
+		'and the paths in its own repository the texts live at';
+	is $cfg.licensing-dists[0]<name>, 'Some::Module',
+		'a dist correction names the distribution it corrects';
 
-    # The house rule, unchanged: an unrecognised key at any level is a
-    # warning, so one manifest can serve several ariza versions.
-    is +$cfg.warnings, 2, 'unknown keys warn rather than dying';
-    ok $cfg.warnings.first(/"'licensing.app.made-up'"/),
-        'naming the dotted path inside a row table';
+	# The house rule, unchanged: an unrecognised key at any level is a
+	# warning, so one manifest can serve several ariza versions.
+	is +$cfg.warnings, 2, 'unknown keys warn rather than dying';
+	ok $cfg.warnings.first(/"'licensing.app.made-up'"/),
+		'naming the dotted path inside a row table';
 
-    # A wrong type is a different thing entirely: it cannot be a future
-    # feature, it is a mistake that would ship a document with a hole.
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir.add('two').&{ .mkdir; $_ },
-            "[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
-          ~ "\n[licensing]\nstrict = \"yes\"\n"))
-    }, Exception, message => /'licensing.strict must be true or false'/,
-        'a strict flag that is not a boolean dies naming the key';
+	# A wrong type is a different thing entirely: it cannot be a future
+	# feature, it is a mistake that would ship a document with a hole.
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir.add('two').&{ .mkdir; $_ },
+			"[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+		  ~ "\n[licensing]\nstrict = \"yes\"\n"))
+	}, Exception, message => /'licensing.strict must be true or false'/,
+		'a strict flag that is not a boolean dies naming the key';
 
-    # A row without a licence is not a row: it is the absence this whole
-    # feature exists to make impossible.
-    throws-like {
-        App::Ariza::Config.load-file(write-config($dir.add('three').&{ .mkdir; $_ },
-            "[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
-          ~ "\n[[licensing.third-party]]\nname = \"Inter\"\n"))
-    }, Exception, message => /'licensing.third-party.spdx-license is required'/,
-        'and a declared component with no licence dies naming what is missing';
+	# A row without a licence is not a row: it is the absence this whole
+	# feature exists to make impossible.
+	throws-like {
+		App::Ariza::Config.load-file(write-config($dir.add('three').&{ .mkdir; $_ },
+			"[app]\nname = \"A\"\nexec = \"a\"\ndisplay = \"A\"\n"
+		  ~ "\n[[licensing.third-party]]\nname = \"Inter\"\n"))
+	}, Exception, message => /'licensing.third-party.spdx-license is required'/,
+		'and a declared component with no licence dies naming what is missing';
 };

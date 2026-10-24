@@ -46,34 +46,34 @@ our constant TAG-GLOBS = ('v*', '[0-9]*.[0-9]*.[0-9]*');
 # and an official Rakudo build behind them. A bundle for any other slug
 # is built by hand today, and its lane would be a guess.
 my constant %LANES =
-    'macos-arm64' => {
-        template => 'lane-macos-arm64.yml.j2',
-        job      => 'bundle-macos-arm64',
-        floor    => ('Apple silicon, macOS 11 (Big Sur) or newer.',),
-        smoke    => {
-            template => 'smoke-installer-macos-arm64.yml.j2',
-            job      => 'smoke-installer-macos-arm64',
-        },
-    },
-    'linux-x86_64-glibc' => {
-        template => 'lane-linux-x86_64-glibc.yml.j2',
-        job      => 'bundle-linux-x86_64-glibc',
-        floor    => ('x86_64, glibc 2.28 or newer: RHEL 8+, Ubuntu 18.10+,',
-                     'Debian 10+. Not Alpine or any other musl distribution.'),
-        smoke    => {
-            template => 'smoke-installer-linux-x86_64-glibc.yml.j2',
-            job      => 'smoke-installer-linux-x86_64-glibc',
-        },
-    },
-    'windows-x86_64' => {
-        template => 'lane-windows-x86_64.yml.j2',
-        job      => 'bundle-windows-x86_64',
-        floor    => ('x86_64, Windows 10 or newer.',),
-        smoke    => {
-            template => 'smoke-installer-windows-x86_64.yml.j2',
-            job      => 'smoke-installer-windows-x86_64',
-        },
-    },
+	'macos-arm64' => {
+		template => 'lane-macos-arm64.yml.j2',
+		job      => 'bundle-macos-arm64',
+		floor    => ('Apple silicon, macOS 11 (Big Sur) or newer.',),
+		smoke    => {
+			template => 'smoke-installer-macos-arm64.yml.j2',
+			job      => 'smoke-installer-macos-arm64',
+		},
+	},
+	'linux-x86_64-glibc' => {
+		template => 'lane-linux-x86_64-glibc.yml.j2',
+		job      => 'bundle-linux-x86_64-glibc',
+		floor    => ('x86_64, glibc 2.28 or newer: RHEL 8+, Ubuntu 18.10+,',
+					 'Debian 10+. Not Alpine or any other musl distribution.'),
+		smoke    => {
+			template => 'smoke-installer-linux-x86_64-glibc.yml.j2',
+			job      => 'smoke-installer-linux-x86_64-glibc',
+		},
+	},
+	'windows-x86_64' => {
+		template => 'lane-windows-x86_64.yml.j2',
+		job      => 'bundle-windows-x86_64',
+		floor    => ('x86_64, Windows 10 or newer.',),
+		smoke    => {
+			template => 'smoke-installer-windows-x86_64.yml.j2',
+			job      => 'smoke-installer-windows-x86_64',
+		},
+	},
 ;
 
 # The two workflows, in write order. `overwrite` is the whole difference
@@ -81,8 +81,8 @@ my constant %LANES =
 # rewritten whenever that changes, while test.yml is a starting point
 # that becomes the repository's own the moment it is committed.
 my constant @WORKFLOWS =
-    { template => 'test.yml.j2',    output => 'test.yml',    overwrite => False },
-    { template => 'release.yml.j2', output => 'release.yml', overwrite => True  },
+	{ template => 'test.yml.j2',    output => 'test.yml',    overwrite => False },
+	{ template => 'release.yml.j2', output => 'release.yml', overwrite => True  },
 ;
 
 #| Where the workflows go, relative to an app's repository root.
@@ -94,26 +94,26 @@ method lane-slugs(--> List) { %LANES.keys.sort.List }
 #| One slug's lane recipe: C<template>, C<job>, C<floor>. Dies naming the
 #| set for a slug with no lane.
 method lane-for(Str:D $slug --> Hash) {
-    %LANES{$slug}
-        // die "ariza: ariza has no CI build lane for '$slug'"
-             ~ " (can scaffold: {self.lane-slugs.join(', ')}).\n"
-             ~ "    Those are the platforms with both a GitHub-hosted"
-             ~ " runner and an official Rakudo build behind them. A bundle"
-             ~ " for '$slug' is built by hand today, and a generated job"
-             ~ " for it would be a guess rather than a recipe.";
+	%LANES{$slug}
+		// die "ariza: ariza has no CI build lane for '$slug'"
+			 ~ " (can scaffold: {self.lane-slugs.join(', ')}).\n"
+			 ~ "    Those are the platforms with both a GitHub-hosted"
+			 ~ " runner and an official Rakudo build behind them. A bundle"
+			 ~ " for '$slug' is built by hand today, and a generated job"
+			 ~ " for it would be a guess rather than a recipe.";
 }
 
 #| The lanes an app gets, in the order it declares them, each with its
 #| C<slug> folded in.
 method lanes-for(App::Ariza::Config:D $config --> List) {
-    # Built into an Array first: `.map(...).List` hands back a lazy list,
-    # which would defer the unknown-slug death until whatever consumed
-    # it — outside whatever `try` the caller wrote, and, for a caller
-    # that only counts the lanes, never at all.
-    my @lanes = $config.bundle-platforms.list.map({
-        %( slug => $_, |self.lane-for($_) )
-    });
-    @lanes.List
+	# Built into an Array first: `.map(...).List` hands back a lazy list,
+	# which would defer the unknown-slug death until whatever consumed
+	# it — outside whatever `try` the caller wrote, and, for a caller
+	# that only counts the lanes, never at all.
+	my @lanes = $config.bundle-platforms.list.map({
+		%( slug => $_, |self.lane-for($_) )
+	});
+	@lanes.List
 }
 
 #| The workflow files ariza writes: C<{ template, output, overwrite }>,
@@ -124,7 +124,7 @@ method workflows(--> List) { @WORKFLOWS }
 #| C<'dev'> from a checkout, where there is no distribution metadata to
 #| read — the same answer C<ariza version> gives.
 method ariza-version(--> Str) {
-    (((try { $?DISTRIBUTION.meta<version> }) // '').Str) || 'dev'
+	(((try { $?DISTRIBUTION.meta<version> }) // '').Str) || 'dev'
 }
 
 #| The two forms of "install ariza", as C<(command, @note-lines)>.
@@ -133,27 +133,31 @@ method ariza-version(--> Str) {
 #| uncomment rather than a remembering exercise. The note carries ariza's
 #| own version too, which is the only provenance a generated file has.
 method install-lines(App::Ariza::Config:D $config, Str:D :$ariza-version! --> List) {
-    my $source = $config.ci-ariza-source // 'fez';
-    # Angle brackets are shell syntax in both POSIX lanes and PowerShell.
-    # Quote the whole identity so zef receives it as one literal argument.
-    my $fez = "zef install --/test '{ARIZA-FEZ}'";
-    my $git = "zef install --/test {ARIZA-REPO-URL}";
+	my $source = $config.ci-ariza-source // 'fez';
+	# Angle brackets are shell syntax in both POSIX lanes and PowerShell.
+	# Quote the whole identity so zef receives it as one literal argument.
+	my $fez = "zef install --/test '{ARIZA-FEZ}'";
+	my $git = "zef install --/test {ARIZA-REPO-URL}";
 
-    $source eq 'fez'
-        ?? ($fez, (
-                "Scaffolded by ariza $ariza-version. Before App::Ariza is",
-                "published, or to cut a release against an unreleased ariza,",
-                "install it from the repository instead:",
-                "  run: $git",
-            ).List)
-        !! ("zef install --/test $source", (
-                "Scaffolded by ariza $ariza-version, installing ariza from the",
-                "source ci.ariza-source names. The published one is:",
-                "  run: $fez",
-            ).List)
+	$source eq 'fez'
+		?? ($fez, (
+				"Scaffolded by ariza $ariza-version. Before App::Ariza is",
+				"published, or to cut a release against an unreleased ariza,",
+				"install it from the repository instead:",
+				"  run: $git",
+			).List)
+		!! ("zef install --/test $source", (
+				"Scaffolded by ariza $ariza-version, installing ariza from the",
+				"source ci.ariza-source names. The published one is:",
+				"  run: $fez",
+			).List)
 }
 
 #| The Jinja2 context every CI template renders against.
+#|
+#| C<rakudo_test_versions> in it is the C<rakudo.test-versions> list,
+#| oldest first, which test.yml renders as its C<raku-version> matrix
+#| axis; it is unrelated to C<rakudo_tag>, the runtime a bundle embeds.
 #|
 #| C<lane_jobs> in it is B<already rendered>: release.yml's C<jobs:>
 #| section is one template per declared platform, pasted in, because a
@@ -161,103 +165,113 @@ method install-lines(App::Ariza::Config:D $config, Str:D :$ariza-version! --> Li
 #| last three steps and pretending otherwise would produce a template
 #| nobody can read.
 method context(
-    App::Ariza::Config:D :$config!,
-    App::Ariza::Versions :$versions = App::Ariza::Versions.load,
-    Str :$ariza-version = self.ariza-version,
-    --> Hash
+	App::Ariza::Config:D :$config!,
+	App::Ariza::Versions :$versions = App::Ariza::Versions.load,
+	Str :$ariza-version = self.ariza-version,
+	--> Hash
 ) {
-    my @lanes = self.lanes-for($config);
-    die "ariza: {$config.app-name} declares no bundle.platforms, so there"
-      ~ " is nothing for a release workflow to build"
-        unless @lanes;
+	my @lanes = self.lanes-for($config);
+	die "ariza: {$config.app-name} declares no bundle.platforms, so there"
+	  ~ " is nothing for a release workflow to build"
+		unless @lanes;
 
-    # A workflow that cannot say which runtime the bundle embeds is a
-    # workflow whose comments are decoration. The pin is in ariza's own
-    # resources, so this only fires for a hand-edited versions.toml.
-    my $rakudo-tag = $versions.rakudo-tag
-        // die "ariza: versions.toml has no [rakudo] pin, so a generated"
-             ~ " workflow cannot name the runtime a bundle embeds";
+	# A workflow that cannot say which runtime the bundle embeds is a
+	# workflow whose comments are decoration. The pin is in ariza's own
+	# resources, so this only fires for a hand-edited versions.toml.
+	my $rakudo-tag = $versions.rakudo-tag
+		// die "ariza: versions.toml has no [rakudo] pin, so a generated"
+			 ~ " workflow cannot name the runtime a bundle embeds";
 
-    # The workflow compares it numerically, as the release index records
-    # it, so it has to be a number before it is written into one — the
-    # same complaint App::Ariza::Rakudo makes about the same pin, made
-    # here rather than by python inside a container.
-    my $revision = $versions.rakudo-revision;
-    die "ariza: rakudo revision '$revision' is not a number, so a"
-      ~ " generated workflow cannot look the runtime up in the release"
-      ~ " index"
-        unless $revision ~~ / ^ \d+ $ /;
+	# The workflow compares it numerically, as the release index records
+	# it, so it has to be a number before it is written into one — the
+	# same complaint App::Ariza::Rakudo makes about the same pin, made
+	# here rather than by python inside a container.
+	my $revision = $versions.rakudo-revision;
+	die "ariza: rakudo revision '$revision' is not a number, so a"
+	  ~ " generated workflow cannot look the runtime up in the release"
+	  ~ " index"
+		unless $revision ~~ / ^ \d+ $ /;
 
-    my $linux = ?@lanes.first({ .<slug> eq 'linux-x86_64-glibc' });
-    die "ariza: versions.toml has no sqlcipher pin, and the"
-      ~ " linux-x86_64-glibc lane builds SQLCipher from source at exactly"
-      ~ " that version"
-        if $linux && !$versions.sqlcipher.defined;
+	# test.yml's matrix, one job per runner per release. Pinned in the
+	# same file as the runtime above, so this too only fires for a
+	# hand-edited versions.toml; App::Ariza::Versions has already
+	# refused an empty, malformed, repeated or out-of-order list.
+	my $test-versions = $versions.rakudo-test-versions
+		// die "ariza: versions.toml has no rakudo.test-versions pin, so a"
+			 ~ " generated test.yml cannot say which Rakudo releases to"
+			 ~ " test against";
 
-    # Taken by index rather than destructured: the second value is itself
-    # a list, and `my ($a, @b) = ...` would slurp it into a one-element
-    # array whose only element renders as a gist.
-    my @install = self.install-lines($config, :$ariza-version);
+	my $linux = ?@lanes.first({ .<slug> eq 'linux-x86_64-glibc' });
+	die "ariza: versions.toml has no sqlcipher pin, and the"
+	  ~ " linux-x86_64-glibc lane builds SQLCipher from source at exactly"
+	  ~ " that version"
+		if $linux && !$versions.sqlcipher.defined;
 
-    my %ctx =
-        app_name    => $config.app-name,
-        app_exec    => $config.app-exec,
-        app_display => $config.app-display,
-        repo        => $config.installer-repo // '',
-        native      => $config.bundle-native.list.join(', '),
-        updates_enabled => $config.updates-enabled,
+	# Taken by index rather than destructured: the second value is itself
+	# a list, and `my ($a, @b) = ...` would slurp it into a one-element
+	# array whose only element renders as a gist.
+	my @install = self.install-lines($config, :$ariza-version);
 
-        ariza_version      => $ariza-version,
-        ariza_install      => @install[0],
-        ariza_install_note => @install[1].List,
+	my %ctx =
+		app_name    => $config.app-name,
+		app_exec    => $config.app-exec,
+		app_display => $config.app-display,
+		repo        => $config.installer-repo // '',
+		native      => $config.bundle-native.list.join(', '),
+		updates_enabled => $config.updates-enabled,
 
-        rakudo_tag        => $rakudo-tag,
-        rakudo_version    => $versions.rakudo-version,
-        rakudo_revision_int => $revision.Int,
-        sqlcipher_version   => $versions.sqlcipher // '',
+		ariza_version      => $ariza-version,
+		ariza_install      => @install[0],
+		ariza_install_note => @install[1].List,
 
-        tag_globs   => TAG-GLOBS,
-        slugs       => @lanes.map(*.<slug>).List,
-        job_names   => @lanes.map(*.<job>).List,
-        floors      => @lanes.map({ %( slug => .<slug>, note => .<floor>.List ) }).List,
-    ;
+		rakudo_tag        => $rakudo-tag,
+		rakudo_version    => $versions.rakudo-version,
+		rakudo_revision_int => $revision.Int,
+		rakudo_test_versions => $test-versions,
+		sqlcipher_version   => $versions.sqlcipher // '',
 
-    %ctx<lane_jobs> = @lanes
-        .map({ self.render(:template(.<template>), |%ctx) })
-        .join("\n").chomp;
+		tag_globs   => TAG-GLOBS,
+		slugs       => @lanes.map(*.<slug>).List,
+		job_names   => @lanes.map(*.<job>).List,
+		floors      => @lanes.map({ %( slug => .<slug>, note => .<floor>.List ) }).List,
+	;
 
-    # One clean-runner installer smoke per declared platform that has one
-    # (see %LANES's `smoke` key) — each installs the archive B<just
-    # published>, with the app's own committed installer, and runs the
-    # result under a stripped environment. Gated on installer.repo the same
-    # way the build lanes are gated on bundle.platforms: no repo, nothing
-    # published, nothing to smoke.
-    my @smoke-lanes    = $config.installer-repo.defined
-        ?? @lanes.grep(*.<smoke>.defined)
-        !! ();
-    my @no-smoke-lanes = $config.installer-repo.defined
-        ?? @lanes.grep({ !.<smoke>.defined })
-        !! ();
+	%ctx<lane_jobs> = @lanes
+		.map({ self.render(:template(.<template>), |%ctx) })
+		.join("\n").chomp;
 
-    %ctx<smoke_installer>     = ?@smoke-lanes;
-    %ctx<smoke_job_names>     = @smoke-lanes.map(*.<smoke><job>).List;
-    %ctx<no_smoke_platforms>  = @no-smoke-lanes.map(*.<slug>).List;
-    %ctx<smoke_jobs> = @smoke-lanes
-        .map({ self.render(:template(.<smoke><template>), |%ctx) })
-        .join("\n").chomp;
+	# One clean-runner installer smoke per declared platform that has one
+	# (see %LANES's `smoke` key) — each installs the archive B<just
+	# published>, with the app's own committed installer, and runs the
+	# result under a stripped environment. Gated on installer.repo the same
+	# way the build lanes are gated on bundle.platforms: no repo, nothing
+	# published, nothing to smoke.
+	my @smoke-lanes    = $config.installer-repo.defined
+		?? @lanes.grep(*.<smoke>.defined)
+		!! ();
+	my @no-smoke-lanes = $config.installer-repo.defined
+		?? @lanes.grep({ !.<smoke>.defined })
+		!! ();
 
-    %ctx
+	%ctx<smoke_installer>     = ?@smoke-lanes;
+	%ctx<smoke_job_names>     = @smoke-lanes.map(*.<smoke><job>).List;
+	%ctx<no_smoke_platforms>  = @no-smoke-lanes.map(*.<slug>).List;
+	%ctx<smoke_jobs> = @smoke-lanes
+		.map({ self.render(:template(.<smoke><template>), |%ctx) })
+		.join("\n").chomp;
+
+	%ctx
 }
 
 #| Render one CI template to a string. Always LF: a workflow file is read
 #| by Linux runners and by git, never by cmd.exe, and every other file in
 #| C<.github/> is LF whatever the machine that wrote it.
 method render(Str:D :$template!, *%ctx --> Str) {
-    my $out = Template::Jinja2.new
-        .from-string(resource("{TEMPLATE-PREFIX}/$template").slurp)
-        .render(|%ctx);
-    $out ~= "\n" unless $out.ends-with("\n");
-    $out.subst("\r\n", "\n", :g)
+	my $out = Template::Jinja2.new
+		.from-string(resource("{TEMPLATE-PREFIX}/$template").slurp)
+		.render(|%ctx);
+	$out ~= "\n" unless $out.ends-with("\n");
+	$out.subst("\r\n", "\n", :g)
 }
 
 #| Render the workflows into C<:$out-dir>, and say what happened to each.
@@ -269,32 +283,32 @@ method render(Str:D :$template!, *%ctx --> Str) {
 #| can only run once — unless C<:force> says otherwise. C<release.yml> is
 #| derived from C<bundle.platforms> and is always rewritten.
 method write(
-    IO() :$out-dir!,
-    App::Ariza::Config:D :$config!,
-    App::Ariza::Versions :$versions = App::Ariza::Versions.load,
-    Str :$ariza-version = self.ariza-version,
-    Bool :$force = False,
-    --> List
+	IO() :$out-dir!,
+	App::Ariza::Config:D :$config!,
+	App::Ariza::Versions :$versions = App::Ariza::Versions.load,
+	Str :$ariza-version = self.ariza-version,
+	Bool :$force = False,
+	--> List
 ) {
-    my %ctx = self.context(:$config, :$versions, :$ariza-version);
+	my %ctx = self.context(:$config, :$versions, :$ariza-version);
 
-    # Created rather than demanded, unlike App::Ariza::Installer's output
-    # directory: .github/workflows is a path with one spelling, and in a
-    # repository with no CI it is a directory that by definition does not
-    # exist yet.
-    ensure-dir($out-dir);
+	# Created rather than demanded, unlike App::Ariza::Installer's output
+	# directory: .github/workflows is a path with one spelling, and in a
+	# repository with no CI it is a directory that by definition does not
+	# exist yet.
+	ensure-dir($out-dir);
 
-    my @written;
-    for self.workflows -> %w {
-        my $path = $out-dir.add(%w<output>);
-        if $path.e && !%w<overwrite> && !$force {
-            @written.push(%( :$path, output => %w<output>, action => 'skipped' ));
-            next;
-        }
-        $path.spurt(self.render(:template(%w<template>), |%ctx));
-        @written.push(%( :$path, output => %w<output>, action => 'wrote' ));
-    }
-    @written.List
+	my @written;
+	for self.workflows -> %w {
+		my $path = $out-dir.add(%w<output>);
+		if $path.e && !%w<overwrite> && !$force {
+			@written.push(%( :$path, output => %w<output>, action => 'skipped' ));
+			next;
+		}
+		$path.spurt(self.render(:template(%w<template>), |%ctx));
+		@written.push(%( :$path, output => %w<output>, action => 'wrote' ));
+	}
+	@written.List
 }
 
 =begin pod
@@ -435,6 +449,37 @@ L<App::Ariza::Rakudo> reads and unpacks the archive itself. There is no
 URL to construct — upstream filenames carry a toolchain suffix — so the
 index is the only honest route.
 
+=head2 Which Rakudo test.yml tests on
+
+C<test.yml> is the other way round. Its Rakudo B<is> the thing under
+test — the app's own suite has to pass on whatever its users run — so
+it is pinned, and to more than one release: every entry in
+C<rakudo.test-versions> (L<App::Ariza::Versions>) becomes a value of the
+matrix's C<raku-version> axis, oldest supported first, crossed with the
+three runners.
+
+=begin code :lang<yaml>
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.raku-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # From ariza's rakudo.test-versions pin, oldest supported first.
+        raku-version: ['2026.07', '2026.09']
+
+=end code
+
+C<fail-fast> is off so that a failure on one release does not cancel
+the rest of the matrix — which release breaks, on which runner, is the
+question the matrix exists to answer. The list is independent of C<[rakudo]>'s C<version>: the runtime
+a bundle embeds is one release, chosen for the bundle, while the tested
+set is every release a user who installed Raku themselves might still be
+on. Because C<test.yml> is written only once, a change to the list
+reaches an app's committed file by hand or with C<--force>.
+
 =head2 What is regenerated, and what is yours
 
 C<release.yml> is B<derived> from C<bundle.platforms>: add a platform to
@@ -500,10 +545,18 @@ from one template per lane and pasted in. A macOS lane and a manylinux
 one share their last three steps and nothing else, so they are separate
 files rather than a template full of conditionals.
 
+The Rakudo pins arrive under four names. C<rakudo_tag>,
+C<rakudo_version> and C<rakudo_revision_int> are the runtime a bundle
+embeds, which release.yml quotes; C<rakudo_test_versions> is
+C<rakudo.test-versions>, the list of releases test.yml's matrix runs the
+suite against, oldest first — see B<Which Rakudo test.yml tests on>,
+above.
+
 Dies when the app declares no platforms, when C<versions.toml> has no
 C<[rakudo]> pin (or a revision that is not a number, which the
-manylinux lane compares numerically against the release index), or when
-a C<linux-x86_64-glibc> lane is wanted and there is no C<sqlcipher> pin
+manylinux lane compares numerically against the release index), when it
+has no C<rakudo.test-versions> for test.yml's matrix, or when a
+C<linux-x86_64-glibc> lane is wanted and there is no C<sqlcipher> pin
 for it to build.
 
 =head2 lanes-for(App::Ariza::Config $config --> List) / lane-for(Str $slug --> Hash) / lane-slugs(--> List)

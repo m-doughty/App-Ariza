@@ -23,118 +23,118 @@ method dist() { $?DISTRIBUTION }
 method dist-version() { $?DISTRIBUTION.meta<version> // 'dev' }
 
 method !versions(--> App::Ariza::Versions) {
-    my $versions = App::Ariza::Versions.load;
-    note "ariza: $_" for $versions.warnings;
-    $versions;
+	my $versions = App::Ariza::Versions.load;
+	note "ariza: $_" for $versions.warnings;
+	$versions;
 }
 
 #| Human-readable byte size, for build reports. Binary units, because
 #| that is what `ls -lh` and every download manager will show.
 my sub human-size(Int() $bytes --> Str) {
-    my @units = 'B', 'KiB', 'MiB', 'GiB';
-    my $n = $bytes.Num;
-    my $i = 0;
-    while $n >= 1024 && $i < @units.end { $n /= 1024; $i++ }
-    $i == 0 ?? "$bytes B" !! sprintf('%.1f %s', $n, @units[$i])
+	my @units = 'B', 'KiB', 'MiB', 'GiB';
+	my $n = $bytes.Num;
+	my $i = 0;
+	while $n >= 1024 && $i < @units.end { $n /= 1024; $i++ }
+	$i == 0 ?? "$bytes B" !! sprintf('%.1f %s', $n, @units[$i])
 }
 
 method cmd-bundle(
-    App::Ariza:U:
-    Str :$app!,
-    Str :$platform,
-    Str :$out-dir,
-    Str :$sqlcipher-archive,
-    --> Hash
+	App::Ariza:U:
+	Str :$app!,
+	Str :$platform,
+	Str :$out-dir,
+	Str :$sqlcipher-archive,
+	--> Hash
 ) {
-    my %b = App::Ariza::Bundle.build(
-        :app-dir($app.IO),
-        |($platform.defined ?? (:$platform) !! ()),
-        |($out-dir.defined ?? (:out-dir($out-dir.IO)) !! ()),
-        |($sqlcipher-archive.defined ?? (:sqlcipher-archive($sqlcipher-archive.IO)) !! ()),
-    );
+	my %b = App::Ariza::Bundle.build(
+		:app-dir($app.IO),
+		|($platform.defined ?? (:$platform) !! ()),
+		|($out-dir.defined ?? (:out-dir($out-dir.IO)) !! ()),
+		|($sqlcipher-archive.defined ?? (:sqlcipher-archive($sqlcipher-archive.IO)) !! ()),
+	);
 
-    say '';
-    say "ariza: built {%b<name>}";
-    say "  archive       {%b<archive>}";
-    say "  compressed    {human-size(%b<compressed>)}";
-    say "  uncompressed  {human-size(%b<uncompressed>)}";
-    say "  sha256        {%b<sha256>}";
-    for %b<launchers>.list -> $l {
-        say "  launcher      {$l.relative(%b<dir>)}";
-    }
-    with %b<licensing><summary> -> %l {
-        say "  licensing     {%l<rows>} components"
-          ~ (%l<unknown> ?? ", {%l<unknown>} UNATTRIBUTED" !! '')
-          ~ " ({%l<document>})";
-    }
-    say "  smoke it      ariza smoke --archive={%b<archive>}";
-    %b
+	say '';
+	say "ariza: built {%b<name>}";
+	say "  archive       {%b<archive>}";
+	say "  compressed    {human-size(%b<compressed>)}";
+	say "  uncompressed  {human-size(%b<uncompressed>)}";
+	say "  sha256        {%b<sha256>}";
+	for %b<launchers>.list -> $l {
+		say "  launcher      {$l.relative(%b<dir>)}";
+	}
+	with %b<licensing><summary> -> %l {
+		say "  licensing     {%l<rows>} components"
+		  ~ (%l<unknown> ?? ", {%l<unknown>} UNATTRIBUTED" !! '')
+		  ~ " ({%l<document>})";
+	}
+	say "  smoke it      ariza smoke --archive={%b<archive>}";
+	%b
 }
 
 method cmd-installers(
-    App::Ariza:U:
-    Str :$app!,
-    Str :$out-dir,
-    Str :$branch = 'HEAD',
-    --> List
+	App::Ariza:U:
+	Str :$app!,
+	Str :$out-dir,
+	Str :$branch = 'HEAD',
+	--> List
 ) {
-    my $app-dir = $app.IO;
-    my $config  = App::Ariza::Config.load($app-dir);
-    note "ariza: $_" for $config.warnings;
+	my $app-dir = $app.IO;
+	my $config  = App::Ariza::Config.load($app-dir);
+	note "ariza: $_" for $config.warnings;
 
-    my @written = App::Ariza::Installer.write(
-        :out-dir($out-dir.defined ?? $out-dir.IO !! $app-dir),
-        :$config, :$branch);
+	my @written = App::Ariza::Installer.write(
+		:out-dir($out-dir.defined ?? $out-dir.IO !! $app-dir),
+		:$config, :$branch);
 
-    say "ariza: wrote $_" for @written;
-    say "ariza: rendered {+@written} installer"
-      ~ (+@written == 1 ?? '' !! 's') ~ " for {$config.app-display}";
-    @written.List;
+	say "ariza: wrote $_" for @written;
+	say "ariza: rendered {+@written} installer"
+	  ~ (+@written == 1 ?? '' !! 's') ~ " for {$config.app-display}";
+	@written.List;
 }
 
 method cmd-scaffold-ci(
-    App::Ariza:U:
-    Str :$app!,
-    Str :$out-dir,
-    Bool :$force = False,
-    --> List
+	App::Ariza:U:
+	Str :$app!,
+	Str :$out-dir,
+	Bool :$force = False,
+	--> List
 ) {
-    my $app-dir = $app.IO;
-    my $config  = App::Ariza::Config.load($app-dir);
-    note "ariza: $_" for $config.warnings;
+	my $app-dir = $app.IO;
+	my $config  = App::Ariza::Config.load($app-dir);
+	note "ariza: $_" for $config.warnings;
 
-    my @done = App::Ariza::CI.write(
-        :out-dir($out-dir.defined
-            ?? $out-dir.IO
-            !! $app-dir.add(App::Ariza::CI::WORKFLOW-DIR)),
-        :$config,
-        :versions(self!versions),
-        :ariza-version(self.dist-version),
-        :$force,
-    );
+	my @done = App::Ariza::CI.write(
+		:out-dir($out-dir.defined
+			?? $out-dir.IO
+			!! $app-dir.add(App::Ariza::CI::WORKFLOW-DIR)),
+		:$config,
+		:versions(self!versions),
+		:ariza-version(self.dist-version),
+		:$force,
+	);
 
-    for @done -> %d {
-        say %d<action> eq 'wrote'
-            ?? "ariza: wrote {%d<path>}"
-            !! "ariza: kept {%d<path>} (already there; --force to replace it)";
-    }
-    say "ariza: scaffolded {+@done.grep({ .<action> eq 'wrote' })} of"
-      ~ " {+@done} workflows for {$config.app-display}";
-    @done.List;
+	for @done -> %d {
+		say %d<action> eq 'wrote'
+			?? "ariza: wrote {%d<path>}"
+			!! "ariza: kept {%d<path>} (already there; --force to replace it)";
+	}
+	say "ariza: scaffolded {+@done.grep({ .<action> eq 'wrote' })} of"
+	  ~ " {+@done} workflows for {$config.app-display}";
+	@done.List;
 }
 
 method cmd-smoke(App::Ariza:U: Str :$archive!, Bool :$keep = False --> Hash) {
-    my %r = App::Ariza::Smoke.smoke(:archive($archive.IO), :$keep);
+	my %r = App::Ariza::Smoke.smoke(:archive($archive.IO), :$keep);
 
-    say '';
-    for %r<checks>.list -> %c {
-        say sprintf('%-4s %-14s %s', %c<ok> ?? 'ok' !! 'FAIL', %c<name>, %c<detail>);
-    }
-    say '';
-    say %r<passed>
-        ?? "ariza: {+%r<checks>} checks passed"
-        !! "ariza: {+%r<checks>.grep({ !.<ok> })} of {+%r<checks>} checks failed";
-    %r
+	say '';
+	for %r<checks>.list -> %c {
+		say sprintf('%-4s %-14s %s', %c<ok> ?? 'ok' !! 'FAIL', %c<name>, %c<detail>);
+	}
+	say '';
+	say %r<passed>
+		?? "ariza: {+%r<checks>} checks passed"
+		!! "ariza: {+%r<checks>.grep({ !.<ok> })} of {+%r<checks>} checks failed";
+	%r
 }
 
 =begin pod
@@ -205,8 +205,9 @@ The slugs are Notcurses-Native's, exactly, because a bundle carries
 that distribution's prebuilt libraries.
 
 =item1 B<L<App::Ariza::Versions>> — the single pin file every artefact
-is built against: the Rakudo runtime a bundle embeds, and the SQLCipher
-version it expects.
+is built against: the Rakudo runtime a bundle embeds, the SQLCipher
+version it expects, and the Rakudo releases a scaffolded C<test.yml>
+runs an app's suite on.
 
 =item1 B<L<App::Ariza::Config>> — the per-app C<ariza.toml> manifest,
 which lives in the app's own repository so that ariza never grows a

@@ -1,8 +1,21 @@
 use App::Ariza::Platform;
 use App::Ariza::Tools;
 use App::Ariza::Versions;
+# Last among the siblings: a module used ahead of siblings that share
+# its namespace has been seen to shadow it for them.
+use App::Ariza::ELF;
 
 unit class App::Ariza::Native;
+
+# Read once, when this module is compiled, rather than on every call:
+# Rakudo 2026.09 builds $*DISTRO afresh on every read -- and $*KERNEL.name
+# asks $*DISTRO for its answer -- and on macOS each build runs sw_vers and
+# leaves the pipe it read the answer from open, so every call that asked
+# kept a file descriptor for the rest of the build. Neither answer can
+# change under an installed copy: the module is compiled on the machine
+# that runs it.
+my constant IS-WINDOWS  = $*DISTRO.is-win;
+my constant HOST-KERNEL = $*KERNEL.name.lc;
 
 # What SQLCipher is called on each platform ariza can name, and which
 # sourcing strategy and audit apply to it.
@@ -22,38 +35,38 @@ unit class App::Ariza::Native;
 # published archive: there is no per-slug availability question left to
 # answer, only "is it installed".
 my constant %SQLCIPHER =
-    'macos-arm64' => {
-        family => 'macos',
-        lib => 'libsqlcipher.0.dylib', alias => 'libsqlcipher.dylib',
-    },
-    'macos-x86_64' => {
-        family => 'macos',
-        lib => 'libsqlcipher.0.dylib', alias => 'libsqlcipher.dylib',
-    },
-    'linux-x86_64-glibc' => {
-        family => 'linux',
-        lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
-    },
-    'linux-x86_64-musl' => {
-        family => 'linux',
-        lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
-    },
-    'linux-aarch64-glibc' => {
-        family => 'linux',
-        lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
-    },
-    'linux-aarch64-musl' => {
-        family => 'linux',
-        lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
-    },
-    'windows-x86_64' => {
-        family => 'windows',
-        lib => 'sqlcipher.dll', alias => Str,
-    },
-    'windows-arm64' => {
-        family => 'windows',
-        lib => 'sqlcipher.dll', alias => Str,
-    },
+	'macos-arm64' => {
+		family => 'macos',
+		lib => 'libsqlcipher.0.dylib', alias => 'libsqlcipher.dylib',
+	},
+	'macos-x86_64' => {
+		family => 'macos',
+		lib => 'libsqlcipher.0.dylib', alias => 'libsqlcipher.dylib',
+	},
+	'linux-x86_64-glibc' => {
+		family => 'linux',
+		lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
+	},
+	'linux-x86_64-musl' => {
+		family => 'linux',
+		lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
+	},
+	'linux-aarch64-glibc' => {
+		family => 'linux',
+		lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
+	},
+	'linux-aarch64-musl' => {
+		family => 'linux',
+		lib => 'libsqlcipher.so.0', alias => 'libsqlcipher.so',
+	},
+	'windows-x86_64' => {
+		family => 'windows',
+		lib => 'sqlcipher.dll', alias => Str,
+	},
+	'windows-arm64' => {
+		family => 'windows',
+		lib => 'sqlcipher.dll', alias => Str,
+	},
 ;
 
 # Where a Linux distribution puts a shared library, for when `ldconfig`
@@ -61,16 +74,16 @@ my constant %SQLCIPHER =
 # PATH) or its cache is stale. Debian multiarch first, then the Red Hat
 # and Alpine layouts, then /usr/local for a hand-built install.
 my constant @LINUX-LIB-DIRS =
-    '/usr/lib/x86_64-linux-gnu', '/usr/lib/aarch64-linux-gnu',
-    '/lib/x86_64-linux-gnu', '/lib/aarch64-linux-gnu',
-    '/usr/lib64', '/lib64', '/usr/lib', '/lib', '/usr/local/lib',
+	'/usr/lib/x86_64-linux-gnu', '/usr/lib/aarch64-linux-gnu',
+	'/lib/x86_64-linux-gnu', '/lib/aarch64-linux-gnu',
+	'/usr/lib64', '/lib64', '/usr/lib', '/lib', '/usr/local/lib',
 ;
 
 # The vcpkg triplets whose `bin` directory is worth a look when
 # VCPKG_ROOT is set. Not a substitute for SQLCIPHER_LIB_DIR — a
 # convenience for the layout vcpkg actually produces.
 my constant @VCPKG-TRIPLETS =
-    'x64-windows', 'arm64-windows', 'x64-windows-static-md';
+	'x64-windows', 'arm64-windows', 'x64-windows-static-md';
 
 # Where MSYS2 puts the DLLs of a `mingw-w64-<env>-*` package, for a
 # default installation. `MSYSTEM_PREFIX` is consulted first and names
@@ -78,7 +91,7 @@ my constant @VCPKG-TRIPLETS =
 # fallbacks worth having, UCRT first because that is the environment
 # ariza wants (see below).
 my constant @MSYS2-BIN-DIRS =
-    'C:\msys64\ucrt64\bin', 'C:\msys64\mingw64\bin';
+	'C:\msys64\ucrt64\bin', 'C:\msys64\mingw64\bin';
 
 # What a SQLCipher DLL can be called on Windows once the canonical name
 # has failed. vcpkg's port produces `sqlcipher.dll`; MSYS2's
@@ -123,12 +136,12 @@ our constant SQLCIPHER-DIR-ENV = 'SQLCIPHER_LIB_DIR';
 #| C<current.revision.age>). Neither is the C<4.x> number anyone means by
 #| "the SQLCipher version".
 our sub sqlcipher-version-of(IO() $lib --> Str) is export {
-    return Str unless $lib.f && $lib.s > 0 && $lib.s <= PROBE-MAX-BYTES;
-    my $bytes = try $lib.slurp(:bin);
-    return Str without $bytes;
-    my @found = ($bytes.decode('latin-1') ~~ m:g/ "\0" (\d+ '.' \d+ '.' \d+) "\0" /)
-        .map({ ~.[0] }).unique;
-    @found == 1 ?? @found.head !! Str
+	return Str unless $lib.f && $lib.s > 0 && $lib.s <= PROBE-MAX-BYTES;
+	my $bytes = try $lib.slurp(:bin);
+	return Str without $bytes;
+	my @found = ($bytes.decode('latin-1') ~~ m:g/ "\0" (\d+ '.' \d+ '.' \d+) "\0" /)
+		.map({ ~.[0] }).unique;
+	@found == 1 ?? @found.head !! Str
 }
 
 #| The real file behind a library path, following symlinks, so what is
@@ -139,17 +152,17 @@ our sub sqlcipher-version-of(IO() $lib --> Str) is export {
 #| including on Windows, where C<IO::Path.resolve> does not chase
 #| symlinks at all and DLLs are not symlinked anyway.
 my sub real-file(IO::Path $path --> IO::Path) {
-    my $resolved = try { $path.resolve };
-    $resolved.defined && $resolved.f ?? $resolved !! $path
+	my $resolved = try { $path.resolve };
+	$resolved.defined && $resolved.f ?? $resolved !! $path
 }
 
 #| The version in a Homebrew keg path: C<.../Cellar/sqlcipher/4.14.0>.
 #| The undefined C<Str> for anything not shaped like a version, which is
 #| what an unresolvable C<opt> symlink produces.
 my sub keg-version(IO::Path $prefix --> Str) {
-    my $real = (try { $prefix.resolve }) // $prefix;
-    my $name = $real.basename;
-    $name ~~ / ^ \d+ [ '.' \d+ ]* $ / ?? $name !! Str
+	my $real = (try { $prefix.resolve }) // $prefix;
+	my $name = $real.basename;
+	$name ~~ / ^ \d+ [ '.' \d+ ]* $ / ?? $name !! Str
 }
 
 #| A Mach-O dependency is self-contained if it is bundle-relative
@@ -157,8 +170,8 @@ my sub keg-version(IO::Path $prefix --> Str) {
 #| itself (C</usr/lib>, C</System>). Anything else — a Homebrew prefix,
 #| C</usr/local> — loads from outside the bundle or not at all.
 our constant MACHO-ALLOWED = rx/ ^ [ '@loader_path/' | '@rpath/'
-                                   | '@executable_path/' | '/usr/lib/'
-                                   | '/System/' ] /;
+								   | '@executable_path/' | '/usr/lib/'
+								   | '/System/' ] /;
 
 #| Every dependency in `otool -L` output that is not self-contained.
 #|
@@ -168,11 +181,11 @@ our constant MACHO-ALLOWED = rx/ ^ [ '@loader_path/' | '@rpath/'
 #| name is baked into everything that links against it later, which is
 #| the same bug one step removed.
 our sub macho-strays(Str:D $otool-output --> List) is export {
-    $otool-output.lines.skip(1)
-        .map(*.trim).grep(*.chars)
-        .map(*.words.head)
-        .grep({ $_ !~~ MACHO-ALLOWED })
-        .unique.List
+	$otool-output.lines.skip(1)
+		.map(*.trim).grep(*.chars)
+		.map(*.words.head)
+		.grep({ $_ !~~ MACHO-ALLOWED })
+		.unique.List
 }
 
 # The shared libraries a Linux bundle must NOT carry a copy of: the
@@ -193,18 +206,19 @@ our sub macho-strays(Str:D $otool-output --> List) is export {
 # Patterns, matched against the leaf name, where `*` is the only
 # metacharacter.
 our constant ELF-SYSTEM-LIBS =
-    'ld-linux*', 'ld-musl-*', 'ld64.so.*', 'ld.so.*',
-    'libc.so.*', 'libc.musl-*', 'libm.so.*', 'libmvec.so.*',
-    'libpthread.so.*', 'libdl.so.*', 'librt.so.*', 'libthread_db.so.*',
-    'libgcc_s.so.*', 'libstdc++.so.*', 'libatomic.so.*',
-    'libresolv.so.*', 'libnsl.so.*', 'libutil.so.*', 'libcrypt.so.*',
-    'linux-vdso.so.*', 'linux-gate.so.*',
+	'ld-linux*', 'ld-musl-*', 'ld64.so.*', 'ld.so.*',
+	'libc.so.*', 'libc.musl-*', 'libm.so.*', 'libmvec.so.*',
+	'libpthread.so.*', 'libdl.so.*', 'librt.so.*', 'libthread_db.so.*',
+	'libgcc_s.so.*', 'libstdc++.so.*', 'libatomic.so.*',
+	'libresolv.so.*', 'libnsl.so.*', 'libutil.so.*', 'libcrypt.so.*',
+	'linux-vdso.so.*', 'linux-gate.so.*',
 ;
 
-# The markers the ELF audit puts before `patchelf --print-rpath`'s
-# answer and before clean-environment `ldd` output, when it is running on
-# a Linux host and can ask the loader itself rather than only reading the
-# file. See "Two host-only checks" in the Pod below.
+# The markers the ELF audit puts before the search path the loader will
+# use (DT_RUNPATH, else DT_RPATH, read out of the file) and before
+# clean-environment `ldd` output, when it is running on a Linux host and
+# can ask the loader itself rather than only reading the file. See "Two
+# host-only checks" in the Pod below.
 our constant ELF-RPATH-SECTION is export = '=== ariza:rpath ===';
 our constant ELF-LDD-SECTION   is export = '=== ariza:ldd ===';
 
@@ -212,20 +226,20 @@ our constant ELF-LDD-SECTION   is export = '=== ariza:ldd ===';
 #| write out, and a good deal easier to reason about than assembling a
 #| regex from a string at run time.
 my sub glob-match(Str:D $name, Str:D $pattern --> Bool) {
-    my @parts = $pattern.split('*');
-    return $name eq $pattern if @parts == 1;
-    return False unless $name.starts-with(@parts[0]);
-    return False unless $name.ends-with(@parts[*-1]);
+	my @parts = $pattern.split('*');
+	return $name eq $pattern if @parts == 1;
+	return False unless $name.starts-with(@parts[0]);
+	return False unless $name.ends-with(@parts[*-1]);
 
-    my $pos = @parts[0].chars;
-    for @parts[1 .. *-2] -> $middle {
-        next unless $middle.chars;
-        my $at = $name.index($middle, $pos);
-        return False without $at;
-        $pos = $at + $middle.chars;
-    }
-    # The leading and trailing literals must not have to overlap to fit.
-    $pos <= $name.chars - @parts[*-1].chars
+	my $pos = @parts[0].chars;
+	for @parts[1 .. *-2] -> $middle {
+		next unless $middle.chars;
+		my $at = $name.index($middle, $pos);
+		return False without $at;
+		$pos = $at + $middle.chars;
+	}
+	# The leading and trailing literals must not have to overlap to fit.
+	$pos <= $name.chars - @parts[*-1].chars
 }
 
 #| Whether a resolved dependency path lies under one of the bundle's own
@@ -244,8 +258,8 @@ my sub glob-match(Str:D $name, Str:D $pattern --> Bool) {
 #| Shared by the ELF loader audit and the PE closure audit. The latter
 #| compares the adjacency model ariza packages, not a live Win32 search.
 my sub path-inside(Str:D $target, @inside --> Bool) {
-    my $path = $target.subst('\\', '/', :g);
-    so @inside.first({ $path.starts-with($_.subst('\\', '/', :g) ~ '/') })
+	my $path = $target.subst('\\', '/', :g);
+	so @inside.first({ $path.starts-with($_.subst('\\', '/', :g) ~ '/') })
 }
 
 #| The file called C<$name> in C<$dir>, matched the way Windows matches
@@ -257,10 +271,10 @@ my sub path-inside(Str:D $target, @inside --> Bool) {
 #| casing varies by port, and a bundle built on a case-insensitive
 #| filesystem must audit the same on a case-sensitive one.
 my sub find-beside(IO::Path $dir, Str:D $name --> IO::Path) {
-    my $exact = $dir.add($name);
-    return $exact if $exact.f;
-    return IO::Path unless $dir.d;
-    $dir.dir.first({ .f && .basename.lc eq $name.lc }) // IO::Path
+	my $exact = $dir.add($name);
+	return $exact if $exact.f;
+	return IO::Path unless $dir.d;
+	$dir.dir.first({ .f && .basename.lc eq $name.lc }) // IO::Path
 }
 
 #| Compares two library filenames the way a version number should be
@@ -268,17 +282,17 @@ my sub find-beside(IO::Path $dir, Str:D $name --> IO::Path) {
 #| C<libsqlcipher-3.34.1.so.0> sorts above C<libsqlcipher-3.9.0.so.0>,
 #| which a plain string C<cmp> gets backwards (C<'9'> follows C<'3'>).
 my sub natural-cmp(Str:D $a, Str:D $b --> Order) {
-    my @ta = $a.comb(/ \d+ | \D+ /);
-    my @tb = $b.comb(/ \d+ | \D+ /);
-    for ^max(@ta.elems, @tb.elems) -> $i {
-        my $x = @ta[$i] // '';
-        my $y = @tb[$i] // '';
-        my $o = ($x ~~ / ^ \d+ $ / && $y ~~ / ^ \d+ $ /)
-            ?? (+$x <=> +$y)
-            !! ($x cmp $y);
-        return $o unless $o == Order::Same;
-    }
-    Order::Same
+	my @ta = $a.comb(/ \d+ | \D+ /);
+	my @tb = $b.comb(/ \d+ | \D+ /);
+	for ^max(@ta.elems, @tb.elems) -> $i {
+		my $x = @ta[$i] // '';
+		my $y = @tb[$i] // '';
+		my $o = ($x ~~ / ^ \d+ $ / && $y ~~ / ^ \d+ $ /)
+			?? (+$x <=> +$y)
+			!! ($x cmp $y);
+		return $o unless $o == Order::Same;
+	}
+	Order::Same
 }
 
 #| The parenthetical the manifest carries when the file found on the
@@ -290,9 +304,9 @@ my sub natural-cmp(Str:D $a, Str:D $b --> Order) {
 #| file, and reporting C<SQLCipher.dll> as renamed to C<sqlcipher.dll>
 #| would be noise about nothing.
 my sub staged-as(Str:D $canonical, Str $found --> Str) {
-    !$found.defined || $found.lc eq $canonical.lc
-        ?? ''
-        !! " (staged as $canonical; found as $found)"
+	!$found.defined || $found.lc eq $canonical.lc
+		?? ''
+		!! " (staged as $canonical; found as $found)"
 }
 
 #| A SQLCipher DLL in one of C<@dirs>, as C<(IO::Path, matched)> — or
@@ -305,40 +319,40 @@ my sub staged-as(Str:D $canonical, Str $found --> Str) {
 #| match by a numeric-aware comparison of the filename is taken — the
 #| same rule, and the same ordering trap, as the Linux C<:$glob> pass.
 my sub windows-lib-in(Str:D $name, @dirs --> List) {
-    for @dirs -> $dir {
-        my $exact = find-beside($dir.IO, $name);
-        return ($exact, $exact.basename) with $exact;
-    }
+	for @dirs -> $dir {
+		my $exact = find-beside($dir.IO, $name);
+		return ($exact, $exact.basename) with $exact;
+	}
 
-    my @found;
-    for @dirs -> $dir {
-        next unless $dir.IO.d;
-        for $dir.IO.dir -> $entry {
-            next unless $entry.f && !$entry.l
-                     && glob-match($entry.basename.lc, WINDOWS-LIB-GLOB);
-            @found.push($entry);
-        }
-    }
-    return () unless @found;
+	my @found;
+	for @dirs -> $dir {
+		next unless $dir.IO.d;
+		for $dir.IO.dir -> $entry {
+			next unless $entry.f && !$entry.l
+					 && glob-match($entry.basename.lc, WINDOWS-LIB-GLOB);
+			@found.push($entry);
+		}
+	}
+	return () unless @found;
 
-    my $best = @found.sort({ natural-cmp($^b.basename, $^a.basename) }).head;
-    ($best, $best.basename)
+	my $best = @found.sort({ natural-cmp($^b.basename, $^a.basename) }).head;
+	($best, $best.basename)
 }
 
 #| Whether a soname names a library a bundle leaves dynamic. Takes a
 #| soname or a path; only the leaf name is considered.
 our sub elf-system-lib(Str:D $soname --> Bool) is export {
-    my $name = $soname.split('/').tail;
-    so ELF-SYSTEM-LIBS.first({ glob-match($name, $_) })
+	my $name = $soname.split('/').tail;
+	so ELF-SYSTEM-LIBS.first({ glob-match($name, $_) })
 }
 
 #| The C<DT_NEEDED> sonames in C<readelf -d> output, in file order.
 #| C<eu-readelf> prints the same C<Shared library: [name]> shape, so this
 #| reads both.
 our sub elf-needed(Str:D $readelf-output --> List) is export {
-    $readelf-output.lines
-        .map({ / 'Shared library:' \s* '[' (<-[\]]>+) ']' / ?? ~$0 !! Str })
-        .grep(*.defined).unique.List
+	$readelf-output.lines
+		.map({ / 'Shared library:' \s* '[' (<-[\]]>+) ']' / ?? ~$0 !! Str })
+		.grep(*.defined).unique.List
 }
 
 #| The dependencies in C<ldd> output, as C<soname => path> pairs, with
@@ -351,16 +365,16 @@ our sub elf-needed(Str:D $readelf-output --> List) is export {
 #| by C<elf-strays> instead, where it belongs: nothing can be I<copied>
 #| to fix it.
 our sub ldd-deps(Str:D $ldd-output --> List) is export {
-    my @deps;
-    for $ldd-output.lines -> $line {
-        # "	libcrypto.so.3 => /lib64/libcrypto.so.3 (0x00007f…)"
-        my $entry = $line.trim.subst(/ \s* '(' <-[)]>* ')' $ /, '');
-        next unless $entry.contains(' => ');
-        my ($name, $path) = $entry.split(' => ', 2).map(*.trim);
-        next unless $name.chars;
-        @deps.push($name => ($path.chars && $path ne 'not found' ?? $path !! Str));
-    }
-    @deps.unique(as => *.key).List
+	my @deps;
+	for $ldd-output.lines -> $line {
+		# "	libcrypto.so.3 => /lib64/libcrypto.so.3 (0x00007f…)"
+		my $entry = $line.trim.subst(/ \s* '(' <-[)]>* ')' $ /, '');
+		next unless $entry.contains(' => ');
+		my ($name, $path) = $entry.split(' => ', 2).map(*.trim);
+		next unless $name.chars;
+		@deps.push($name => ($path.chars && $path ne 'not found' ?? $path !! Str));
+	}
+	@deps.unique(as => *.key).List
 }
 
 #| Everything about an ELF file that would load from outside the bundle.
@@ -377,7 +391,8 @@ our sub ldd-deps(Str:D $ldd-output --> List) is export {
 #| C<NEEDED libcrypto.so.3> is perfectly legal ELF and resolves happily
 #| from the build machine's C</lib64>.
 #|
-#| Under C<ELF-RPATH-SECTION>, what C<patchelf --print-rpath> reports:
+#| Under C<ELF-RPATH-SECTION>, the search path the loader will use — what
+#| C<patchelf --print-rpath> would print, read by L<App::Ariza::ELF>:
 #| every entry must be C<$ORIGIN>-relative, and a file with a non-system
 #| C<NEEDED> must have at least one, since without it nothing tells the
 #| loader to look beside the file.
@@ -390,59 +405,59 @@ our sub ldd-deps(Str:D $ldd-output --> List) is export {
 #| a resolved target and an C<:@inside> prefix spelled with opposite
 #| path separators still agree.
 our sub elf-strays(Str:D $report, :@inside = () --> List) is export {
-    my (@static, @rpath, @ldd);
-    my %have;
-    my $section := @static;
-    for $report.lines -> $line {
-        given $line.trim {
-            when ELF-RPATH-SECTION { $section := @rpath; %have<rpath> = True }
-            when ELF-LDD-SECTION   { $section := @ldd;   %have<ldd>   = True }
-            default                { $section.push($line) }
-        }
-    }
+	my (@static, @rpath, @ldd);
+	my %have;
+	my $section := @static;
+	for $report.lines -> $line {
+		given $line.trim {
+			when ELF-RPATH-SECTION { $section := @rpath; %have<rpath> = True }
+			when ELF-LDD-SECTION   { $section := @ldd;   %have<ldd>   = True }
+			default                { $section.push($line) }
+		}
+	}
 
-    my $readelf = @static.join("\n");
-    my @needed  = elf-needed($readelf);
-    my @strays;
+	my $readelf = @static.join("\n");
+	my @needed  = elf-needed($readelf);
+	my @strays;
 
-    for @static -> $line {
-        if $line ~~ / 'Shared library:' \s* '[' (<-[\]]>+) ']' / {
-            # Bind before testing: the inner match would reset `$/` and
-            # leave `$0` Nil by the time it was pushed.
-            my $soname = ~$0;
-            @strays.push($soname) if $soname.contains('/');
-        }
-        elsif $line ~~ / ['RUNPATH'|'RPATH'] \D* '[' (<-[\]]>*) ']' / {
-            for (~$0).split(':').grep(*.chars) -> $entry {
-                @strays.push($entry) unless $entry.starts-with('$ORIGIN');
-            }
-        }
-    }
+	for @static -> $line {
+		if $line ~~ / 'Shared library:' \s* '[' (<-[\]]>+) ']' / {
+			# Bind before testing: the inner match would reset `$/` and
+			# leave `$0` Nil by the time it was pushed.
+			my $soname = ~$0;
+			@strays.push($soname) if $soname.contains('/');
+		}
+		elsif $line ~~ / ['RUNPATH'|'RPATH'] \D* '[' (<-[\]]>*) ']' / {
+			for (~$0).split(':').grep(*.chars) -> $entry {
+				@strays.push($entry) unless $entry.starts-with('$ORIGIN');
+			}
+		}
+	}
 
-    if %have<rpath> {
-        # Deliberately the same finding text as the static check above,
-        # so a bad rpath seen by both is reported once.
-        my @entries = @rpath.join("\n").trim.split(':').grep(*.chars);
-        @strays.push($_) for @entries.grep({ !.starts-with('$ORIGIN') });
-        @strays.push('no rpath: nothing tells the loader to look beside this'
-                   ~ ' file (expected $ORIGIN)')
-            if !@entries && @needed.grep({ !elf-system-lib($_) });
-    }
+	if %have<rpath> {
+		# Deliberately the same finding text as the static check above,
+		# so a bad rpath seen by both is reported once.
+		my @entries = @rpath.join("\n").trim.split(':').grep(*.chars);
+		@strays.push($_) for @entries.grep({ !.starts-with('$ORIGIN') });
+		@strays.push('no rpath: nothing tells the loader to look beside this'
+				   ~ ' file (expected $ORIGIN)')
+			if !@entries && @needed.grep({ !elf-system-lib($_) });
+	}
 
-    if %have<ldd> {
-        for ldd-deps(@ldd.join("\n")) -> $dep {
-            next if elf-system-lib($dep.key);
-            without $dep.value {
-                @strays.push("{$dep.key} => not found");
-                next;
-            }
-            next unless @inside;
-            @strays.push("{$dep.key} => {$dep.value}")
-                unless path-inside($dep.value, @inside);
-        }
-    }
+	if %have<ldd> {
+		for ldd-deps(@ldd.join("\n")) -> $dep {
+			next if elf-system-lib($dep.key);
+			without $dep.value {
+				@strays.push("{$dep.key} => not found");
+				next;
+			}
+			next unless @inside;
+			@strays.push("{$dep.key} => {$dep.value}")
+				unless path-inside($dep.value, @inside);
+		}
+	}
 
-    @strays.unique.List
+	@strays.unique.List
 }
 
 #| The format of a binary file, by magic number: C<'Mach-O'>, C<'ELF'>,
@@ -454,19 +469,19 @@ our sub elf-strays(Str:D $report, :@inside = () --> List) is export {
 #| a loop that checks nothing and passes B<silently>, and C<file> is
 #| exactly the sort of tool a minimal build image leaves out.
 our sub binary-format(IO() $file --> Str) is export {
-    return Str unless $file.f && $file.s >= 4;
-    my $magic = try { my $h = $file.open(:bin); LEAVE $h.close; $h.read(4) };
-    return Str without $magic;
+	return Str unless $file.f && $file.s >= 4;
+	my $magic = try { my $h = $file.open(:bin); LEAVE $h.close; $h.read(4) };
+	return Str without $magic;
 
-    my $be = ($magic[0] +< 24) +| ($magic[1] +< 16)
-           +| ($magic[2] +< 8) +| $magic[3];
-    return 'ELF' if $be == 0x7F45_4C46;
-    # Mach-O in both byte orders, plus the fat/universal wrappers.
-    return 'Mach-O' if $be == any(0xFEED_FACE, 0xFEED_FACF,
-                                  0xCEFA_EDFE, 0xCFFA_EDFE,
-                                  0xCAFE_BABE, 0xBEBA_FECA);
-    return 'PE' if $magic[0] == 0x4D && $magic[1] == 0x5A;   # "MZ"
-    Str
+	my $be = ($magic[0] +< 24) +| ($magic[1] +< 16)
+		   +| ($magic[2] +< 8) +| $magic[3];
+	return 'ELF' if $be == 0x7F45_4C46;
+	# Mach-O in both byte orders, plus the fat/universal wrappers.
+	return 'Mach-O' if $be == any(0xFEED_FACE, 0xFEED_FACF,
+								  0xCEFA_EDFE, 0xCFFA_EDFE,
+								  0xCAFE_BABE, 0xBEBA_FECA);
+	return 'PE' if $magic[0] == 0x4D && $magic[1] == 0x5A;   # "MZ"
+	Str
 }
 
 # The Visual C++ Redistributable family: the runtime an MSVC-built DLL
@@ -492,7 +507,7 @@ our sub binary-format(IO() $file --> Str) is export {
 # and later, which is why a UCRT-built library is the fix rather than
 # another instance of the problem.
 our constant PE-REDIST-DLLS =
-    'vcruntime*.dll', 'msvcp*.dll', 'concrt*.dll', 'vcomp*.dll',
+	'vcruntime*.dll', 'msvcp*.dll', 'concrt*.dll', 'vcomp*.dll',
 ;
 
 # The DLLs a Windows bundle must NOT carry a copy of: Windows' own, the
@@ -517,25 +532,25 @@ our constant PE-REDIST-DLLS =
 # Patterns, matched case-insensitively against the leaf name, where `*`
 # is the only metacharacter.
 our constant PE-SYSTEM-DLLS =
-    # The core Win32 set.
-    'kernel32.dll', 'kernelbase.dll', 'user32.dll', 'advapi32.dll',
-    'gdi32.dll', 'gdiplus.dll', 'msimg32.dll', 'ntdll.dll',
-    'rpcrt4.dll', 'shell32.dll', 'shlwapi.dll', 'ole32.dll',
-    'oleaut32.dll', 'version.dll', 'userenv.dll', 'cfgmgr32.dll',
-    # Sockets and networking.
-    'ws2_32.dll', 'wsock32.dll', 'iphlpapi.dll', 'dnsapi.dll',
-    # Cryptography and security.
-    'bcrypt.dll', 'bcryptprimitives.dll', 'crypt32.dll', 'ncrypt.dll',
-    'secur32.dll',
-    # Text, media and device stacks.
-    'dwrite.dll', 'usp10.dll', 'winmm.dll', 'avrt.dll', 'avicap32.dll',
-    # The C runtimes: the OS's own, the UCRT (Windows 10 and later ship
-    # it in System32), and the Visual C++ redistributable — which is a
-    # prerequisite rather than a payload, and is audited as one.
-    'msvcrt.dll', 'ucrtbase.dll', |PE-REDIST-DLLS,
-    # The API sets, which are not files on disk at all: the loader
-    # resolves them out of the OS.
-    'api-ms-win-*.dll', 'ext-ms-*.dll',
+	# The core Win32 set.
+	'kernel32.dll', 'kernelbase.dll', 'user32.dll', 'advapi32.dll',
+	'gdi32.dll', 'gdiplus.dll', 'msimg32.dll', 'ntdll.dll',
+	'rpcrt4.dll', 'shell32.dll', 'shlwapi.dll', 'ole32.dll',
+	'oleaut32.dll', 'version.dll', 'userenv.dll', 'cfgmgr32.dll',
+	# Sockets and networking.
+	'ws2_32.dll', 'wsock32.dll', 'iphlpapi.dll', 'dnsapi.dll',
+	# Cryptography and security.
+	'bcrypt.dll', 'bcryptprimitives.dll', 'crypt32.dll', 'ncrypt.dll',
+	'secur32.dll',
+	# Text, media and device stacks.
+	'dwrite.dll', 'usp10.dll', 'winmm.dll', 'avrt.dll', 'avicap32.dll',
+	# The C runtimes: the OS's own, the UCRT (Windows 10 and later ship
+	# it in System32), and the Visual C++ redistributable — which is a
+	# prerequisite rather than a payload, and is audited as one.
+	'msvcrt.dll', 'ucrtbase.dll', |PE-REDIST-DLLS,
+	# The API sets, which are not files on disk at all: the loader
+	# resolves them out of the OS.
+	'api-ms-win-*.dll', 'ext-ms-*.dll',
 ;
 
 # A PE file is read whole to walk its import table; this is the same
@@ -558,7 +573,7 @@ my constant PE32PLUS-MAGIC = 0x020B;
 #| The leaf of an imported DLL name, folded — how the loader compares
 #| two spellings of one file, and how both skiplist tests below do.
 my sub pe-leaf(Str:D $name --> Str) {
-    $name.split('/').tail.split('\\').tail.lc
+	$name.split('/').tail.split('\\').tail.lc
 }
 
 #| Whether an imported DLL name is one Windows itself provides, and so
@@ -566,7 +581,7 @@ my sub pe-leaf(Str:D $name --> Str) {
 #| the leaf is considered, and the comparison is case-insensitive because
 #| the loader's is (C<KERNEL32.dll> and C<kernel32.dll> are one file).
 our sub pe-system-dll(Str:D $name --> Bool) is export {
-    so PE-SYSTEM-DLLS.first({ glob-match(pe-leaf($name), $_) })
+	so PE-SYSTEM-DLLS.first({ glob-match(pe-leaf($name), $_) })
 }
 
 #| Whether an imported DLL name belongs to the Visual C++
@@ -578,48 +593,48 @@ our sub pe-system-dll(Str:D $name --> Bool) is export {
 #| the same names. Takes a name or a path, folds case, as its sibling
 #| does.
 our sub pe-redist-dll(Str:D $name --> Bool) is export {
-    so PE-REDIST-DLLS.first({ glob-match(pe-leaf($name), $_) })
+	so PE-REDIST-DLLS.first({ glob-match(pe-leaf($name), $_) })
 }
 
 my sub pe-die(IO::Path $file, Str:D $why) {
-    die "ariza: cannot read the imports of {$file.absolute}: $why";
+	die "ariza: cannot read the imports of {$file.absolute}: $why";
 }
 
 my sub pe-u16(Blob:D $b, Int:D $at, IO::Path $file, Str:D $what --> Int) {
-    pe-die($file, "$what wants 2 bytes at offset $at, and the file is"
-                ~ " {$b.elems} bytes long")
-        if $at < 0 || $at + 2 > $b.elems;
-    $b[$at] +| ($b[$at + 1] +< 8)
+	pe-die($file, "$what wants 2 bytes at offset $at, and the file is"
+				~ " {$b.elems} bytes long")
+		if $at < 0 || $at + 2 > $b.elems;
+	$b[$at] +| ($b[$at + 1] +< 8)
 }
 
 my sub pe-u32(Blob:D $b, Int:D $at, IO::Path $file, Str:D $what --> Int) {
-    pe-die($file, "$what wants 4 bytes at offset $at, and the file is"
-                ~ " {$b.elems} bytes long")
-        if $at < 0 || $at + 4 > $b.elems;
-    $b[$at] +| ($b[$at + 1] +< 8) +| ($b[$at + 2] +< 16) +| ($b[$at + 3] +< 24)
+	pe-die($file, "$what wants 4 bytes at offset $at, and the file is"
+				~ " {$b.elems} bytes long")
+		if $at < 0 || $at + 4 > $b.elems;
+	$b[$at] +| ($b[$at + 1] +< 8) +| ($b[$at + 2] +< 16) +| ($b[$at + 3] +< 24)
 }
 
 #| The NUL-terminated ASCII string at a file offset — how a PE stores
 #| every imported DLL name.
 my sub pe-string(Blob:D $b, Int:D $at, IO::Path $file --> Str) {
-    my $end = $at;
-    $end++ while $end < $b.elems && $end - $at < PE-MAX-NAME && $b[$end];
-    pe-die($file, "an imported DLL name at offset $at runs to the end of the"
-                ~ " file without a terminating NUL")
-        if $end >= $b.elems || $end - $at >= PE-MAX-NAME;
-    pe-die($file, "an imported DLL name at offset $at is empty")
-        unless $end > $at;
-    $b.subbuf($at, $end - $at).decode('latin-1')
+	my $end = $at;
+	$end++ while $end < $b.elems && $end - $at < PE-MAX-NAME && $b[$end];
+	pe-die($file, "an imported DLL name at offset $at runs to the end of the"
+				~ " file without a terminating NUL")
+		if $end >= $b.elems || $end - $at >= PE-MAX-NAME;
+	pe-die($file, "an imported DLL name at offset $at is empty")
+		unless $end > $at;
+	$b.subbuf($at, $end - $at).decode('latin-1')
 }
 
 my sub pe-bytes(IO::Path $file --> Blob) {
-    pe-die($file, 'it is not a file') unless $file.f;
-    pe-die($file, "it is {$file.s} bytes, past the {PROBE-MAX-BYTES}-byte"
-                ~ " ceiling this reader will read into memory")
-        if $file.s > PROBE-MAX-BYTES;
-    my $bytes = try $file.slurp(:bin);
-    pe-die($file, 'its bytes could not be read') without $bytes;
-    $bytes
+	pe-die($file, 'it is not a file') unless $file.f;
+	pe-die($file, "it is {$file.s} bytes, past the {PROBE-MAX-BYTES}-byte"
+				~ " ceiling this reader will read into memory")
+		if $file.s > PROBE-MAX-BYTES;
+	my $bytes = try $file.slurp(:bin);
+	pe-die($file, 'its bytes could not be read') without $bytes;
+	$bytes
 }
 
 #| The DLLs a PE file imports, by name, in the order its import table
@@ -657,120 +672,138 @@ my sub pe-bytes(IO::Path $file --> Blob) {
 #| delay-loaded dependency would go unstaged and unreported; if one ever
 #| turns up here, it belongs in this parser rather than in a workaround.
 our sub pe-imports(IO() $file --> List) is export {
-    my $b = pe-bytes($file);
+	my $b = pe-bytes($file);
 
-    pe-die($file, 'it does not begin with "MZ", so it is not a PE file at all')
-        unless $b.elems >= 2 && $b[0] == 0x4D && $b[1] == 0x5A;
+	pe-die($file, 'it does not begin with "MZ", so it is not a PE file at all')
+		unless $b.elems >= 2 && $b[0] == 0x4D && $b[1] == 0x5A;
 
-    my $pe = pe-u32($b, PE-LFANEW, $file, "the DOS header's e_lfanew");
-    pe-die($file, "its e_lfanew points at offset $pe, which is past the end"
-                ~ " of a {$b.elems}-byte file")
-        if $pe < 0 || $pe + 24 > $b.elems;
-    pe-die($file, "there is no \"PE\\0\\0\" signature at offset $pe, where"
-                ~ " e_lfanew points")
-        unless $b[$pe] == 0x50 && $b[$pe + 1] == 0x45
-            && $b[$pe + 2] == 0 && $b[$pe + 3] == 0;
+	my $pe = pe-u32($b, PE-LFANEW, $file, "the DOS header's e_lfanew");
+	pe-die($file, "its e_lfanew points at offset $pe, which is past the end"
+				~ " of a {$b.elems}-byte file")
+		if $pe < 0 || $pe + 24 > $b.elems;
+	pe-die($file, "there is no \"PE\\0\\0\" signature at offset $pe, where"
+				~ " e_lfanew points")
+		unless $b[$pe] == 0x50 && $b[$pe + 1] == 0x45
+			&& $b[$pe + 2] == 0 && $b[$pe + 3] == 0;
 
-    my $coff     = $pe + 4;
-    my $sections = pe-u16($b, $coff + 2,  $file, 'NumberOfSections');
-    my $opt-size = pe-u16($b, $coff + 16, $file, 'SizeOfOptionalHeader');
-    my $opt      = $coff + 20;
+	my $coff     = $pe + 4;
+	my $sections = pe-u16($b, $coff + 2,  $file, 'NumberOfSections');
+	my $opt-size = pe-u16($b, $coff + 16, $file, 'SizeOfOptionalHeader');
+	my $opt      = $coff + 20;
 
-    # An object file (or a pure-resource DLL built as one) has no
-    # optional header, and so no data directories and no imports.
-    return () unless $opt-size;
+	# An object file (or a pure-resource DLL built as one) has no
+	# optional header, and so no data directories and no imports.
+	return () unless $opt-size;
 
-    my $magic = pe-u16($b, $opt, $file, 'the optional header magic');
-    my ($dirs, $dir-count-at) = do given $magic {
-        when PE32-MAGIC     { ($opt + 96,  $opt + 92)  }
-        when PE32PLUS-MAGIC { ($opt + 112, $opt + 108) }
-        default {
-            pe-die($file, sprintf('its optional header magic is 0x%04X, which'
-                                ~ ' is neither PE32 (0x010B) nor PE32+'
-                                ~ ' (0x020B)', $magic));
-        }
-    };
+	my $magic = pe-u16($b, $opt, $file, 'the optional header magic');
+	my ($dirs, $dir-count-at) = do given $magic {
+		when PE32-MAGIC     { ($opt + 96,  $opt + 92)  }
+		when PE32PLUS-MAGIC { ($opt + 112, $opt + 108) }
+		default {
+			pe-die($file, sprintf('its optional header magic is 0x%04X, which'
+								~ ' is neither PE32 (0x010B) nor PE32+'
+								~ ' (0x020B)', $magic));
+		}
+	};
 
-    # A file with fewer than two data directories has no import table
-    # entry to read — legal, and means it imports nothing.
-    my $ndirs = pe-u32($b, $dir-count-at, $file, 'NumberOfRvaAndSizes');
-    return () if $ndirs < 2;
+	# A file with fewer than two data directories has no import table
+	# entry to read — legal, and means it imports nothing.
+	my $ndirs = pe-u32($b, $dir-count-at, $file, 'NumberOfRvaAndSizes');
+	return () if $ndirs < 2;
 
-    my $imports = pe-u32($b, $dirs + 8, $file, "the import table's RVA");
-    return () unless $imports;
+	my $imports = pe-u32($b, $dirs + 8, $file, "the import table's RVA");
+	return () unless $imports;
 
-    my $table = $opt + $opt-size;
-    pe-die($file, "its $sections section header(s) do not fit inside a"
-                ~ " {$b.elems}-byte file")
-        if $sections < 1 || $table + 40 * $sections > $b.elems;
+	my $table = $opt + $opt-size;
+	pe-die($file, "its $sections section header(s) do not fit inside a"
+				~ " {$b.elems}-byte file")
+		if $sections < 1 || $table + 40 * $sections > $b.elems;
 
-    my @sections = (^$sections).map(-> $i {
-        my $s = $table + 40 * $i;
-        %( rva   => pe-u32($b, $s + 12, $file, 'a section VirtualAddress'),
-           vsize => pe-u32($b, $s + 8,  $file, 'a section VirtualSize'),
-           raw   => pe-u32($b, $s + 20, $file, 'a section PointerToRawData'),
-           rsize => pe-u32($b, $s + 16, $file, 'a section SizeOfRawData') )
-    });
+	my @sections = (^$sections).map(-> $i {
+		my $s = $table + 40 * $i;
+		%( rva   => pe-u32($b, $s + 12, $file, 'a section VirtualAddress'),
+		   vsize => pe-u32($b, $s + 8,  $file, 'a section VirtualSize'),
+		   raw   => pe-u32($b, $s + 20, $file, 'a section PointerToRawData'),
+		   rsize => pe-u32($b, $s + 16, $file, 'a section SizeOfRawData') )
+	});
 
-    # RVA to file offset: the section table is the only map between the
-    # addresses a PE records and the bytes on disk. A section's virtual
-    # size can exceed what is stored (zero-filled tail), which is why the
-    # span and the on-disk length are checked separately.
-    my sub at(Int:D $rva, Str:D $what --> Int) {
-        for @sections -> %s {
-            my $span = %s<vsize> || %s<rsize>;
-            next unless $span && $rva >= %s<rva> && $rva - %s<rva> < $span;
-            my $offset = %s<raw> + $rva - %s<rva>;
-            pe-die($file, sprintf('%s is at RVA 0x%X, which falls in a section'
-                                ~ ' that has no bytes for it in the file',
-                                  $what, $rva))
-                if $rva - %s<rva> >= %s<rsize> || $offset >= $b.elems;
-            return $offset;
-        }
-        pe-die($file, sprintf('%s is at RVA 0x%X, which falls in none of its'
-                            ~ ' %d section(s)', $what, $rva, +@sections));
-    }
+	# RVA to file offset: the section table is the only map between the
+	# addresses a PE records and the bytes on disk. A section's virtual
+	# size can exceed what is stored (zero-filled tail), which is why the
+	# span and the on-disk length are checked separately.
+	my sub at(Int:D $rva, Str:D $what --> Int) {
+		for @sections -> %s {
+			my $span = %s<vsize> || %s<rsize>;
+			next unless $span && $rva >= %s<rva> && $rva - %s<rva> < $span;
+			my $offset = %s<raw> + $rva - %s<rva>;
+			pe-die($file, sprintf('%s is at RVA 0x%X, which falls in a section'
+								~ ' that has no bytes for it in the file',
+								  $what, $rva))
+				if $rva - %s<rva> >= %s<rsize> || $offset >= $b.elems;
+			return $offset;
+		}
+		pe-die($file, sprintf('%s is at RVA 0x%X, which falls in none of its'
+							~ ' %d section(s)', $what, $rva, +@sections));
+	}
 
-    my $descriptors = at($imports, 'the import table');
-    my @names;
-    my $terminated = False;
-    for ^PE-MAX-IMPORTS -> $i {
-        my $d = $descriptors + 20 * $i;
-        # The array ends with an all-zero descriptor; a file that runs
-        # out of bytes before one is truncated, and pe-u32 says so.
-        my $thunk = pe-u32($b, $d,      $file, 'an import descriptor');
-        my $name  = pe-u32($b, $d + 12, $file, "an import descriptor's name RVA");
-        my $first = pe-u32($b, $d + 16, $file, 'an import descriptor');
-        if !$thunk && !$name && !$first {
-            $terminated = True;
-            last;
-        }
-        @names.push(pe-string($b, at($name, 'an imported DLL name'), $file));
-    }
-    pe-die($file, "its import table has more than {PE-MAX-IMPORTS} entries and"
-                ~ " no terminator, so it is not an import table")
-        unless $terminated;
+	my $descriptors = at($imports, 'the import table');
+	my @names;
+	my $terminated = False;
+	for ^PE-MAX-IMPORTS -> $i {
+		my $d = $descriptors + 20 * $i;
+		# The array ends with an all-zero descriptor; a file that runs
+		# out of bytes before one is truncated, and pe-u32 says so.
+		my $thunk = pe-u32($b, $d,      $file, 'an import descriptor');
+		my $name  = pe-u32($b, $d + 12, $file, "an import descriptor's name RVA");
+		my $first = pe-u32($b, $d + 16, $file, 'an import descriptor');
+		if !$thunk && !$name && !$first {
+			$terminated = True;
+			last;
+		}
+		@names.push(pe-string($b, at($name, 'an imported DLL name'), $file));
+	}
+	pe-die($file, "its import table has more than {PE-MAX-IMPORTS} entries and"
+				~ " no terminator, so it is not an import table")
+		unless $terminated;
 
-    @names.unique.List
+	@names.unique.List
 }
 
-#| The C<readelf> on this machine, C<eu-readelf> where elfutils stands in
-#| for binutils, or the undefined C<Str> where there is neither.
-my sub elf-reader(:&run! --> Str) {
-    for <readelf eu-readelf> -> $tool {
-        return $tool if have-command($tool, :&run);
-    }
-    Str
+#| The static half of an ELF report: an L<App::Ariza::ELF> reading,
+#| written out in the shape C<readelf -d> prints — one
+#| C<(NEEDED) Shared library: [name]> line per C<DT_NEEDED>, then the
+#| C<(RPATH) Library rpath: [...]> and C<(RUNPATH) Library runpath: [...]>
+#| lines for whichever of the two tags the file has.
+#|
+#| The shape is the contract, not the tool: C<elf-strays> and
+#| C<elf-needed> read these lines, and so does every report a test hands
+#| C<audit> through C<:&inspect>. Writing the reading out in readelf's
+#| words keeps all of them meaning what they meant when readelf wrote
+#| them, while nothing is asked of a readelf. A file with no dynamic
+#| section has no such lines, and its report is empty — which is exactly
+#| what readelf's "There is no dynamic section" said to the same parser.
+my sub elf-static-report(%dynamic --> Str) {
+	my @lines;
+	@lines.push(" (NEEDED)             Shared library: [$_]")
+		for %dynamic<needed>.list;
+	with %dynamic<rpath> -> $rpath {
+		@lines.push(" (RPATH)              Library rpath: [$rpath]");
+	}
+	with %dynamic<runpath> -> $runpath {
+		@lines.push(" (RUNPATH)            Library runpath: [$runpath]");
+	}
+	@lines.join("\n")
 }
 
-#| C<patchelf --print-rpath>, which is what the loader will actually use,
-#| rather than what a tag in the file says.
-my sub elf-rpath(IO::Path $file, :&run! --> Str) {
-    my ($code, $out, $err) = run(['patchelf', '--print-rpath', $file.absolute]);
-    die "ariza: patchelf --print-rpath failed on {$file.absolute}"
-      ~ (($err || $out).trim ?? ": {($err || $out).trim.lines.head}" !! '')
-        unless $code == 0;
-    $out.trim
+#| Why a Linux build cannot go ahead without C<patchelf>, and what to
+#| install. One wording, because two places refuse for this reason:
+#| C<preflight>, before a build starts, and the staging pass itself, for
+#| a caller that went straight to C<stage-sqlcipher>.
+my sub patchelf-missing(Str:D $what --> Str) {
+	"ariza: $what needs patchelf, and there is none on this machine.\n"
+	  ~ "    Install it — `dnf install patchelf`, `apt install patchelf`,"
+	  ~ " `apk add patchelf` — because without it the bundle would resolve"
+	  ~ " OpenSSL from the user's system instead of from beside the library."
 }
 
 #| C<ldd> with the environment B<replaced> by a bare C<PATH> — C<env -i>,
@@ -782,12 +815,12 @@ my sub elf-rpath(IO::Path $file, :&run! --> Str) {
 #| through it, which paints a picture no user will ever see. Wiping the
 #| environment is the user's view of the same file.
 my sub elf-clean-ldd(IO::Path $file, :&run! --> Str) {
-    my ($code, $out, $err) = run(['ldd', $file.absolute],
-                                 :env(%( PATH => '/usr/bin:/bin' )));
-    die "ariza: ldd failed on {$file.absolute}"
-      ~ (($err || $out).trim ?? ": {($err || $out).trim.lines.head}" !! '')
-        unless $code == 0 || $out.contains('=>');
-    $out
+	my ($code, $out, $err) = run(['ldd', $file.absolute],
+								 :env(%( PATH => '/usr/bin:/bin' )));
+	die "ariza: ldd failed on {$file.absolute}"
+	  ~ (($err || $out).trim ?? ": {($err || $out).trim.lines.head}" !! '')
+		unless $code == 0 || $out.contains('=>');
+	$out
 }
 
 #| Every slug ariza knows how to stage SQLCipher for, sorted.
@@ -796,9 +829,9 @@ method sqlcipher-slugs(--> List) { %SQLCIPHER.keys.sort.List }
 #| A slug's SQLCipher naming: C<family>, C<lib>, C<alias>. Dies naming
 #| the known set for a slug ariza has no entry for.
 method sqlcipher-layout(Str:D $slug --> Hash) {
-    %SQLCIPHER{$slug}
-        // die "ariza: ariza does not know what SQLCipher is called on '$slug'"
-             ~ " (knows: {self.sqlcipher-slugs.join(', ')})";
+	%SQLCIPHER{$slug}
+		// die "ariza: ariza does not know what SQLCipher is called on '$slug'"
+			 ~ " (knows: {self.sqlcipher-slugs.join(', ')})";
 }
 
 #| Where a slug's SQLCipher library is staged inside the bundle.
@@ -815,16 +848,16 @@ method sqlcipher-layout(Str:D $slug --> Hash) {
 #| live under C<native/sqlcipher> and the launcher names them explicitly
 #| (C<LD_LIBRARY_PATH> + C<DBIISH_SQLCIPHER_LIB>, C<PATH> on Windows).
 method sqlcipher-dir(IO() $bundle-dir, Str:D :$slug! --> IO::Path) {
-    self.sqlcipher-layout($slug)<family> eq 'macos'
-        ?? $bundle-dir.add('rakudo').add('lib')
-        !! $bundle-dir.add('native').add('sqlcipher')
+	self.sqlcipher-layout($slug)<family> eq 'macos'
+		?? $bundle-dir.add('rakudo').add('lib')
+		!! $bundle-dir.add('native').add('sqlcipher')
 }
 
 #| The bundle-relative path of the staged library, for the launcher and
 #| the manifest.
 method sqlcipher-rel(Str:D :$slug! --> Str) {
-    my %l = self.sqlcipher-layout($slug);
-    (%l<family> eq 'macos' ?? 'rakudo/lib/' !! 'native/sqlcipher/') ~ %l<lib>
+	my %l = self.sqlcipher-layout($slug);
+	(%l<family> eq 'macos' ?? 'rakudo/lib/' !! 'native/sqlcipher/') ~ %l<lib>
 }
 
 #| Decide where this build's SQLCipher comes from, without copying
@@ -852,139 +885,139 @@ method sqlcipher-rel(Str:D :$slug! --> Str) {
 #| make every branch — including the Linux and Windows ones — reachable
 #| from a test on any machine, with no package manager and no network.
 method sqlcipher-source(
-    Str:D :$slug!,
-    IO() :$archive,
-    Str :$host-slug = detect-slug(),
-    :%env = %*ENV,
-    :&run = &try-run,
-    :@search = (),
-    --> Hash
+	Str:D :$slug!,
+	IO() :$archive,
+	Str :$host-slug = detect-slug(),
+	:%env = %*ENV,
+	:&run = &try-run,
+	:@search = (),
+	--> Hash
 ) {
-    my %l = self.sqlcipher-layout($slug);
+	my %l = self.sqlcipher-layout($slug);
 
-    with $archive {
-        die "ariza: no SQLCipher archive at $archive" unless .f;
-        return %( kind => 'archive', path => .self, version => Str,
-                  origin => "local archive: {.basename}" );
-    }
+	with $archive {
+		die "ariza: no SQLCipher archive at $archive" unless .f;
+		return %( kind => 'archive', path => .self, version => Str,
+				  origin => "local archive: {.basename}" );
+	}
 
-    my $named = (%env{SQLCIPHER-DIR-ENV} // '').trim;
-    if $named.chars {
-        # Windows is the one family whose library has more than one name
-        # in circulation, so it is the one family whose named directory
-        # is searched rather than indexed. Everywhere else the canonical
-        # name is the only name.
-        my ($lib, $found) = %l<family> eq 'windows'
-            ?? windows-lib-in(%l<lib>, [$named])
-            !! ($named.IO.add(%l<lib>), %l<lib>);
-        # An operator who names a directory has ruled out every other
-        # source; falling through to a different library when the named
-        # one is absent would stage something they did not ask for.
-        die "ariza: {SQLCIPHER-DIR-ENV}=$named holds no {%l<lib>}"
-          ~ (%l<family> eq 'windows' ?? " (nor any {WINDOWS-LIB-GLOB})" !! '')
-          ~ " — it must name the directory containing the SQLCipher library"
-            unless $lib.defined && $lib.f;
-        return %( kind => 'library', path => real-file($lib), version => Str,
-                  origin => "{SQLCIPHER-DIR-ENV}: {$lib.absolute}"
-                          ~ staged-as(%l<lib>, $found) );
-    }
+	my $named = (%env{SQLCIPHER-DIR-ENV} // '').trim;
+	if $named.chars {
+		# Windows is the one family whose library has more than one name
+		# in circulation, so it is the one family whose named directory
+		# is searched rather than indexed. Everywhere else the canonical
+		# name is the only name.
+		my ($lib, $found) = %l<family> eq 'windows'
+			?? windows-lib-in(%l<lib>, [$named])
+			!! ($named.IO.add(%l<lib>), %l<lib>);
+		# An operator who names a directory has ruled out every other
+		# source; falling through to a different library when the named
+		# one is absent would stage something they did not ask for.
+		die "ariza: {SQLCIPHER-DIR-ENV}=$named holds no {%l<lib>}"
+		  ~ (%l<family> eq 'windows' ?? " (nor any {WINDOWS-LIB-GLOB})" !! '')
+		  ~ " — it must name the directory containing the SQLCipher library"
+			unless $lib.defined && $lib.f;
+		return %( kind => 'library', path => real-file($lib), version => Str,
+				  origin => "{SQLCIPHER-DIR-ENV}: {$lib.absolute}"
+						  ~ staged-as(%l<lib>, $found) );
+	}
 
-    die "ariza: SQLCipher for '$slug' cannot be taken from this machine"
-      ~ ($host-slug.defined ?? " (which is $host-slug)"
-                            !! " (whose platform ariza cannot name)")
-      ~ " — a library installed here is built for the machine it is on.\n"
-      ~ "    Build on a $slug machine, pass --sqlcipher-archive=FILE holding"
-      ~ " a $slug build, or point {SQLCIPHER-DIR-ENV} at a directory with one."
-        unless $host-slug.defined && $host-slug eq $slug;
+	die "ariza: SQLCipher for '$slug' cannot be taken from this machine"
+	  ~ ($host-slug.defined ?? " (which is $host-slug)"
+							!! " (whose platform ariza cannot name)")
+	  ~ " — a library installed here is built for the machine it is on.\n"
+	  ~ "    Build on a $slug machine, pass --sqlcipher-archive=FILE holding"
+	  ~ " a $slug build, or point {SQLCIPHER-DIR-ENV} at a directory with one."
+		unless $host-slug.defined && $host-slug eq $slug;
 
-    given %l<family> {
-        when 'macos'   { self!sqlcipher-from-brew(%l<lib>, :&run) }
-        when 'linux'   { self!sqlcipher-from-system(%l<lib>, :&run, :@search) }
-        when 'windows' { self!sqlcipher-from-windows(%l<lib>, :%env, :@search) }
-        default { die "ariza: no SQLCipher sourcing strategy for '$slug'" }
-    }
+	given %l<family> {
+		when 'macos'   { self!sqlcipher-from-brew(%l<lib>, :&run) }
+		when 'linux'   { self!sqlcipher-from-system(%l<lib>, :&run, :@search) }
+		when 'windows' { self!sqlcipher-from-windows(%l<lib>, :%env, :@search) }
+		default { die "ariza: no SQLCipher sourcing strategy for '$slug'" }
+	}
 }
 
 #| macOS: an installed Homebrew keg, else the bottle Homebrew can fetch.
 method !sqlcipher-from-brew(Str:D $lib-name, :&run! --> Hash) {
-    my ($code, $out, $err) = run(['brew', '--prefix', 'sqlcipher']);
+	my ($code, $out, $err) = run(['brew', '--prefix', 'sqlcipher']);
 
-    # `brew --prefix <formula>` answers with the *would-be* keg path and
-    # exits 0 whether or not the formula is installed, so the existence
-    # of the library is the test, not the exit code. A non-zero exit
-    # means no Homebrew at all (or no such formula), which is a different
-    # problem with a different remedy.
-    die "ariza: no SQLCipher on this machine, and no Homebrew to fetch it with.\n"
-      ~ "    Install it with `brew install sqlcipher`, or pass"
-      ~ " --sqlcipher-archive=FILE holding a prebuilt library, or point"
-      ~ " {SQLCIPHER-DIR-ENV} at a directory containing $lib-name."
-      ~ (($err || $out).trim ?? "\n    (brew --prefix sqlcipher: "
-                                ~ ($err || $out).trim.lines.head ~ ')' !! '')
-        unless $code == 0;
+	# `brew --prefix <formula>` answers with the *would-be* keg path and
+	# exits 0 whether or not the formula is installed, so the existence
+	# of the library is the test, not the exit code. A non-zero exit
+	# means no Homebrew at all (or no such formula), which is a different
+	# problem with a different remedy.
+	die "ariza: no SQLCipher on this machine, and no Homebrew to fetch it with.\n"
+	  ~ "    Install it with `brew install sqlcipher`, or pass"
+	  ~ " --sqlcipher-archive=FILE holding a prebuilt library, or point"
+	  ~ " {SQLCIPHER-DIR-ENV} at a directory containing $lib-name."
+	  ~ (($err || $out).trim ?? "\n    (brew --prefix sqlcipher: "
+								~ ($err || $out).trim.lines.head ~ ')' !! '')
+		unless $code == 0;
 
-    my $prefix = $out.lines.map(*.trim).first(*.chars);
-    with $prefix {
-        my $lib = .IO.add('lib').add($lib-name);
-        return %( kind => 'library', path => real-file($lib),
-                  version => keg-version(.IO),
-                  origin => "homebrew keg: {$lib.absolute}" )
-            if $lib.f;
-    }
+	my $prefix = $out.lines.map(*.trim).first(*.chars);
+	with $prefix {
+		my $lib = .IO.add('lib').add($lib-name);
+		return %( kind => 'library', path => real-file($lib),
+				  version => keg-version(.IO),
+				  origin => "homebrew keg: {$lib.absolute}" )
+			if $lib.f;
+	}
 
-    # Not installed, but Homebrew knows the formula: fetch the bottle and
-    # take the library out of it. A bottle is the same binary `brew
-    # install` would place in the keg, so this is the identical artefact
-    # without touching the build machine's own software.
-    my ($fetch-code, $, $fetch-err) = run(['brew', 'fetch', '--formula', 'sqlcipher']);
-    die "ariza: sqlcipher is not installed and `brew fetch sqlcipher` failed.\n"
-      ~ "    Install it with `brew install sqlcipher`, or pass"
-      ~ " --sqlcipher-archive=FILE.\n"
-      ~ ($fetch-err.trim ?? $fetch-err.trim.lines.map({ "    $_" }).join("\n") !! '')
-        unless $fetch-code == 0;
+	# Not installed, but Homebrew knows the formula: fetch the bottle and
+	# take the library out of it. A bottle is the same binary `brew
+	# install` would place in the keg, so this is the identical artefact
+	# without touching the build machine's own software.
+	my ($fetch-code, $, $fetch-err) = run(['brew', 'fetch', '--formula', 'sqlcipher']);
+	die "ariza: sqlcipher is not installed and `brew fetch sqlcipher` failed.\n"
+	  ~ "    Install it with `brew install sqlcipher`, or pass"
+	  ~ " --sqlcipher-archive=FILE.\n"
+	  ~ ($fetch-err.trim ?? $fetch-err.trim.lines.map({ "    $_" }).join("\n") !! '')
+		unless $fetch-code == 0;
 
-    my ($cache-code, $cache-out, $cache-err) =
-        run(['brew', '--cache', '--formula', 'sqlcipher']);
-    my $bottle = $cache-code == 0
-        ?? ($cache-out.lines.map(*.trim).first(*.chars) // '')
-        !! '';
-    die "ariza: `brew fetch sqlcipher` left nothing at the path"
-      ~ " `brew --cache` names, so there is no bottle to stage from.\n"
-      ~ "    Install sqlcipher with Homebrew, or pass --sqlcipher-archive=FILE."
-      ~ ($cache-err.trim ?? "\n    ({$cache-err.trim.lines.head})" !! '')
-        unless $bottle.chars && $bottle.IO.f;
+	my ($cache-code, $cache-out, $cache-err) =
+		run(['brew', '--cache', '--formula', 'sqlcipher']);
+	my $bottle = $cache-code == 0
+		?? ($cache-out.lines.map(*.trim).first(*.chars) // '')
+		!! '';
+	die "ariza: `brew fetch sqlcipher` left nothing at the path"
+	  ~ " `brew --cache` names, so there is no bottle to stage from.\n"
+	  ~ "    Install sqlcipher with Homebrew, or pass --sqlcipher-archive=FILE."
+	  ~ ($cache-err.trim ?? "\n    ({$cache-err.trim.lines.head})" !! '')
+		unless $bottle.chars && $bottle.IO.f;
 
-    # `<sha>--sqlcipher--4.17.0.arm64_tahoe.bottle.tar.gz`
-    my $version = $bottle.IO.basename ~~ / '--sqlcipher--' (\d+ [ '.' \d+ ]*) /
-        ?? ~$0 !! Str;
+	# `<sha>--sqlcipher--4.17.0.arm64_tahoe.bottle.tar.gz`
+	my $version = $bottle.IO.basename ~~ / '--sqlcipher--' (\d+ [ '.' \d+ ]*) /
+		?? ~$0 !! Str;
 
-    %( kind => 'archive', path => $bottle.IO, :$version,
-       origin => "homebrew bottle: {$bottle.IO.basename}" )
+	%( kind => 'archive', path => $bottle.IO, :$version,
+	   origin => "homebrew bottle: {$bottle.IO.basename}" )
 }
 
 #| Linux: whatever the dynamic loader already resolves, else the standard
 #| library directories.
 method !sqlcipher-from-system(Str:D $lib-name, :&run!, :@search --> Hash) {
-    my @dirs = @search || @LINUX-LIB-DIRS;
+	my @dirs = @search || @LINUX-LIB-DIRS;
 
-    # The canonical soname first; where it is nowhere, EPEL's `sqlcipher`
-    # package (and possibly others) renames the soname per version and
-    # ships nothing called that at all — so the search widens to
-    # anything shaped like the library from the same two sources.
-    my ($path, $how, $found) = self!find-system-lib($lib-name, :&run, :@dirs,
-                                                     :glob('libsqlcipher*.so*'));
-    with $path {
-        return %( kind => 'library', path => real-file($_), version => Str,
-                  origin => "system library: {.absolute}"
-                          ~ ($how eq 'ldconfig' ?? ' (ldconfig)' !! '')
-                          ~ staged-as($lib-name, $found) );
-    }
+	# The canonical soname first; where it is nowhere, EPEL's `sqlcipher`
+	# package (and possibly others) renames the soname per version and
+	# ships nothing called that at all — so the search widens to
+	# anything shaped like the library from the same two sources.
+	my ($path, $how, $found) = self!find-system-lib($lib-name, :&run, :@dirs,
+													 :glob('libsqlcipher*.so*'));
+	with $path {
+		return %( kind => 'library', path => real-file($_), version => Str,
+				  origin => "system library: {.absolute}"
+						  ~ ($how eq 'ldconfig' ?? ' (ldconfig)' !! '')
+						  ~ staged-as($lib-name, $found) );
+	}
 
-    die "ariza: no $lib-name on this machine.\n"
-      ~ "    Install the distribution package — Debian/Ubuntu"
-      ~ " `apt install libsqlcipher0`, Fedora/RHEL `dnf install sqlcipher`,"
-      ~ " Alpine `apk add sqlcipher-libs` — or pass --sqlcipher-archive=FILE,"
-      ~ " or point {SQLCIPHER-DIR-ENV} at a directory containing it.\n"
-      ~ "    Looked in: {@dirs.join(', ')}";
+	die "ariza: no $lib-name on this machine.\n"
+	  ~ "    Install the distribution package — Debian/Ubuntu"
+	  ~ " `apt install libsqlcipher0`, Fedora/RHEL `dnf install sqlcipher`,"
+	  ~ " Alpine `apk add sqlcipher-libs` — or pass --sqlcipher-archive=FILE,"
+	  ~ " or point {SQLCIPHER-DIR-ENV} at a directory containing it.\n"
+	  ~ "    Looked in: {@dirs.join(', ')}";
 }
 
 #| Windows: an MSYS2 environment's C<bin>, or a vcpkg tree named by
@@ -997,26 +1030,26 @@ method !sqlcipher-from-system(Str:D $lib-name, :&run!, :@search --> Hash) {
 #| C<origin> still says where the bytes came from rather than only where
 #| they are.
 method !sqlcipher-from-windows(Str:D $lib-name, :%env!, :@search --> Hash) {
-    my @dirs = @search
-        ?? @search.map({ 'directory' => ~$_ })
-        !! self!windows-dirs(%env);
+	my @dirs = @search
+		?? @search.map({ 'directory' => ~$_ })
+		!! self!windows-dirs(%env);
 
-    for @dirs -> $dir {
-        my ($lib, $found) = windows-lib-in($lib-name, [$dir.value]);
-        with $lib {
-            return %( kind => 'library', path => real-file($_), version => Str,
-                      origin => "{$dir.key}: {.absolute}"
-                              ~ staged-as($lib-name, $found) );
-        }
-    }
+	for @dirs -> $dir {
+		my ($lib, $found) = windows-lib-in($lib-name, [$dir.value]);
+		with $lib {
+			return %( kind => 'library', path => real-file($_), version => Str,
+					  origin => "{$dir.key}: {.absolute}"
+							  ~ staged-as($lib-name, $found) );
+		}
+	}
 
-    die "ariza: no $lib-name (nor any {WINDOWS-LIB-GLOB}) on this machine.\n"
-      ~ "    Install MSYS2's UCRT build —"
-      ~ " `pacman -S mingw-w64-ucrt-x86_64-sqlcipher`, which is prebuilt and"
-      ~ " links against the ucrtbase.dll Windows itself ships — or build the"
-      ~ " vcpkg port, then point {SQLCIPHER-DIR-ENV} at the directory holding"
-      ~ " the DLL. Or pass --sqlcipher-archive=FILE.\n"
-      ~ "    Looked in: {@dirs.map(*.value).join(', ')}";
+	die "ariza: no $lib-name (nor any {WINDOWS-LIB-GLOB}) on this machine.\n"
+	  ~ "    Install MSYS2's UCRT build —"
+	  ~ " `pacman -S mingw-w64-ucrt-x86_64-sqlcipher`, which is prebuilt and"
+	  ~ " links against the ucrtbase.dll Windows itself ships — or build the"
+	  ~ " vcpkg port, then point {SQLCIPHER-DIR-ENV} at the directory holding"
+	  ~ " the DLL. Or pass --sqlcipher-archive=FILE.\n"
+	  ~ "    Looked in: {@dirs.map(*.value).join(', ')}";
 }
 
 #| The directories a Windows build looks in, as C<< label => path >>
@@ -1031,20 +1064,20 @@ method !sqlcipher-from-windows(Str:D $lib-name, :%env!, :@search --> Hash) {
 #| still probed, because a machine that has only vcpkg's should build
 #| rather than stop; the PE audit is what refuses to ship the result.
 method !windows-dirs(%env --> List) {
-    my @dirs;
+	my @dirs;
 
-    # Set by MSYS2's own shells, and by `msys2.cmd`/`setup-msys2`: the
-    # prefix of the environment in use, e.g. C:\msys64\ucrt64.
-    my $prefix = (%env<MSYSTEM_PREFIX> // '').trim;
-    @dirs.push('msys2' => $prefix.IO.add('bin').absolute) if $prefix.chars;
+	# Set by MSYS2's own shells, and by `msys2.cmd`/`setup-msys2`: the
+	# prefix of the environment in use, e.g. C:\msys64\ucrt64.
+	my $prefix = (%env<MSYSTEM_PREFIX> // '').trim;
+	@dirs.push('msys2' => $prefix.IO.add('bin').absolute) if $prefix.chars;
 
-    my $root = (%env<VCPKG_ROOT> // '').trim;
-    @dirs.append(@VCPKG-TRIPLETS.map({
-        'vcpkg' => $root.IO.add('installed').add($_).add('bin').absolute
-    })) if $root.chars;
+	my $root = (%env<VCPKG_ROOT> // '').trim;
+	@dirs.append(@VCPKG-TRIPLETS.map({
+		'vcpkg' => $root.IO.add('installed').add($_).add('bin').absolute
+	})) if $root.chars;
 
-    @dirs.append(@MSYS2-BIN-DIRS.map({ 'msys2' => $_ }));
-    @dirs.List
+	@dirs.append(@MSYS2-BIN-DIRS.map({ 'msys2' => $_ }));
+	@dirs.List
 }
 
 #| Where a library with this leaf name lives on this machine, as
@@ -1067,47 +1100,77 @@ method !windows-dirs(%env --> List) {
 #| C<-3.9.> above C<-3.34.> — is returned, with C<matched> naming the
 #| leaf actually found so the caller can say what it renamed.
 method !find-system-lib(Str:D $name, :&run!, :@dirs, Str :$glob --> List) {
-    for <ldconfig /sbin/ldconfig> -> $tool {
-        my ($code, $out, $) = run([$tool, '-p']);
-        next unless $code == 0;
-        for $out.lines -> $line {
-            next unless $line.contains($name);
-            $line ~~ / '=>' \s* (\S+) \s* $ / or next;
-            my $path = (~$0).IO;
-            next unless $path.f && $path.basename eq $name;
-            return ($path, 'ldconfig', $name);
-        }
-    }
+	for <ldconfig /sbin/ldconfig> -> $tool {
+		my ($code, $out, $) = run([$tool, '-p']);
+		next unless $code == 0;
+		for $out.lines -> $line {
+			next unless $line.contains($name);
+			$line ~~ / '=>' \s* (\S+) \s* $ / or next;
+			my $path = (~$0).IO;
+			next unless $path.f && $path.basename eq $name;
+			return ($path, 'ldconfig', $name);
+		}
+	}
 
-    for @dirs -> $dir {
-        my $lib = $dir.IO.add($name);
-        return ($lib, 'directory', $name) if $lib.f;
-    }
+	for @dirs -> $dir {
+		my $lib = $dir.IO.add($name);
+		return ($lib, 'directory', $name) if $lib.f;
+	}
 
-    return () without $glob;
+	return () without $glob;
 
-    my @found;
-    for <ldconfig /sbin/ldconfig> -> $tool {
-        my ($code, $out, $) = run([$tool, '-p']);
-        next unless $code == 0;
-        for $out.lines -> $line {
-            $line ~~ / ^ \s* (\S+) \s+ .*? '=>' \s* (\S+) \s* $ / or next;
-            my ($soname, $target) = ~$0, (~$1).IO;
-            @found.push({ name => $soname, path => $target, how => 'ldconfig' })
-                if glob-match($soname, $glob) && $target.f;
-        }
-    }
-    for @dirs -> $dir {
-        next unless $dir.IO.d;
-        for $dir.IO.dir -> $entry {
-            next unless $entry.f && !$entry.l && glob-match($entry.basename, $glob);
-            @found.push({ name => $entry.basename, path => $entry, how => 'directory' });
-        }
-    }
+	my @found;
+	for <ldconfig /sbin/ldconfig> -> $tool {
+		my ($code, $out, $) = run([$tool, '-p']);
+		next unless $code == 0;
+		for $out.lines -> $line {
+			$line ~~ / ^ \s* (\S+) \s+ .*? '=>' \s* (\S+) \s* $ / or next;
+			my ($soname, $target) = ~$0, (~$1).IO;
+			@found.push({ name => $soname, path => $target, how => 'ldconfig' })
+				if glob-match($soname, $glob) && $target.f;
+		}
+	}
+	for @dirs -> $dir {
+		next unless $dir.IO.d;
+		for $dir.IO.dir -> $entry {
+			next unless $entry.f && !$entry.l && glob-match($entry.basename, $glob);
+			@found.push({ name => $entry.basename, path => $entry, how => 'directory' });
+		}
+	}
 
-    return () unless @found;
-    my $best = @found.sort({ natural-cmp($^b<name>, $^a<name>) }).head;
-    ($best<path>, $best<how>, $best<name>)
+	return () unless @found;
+	my $best = @found.sort({ natural-cmp($^b<name>, $^a<name>) }).head;
+	($best<path>, $best<how>, $best<name>)
+}
+
+#| What can be known to be missing before a build starts, rather than
+#| found half way through it, after the runtime has been downloaded and
+#| the app installed. Today that is one tool: the C<patchelf> the Linux
+#| staging pass rewrites every staged library's C<RUNPATH> with.
+#|
+#| Only a build that will run that pass needs it — a Linux bundle
+#| (C<:$slug>) that carries SQLCipher (C<:$native>: the app's
+#| C<bundle.native> list, or a single name), built on a Linux host
+#| (C<:$host-kernel>). Off Linux
+#| the pass cannot run at all and warns instead; a bundle without
+#| SQLCipher has nothing staged to rewrite. Nothing about I<auditing> a
+#| bundle, or smoking one, needs it: those read rpaths out of the files.
+#|
+#| Dies naming the package to install, in the words the staging pass
+#| itself would use; returns nothing otherwise. C<:&run> is the
+#| C<try-run> seam C<have-command> asks through.
+method preflight(
+	Str:D :$slug!,
+	:$native = (),
+	Str:D :$host-kernel = HOST-KERNEL,
+	:&run = &try-run,
+	--> Nil
+) {
+	return unless $native.list.first('sqlcipher');
+	return unless $host-kernel eq 'linux';
+	return unless self.sqlcipher-layout($slug)<family> eq 'linux';
+	die patchelf-missing("building a $slug bundle with SQLCipher")
+		unless have-command('patchelf', :&run);
 }
 
 #| Put SQLCipher into the bundle: source it, place it, make it
@@ -1119,96 +1182,96 @@ method !find-system-lib(Str:D $name, :&run!, :@dirs, Str :$glob --> List) {
 #| warns rather than failing the build. What goes in the manifest is what
 #| was staged.
 method stage-sqlcipher(
-    IO() :$bundle-dir!,
-    Str:D :$slug!,
-    App::Ariza::Versions:D :$versions!,
-    IO() :$archive,
-    Str :$host-slug = detect-slug(),
-    Str:D :$host-kernel = $*KERNEL.name.lc,
-    :%env = %*ENV,
-    :&run = &try-run,
-    :@search = (),
-    --> Hash
+	IO() :$bundle-dir!,
+	Str:D :$slug!,
+	App::Ariza::Versions:D :$versions!,
+	IO() :$archive,
+	Str :$host-slug = detect-slug(),
+	Str:D :$host-kernel = HOST-KERNEL,
+	:%env = %*ENV,
+	:&run = &try-run,
+	:@search = (),
+	--> Hash
 ) {
-    my %l   = self.sqlcipher-layout($slug);
-    my %src = self.sqlcipher-source(:$slug, :$archive, :$host-slug, :%env,
-                                    :&run, :@search);
+	my %l   = self.sqlcipher-layout($slug);
+	my %src = self.sqlcipher-source(:$slug, :$archive, :$host-slug, :%env,
+									:&run, :@search);
 
-    my $dest-dir = ensure-dir(self.sqlcipher-dir($bundle-dir, :$slug));
-    my $staging  = $bundle-dir.add('.sqlcipher-staging');
-    rm-rf($staging);
-    LEAVE rm-rf($staging);
+	my $dest-dir = ensure-dir(self.sqlcipher-dir($bundle-dir, :$slug));
+	my $staging  = $bundle-dir.add('.sqlcipher-staging');
+	rm-rf($staging);
+	LEAVE rm-rf($staging);
 
-    my $src = do given %src<kind> {
-        when 'archive' {
-            extract-archive(%src<path>, $staging);
-            # A bottle nests its payload under `sqlcipher/<version>/lib`,
-            # a hand-rolled archive usually does not, and searching costs
-            # nothing next to being wrong about either.
-            self!find-under($staging, %l<lib>)
-                // die "ariza: {%src<path>.basename} does not contain {%l<lib>}";
-        }
-        default { %src<path> }
-    };
+	my $src = do given %src<kind> {
+		when 'archive' {
+			extract-archive(%src<path>, $staging);
+			# A bottle nests its payload under `sqlcipher/<version>/lib`,
+			# a hand-rolled archive usually does not, and searching costs
+			# nothing next to being wrong about either.
+			self!find-under($staging, %l<lib>)
+				// die "ariza: {%src<path>.basename} does not contain {%l<lib>}";
+		}
+		default { %src<path> }
+	};
 
-    # Digested before the copy, so the manifest records the library as it
-    # came off the machine — a number the reader can reproduce with
-    # `shasum` against their own keg. Install-name rewriting below
-    # changes the bundled copy's bytes, by design.
-    my $sha = sha256-file($src);
+	# Digested before the copy, so the manifest records the library as it
+	# came off the machine — a number the reader can reproduce with
+	# `shasum` against their own keg. Install-name rewriting below
+	# changes the bundled copy's bytes, by design.
+	my $sha = sha256-file($src);
 
-    my $lib = copy-writable($src, $dest-dir.add(%l<lib>));
-    my @staged = $lib;
+	my $lib = copy-writable($src, $dest-dir.add(%l<lib>));
+	my @staged = $lib;
 
-    if %l<family> eq 'macos' {
-        # `@rpath/` for the library itself, because that is the install
-        # name the loader was verified to resolve through the bundled
-        # interpreter's `@executable_path/../lib` rpath; `@loader_path/`
-        # for anything dragged in beside it, which is loaded relative to
-        # the library that needs it.
-        @staged.append: self!make-self-contained($lib, $dest-dir,
-                                                 :id-prefix('@rpath/'));
-    }
-    elsif %l<family> eq 'linux' {
-        @staged.append: self!stage-elf-deps($lib, $dest-dir, :$host-kernel, :&run);
-    }
-    elsif %l<family> eq 'windows' {
-        # The source library's own directory is the search space, and
-        # $src is the file itself — for an archive, the copy unpacked
-        # into the staging directory, whose siblings came out of the same
-        # archive.
-        @staged.append: self!stage-pe-deps($lib, $dest-dir, $src.parent);
-    }
+	if %l<family> eq 'macos' {
+		# `@rpath/` for the library itself, because that is the install
+		# name the loader was verified to resolve through the bundled
+		# interpreter's `@executable_path/../lib` rpath; `@loader_path/`
+		# for anything dragged in beside it, which is loaded relative to
+		# the library that needs it.
+		@staged.append: self!make-self-contained($lib, $dest-dir,
+												 :id-prefix('@rpath/'));
+	}
+	elsif %l<family> eq 'linux' {
+		@staged.append: self!stage-elf-deps($lib, $dest-dir, :$host-kernel, :&run);
+	}
+	elsif %l<family> eq 'windows' {
+		# The source library's own directory is the search space, and
+		# $src is the file itself — for an archive, the copy unpacked
+		# into the staging directory, whose siblings came out of the same
+		# archive.
+		@staged.append: self!stage-pe-deps($lib, $dest-dir, $src.parent);
+	}
 
-    with %l<alias> -> $alias {
-        self!alias-library($lib, $dest-dir.add($alias));
-    }
+	with %l<alias> -> $alias {
+		self!alias-library($lib, $dest-dir.add($alias));
+	}
 
-    my $version = sqlcipher-version-of($lib) // %src<version>;
-    my $pinned  = $versions.sqlcipher;
+	my $version = sqlcipher-version-of($lib) // %src<version>;
+	my $pinned  = $versions.sqlcipher;
 
-    # Neither of these is fatal, and both are said out loud: a build that
-    # quietly ships a library it cannot name is the thing the manifest
-    # exists to prevent.
-    without $version {
-        note "ariza: {%l<lib>} does not say what version it is, so the"
-           ~ " manifest will record 'unknown' rather than the pin";
-    }
-    note "ariza: sqlcipher $version staged, pin says $pinned"
-        if $version.defined && $pinned.defined && $version ne $pinned;
+	# Neither of these is fatal, and both are said out loud: a build that
+	# quietly ships a library it cannot name is the thing the manifest
+	# exists to prevent.
+	without $version {
+		note "ariza: {%l<lib>} does not say what version it is, so the"
+		   ~ " manifest will record 'unknown' rather than the pin";
+	}
+	note "ariza: sqlcipher $version staged, pin says $pinned"
+		if $version.defined && $pinned.defined && $version ne $pinned;
 
-    {
-        version   => $version,
-        pinned    => $pinned,
-        library   => $lib,
-        rel       => self.sqlcipher-rel(:$slug),
-        alias     => %l<alias>,
-        staged    => @staged.List,
-        origin    => %src<origin>,
-        source    => %src<path>,
-        kind      => %src<kind>,
-        sha256    => $sha,
-    }
+	{
+		version   => $version,
+		pinned    => $pinned,
+		library   => $lib,
+		rel       => self.sqlcipher-rel(:$slug),
+		alias     => %l<alias>,
+		staged    => @staged.List,
+		origin    => %src<origin>,
+		source    => %src<path>,
+		kind      => %src<kind>,
+		sha256    => $sha,
+	}
 }
 
 #| Rewrite a staged Mach-O so every dependency resolves inside the
@@ -1217,69 +1280,69 @@ method stage-sqlcipher(
 #| Returns the extra files copied alongside. Recursive: a dependency's
 #| own dependencies get the same treatment.
 method !make-self-contained(IO::Path $file, IO::Path $dir,
-                            Str:D :$id-prefix = '@loader_path/',
-                            :%seen = {} --> List) {
-    my @added;
-    %seen{$file.absolute} = True;
+							Str:D :$id-prefix = '@loader_path/',
+							:%seen = {} --> List) {
+	my @added;
+	%seen{$file.absolute} = True;
 
-    my $base = $file.basename;
-    my @changed;
+	my $base = $file.basename;
+	my @changed;
 
-    # The install name is not a dependency — it is what other binaries
-    # will record when they link this one — so it is rewritten rather
-    # than resolved. Getting this wrong means trying to copy the build
-    # machine's own path in as if it were a library the file needs.
-    my $id = self!macho-id($file);
-    if $id.defined && $id !~~ MACHO-ALLOWED {
-        run-checked(['install_name_tool', '-id', $id-prefix ~ $base,
-                     $file.absolute], :what('install_name_tool -id'));
-        @changed.push($id);
-    }
+	# The install name is not a dependency — it is what other binaries
+	# will record when they link this one — so it is rewritten rather
+	# than resolved. Getting this wrong means trying to copy the build
+	# machine's own path in as if it were a library the file needs.
+	my $id = self!macho-id($file);
+	if $id.defined && $id !~~ MACHO-ALLOWED {
+		run-checked(['install_name_tool', '-id', $id-prefix ~ $base,
+					 $file.absolute], :what('install_name_tool -id'));
+		@changed.push($id);
+	}
 
-    for self!macho-deps($file, $id) -> $dep {
-        my $dep-base = $dep.split('/').tail;
-        my $src      = $dep.IO;
-        die "ariza: {$file.basename} needs $dep, which is not on this machine"
-          ~ " — the archive is not self-contained and cannot be made so here"
-            unless $src.f;
+	for self!macho-deps($file, $id) -> $dep {
+		my $dep-base = $dep.split('/').tail;
+		my $src      = $dep.IO;
+		die "ariza: {$file.basename} needs $dep, which is not on this machine"
+		  ~ " — the archive is not self-contained and cannot be made so here"
+			unless $src.f;
 
-        my $copy = $dir.add($dep-base);
-        unless $copy.e {
-            copy-writable($src, $copy);
-            @added.push($copy);
-            @added.append: self!make-self-contained($copy, $dir, :%seen)
-                unless %seen{$copy.absolute};
-        }
+		my $copy = $dir.add($dep-base);
+		unless $copy.e {
+			copy-writable($src, $copy);
+			@added.push($copy);
+			@added.append: self!make-self-contained($copy, $dir, :%seen)
+				unless %seen{$copy.absolute};
+		}
 
-        run-checked(['install_name_tool', '-change', $dep,
-                     "\@loader_path/$dep-base", $file.absolute],
-                    :what('install_name_tool -change'));
-        @changed.push($dep);
-    }
+		run-checked(['install_name_tool', '-change', $dep,
+					 "\@loader_path/$dep-base", $file.absolute],
+					:what('install_name_tool -change'));
+		@changed.push($dep);
+	}
 
-    # install_name_tool invalidates the ad-hoc signature the linker
-    # emitted, and macOS on arm64 refuses to load an incorrectly signed
-    # library. Every file that was rewritten is re-signed by the call
-    # that rewrote it, so the recursion above has already handled the
-    # copies.
-    self!codesign($file) if @changed;
+	# install_name_tool invalidates the ad-hoc signature the linker
+	# emitted, and macOS on arm64 refuses to load an incorrectly signed
+	# library. Every file that was rewritten is re-signed by the call
+	# that rewrote it, so the recursion above has already handled the
+	# copies.
+	self!codesign($file) if @changed;
 
-    @added.List
+	@added.List
 }
 
 #| The C<LC_ID_DYLIB> of a Mach-O shared library, or the undefined
 #| C<Str> for anything without one (an executable, an object file).
 method !macho-id(IO::Path $file --> Str) {
-    my ($code, $out, $) = try-run(['otool', '-D', $file.absolute]);
-    return Str unless $code == 0;
-    my $id = $out.lines.skip(1).map(*.trim).first(*.chars);
-    $id // Str
+	my ($code, $out, $) = try-run(['otool', '-D', $file.absolute]);
+	return Str unless $code == 0;
+	my $id = $out.lines.skip(1).map(*.trim).first(*.chars);
+	$id // Str
 }
 
 #| The dependencies of a Mach-O that do not resolve inside a bundle,
 #| with its own install name excluded.
 method !macho-deps(IO::Path $file, Str $id --> List) {
-    macho-strays(self!otool($file)).grep({ !$id.defined || $_ ne $id }).List
+	macho-strays(self!otool($file)).grep({ !$id.defined || $_ ne $id }).List
 }
 
 #| Make a staged ELF self-contained: copy every non-system dependency in
@@ -1299,61 +1362,57 @@ method !macho-deps(IO::Path $file, Str $id --> List) {
 #| bundle it produces is exactly the thing this pass exists to prevent —
 #| one that loads the user's OpenSSL.
 method !stage-elf-deps(IO::Path $lib, IO::Path $dir,
-                       Str:D :$host-kernel!, :&run! --> List) {
-    return () unless (binary-format($lib) // '') eq 'ELF';
+					   Str:D :$host-kernel!, :&run! --> List) {
+	return () unless (binary-format($lib) // '') eq 'ELF';
 
-    unless $host-kernel eq 'linux' {
-        note "ariza: {$lib.basename} is an ELF being staged on a $host-kernel"
-           ~ " host, so its dependencies cannot be resolved or copied in"
-           ~ " here — this bundle will load them from whatever the user's"
-           ~ " machine happens to have.\n"
-           ~ "    Build the Linux bundle on Linux, or pass"
-           ~ " --sqlcipher-archive=FILE holding a library that is already"
-           ~ " self-contained.";
-        return ();
-    }
+	unless $host-kernel eq 'linux' {
+		note "ariza: {$lib.basename} is an ELF being staged on a $host-kernel"
+		   ~ " host, so its dependencies cannot be resolved or copied in"
+		   ~ " here — this bundle will load them from whatever the user's"
+		   ~ " machine happens to have.\n"
+		   ~ "    Build the Linux bundle on Linux, or pass"
+		   ~ " --sqlcipher-archive=FILE holding a library that is already"
+		   ~ " self-contained.";
+		return ();
+	}
 
-    die "ariza: making {$lib.basename} self-contained needs patchelf, and"
-      ~ " there is none on this machine.\n"
-      ~ "    Install it — `dnf install patchelf`, `apt install patchelf`,"
-      ~ " `apk add patchelf` — because without it the bundle would resolve"
-      ~ " OpenSSL from the user's system instead of from beside the library."
-        unless have-command('patchelf', :&run);
+	die patchelf-missing("making {$lib.basename} self-contained")
+		unless have-command('patchelf', :&run);
 
-    my @added = self!copy-elf-deps($lib, $dir, :&run);
+	my @added = self!copy-elf-deps($lib, $dir, :&run);
 
-    # After the walk, not during it: a dependency is discovered by asking
-    # the loader where it resolves *today*, and giving a file $ORIGIN
-    # half way through would have it resolve against a directory that
-    # does not hold the answer yet.
-    self!set-origin-rpath($_, :&run) for $lib, |@added;
+	# After the walk, not during it: a dependency is discovered by asking
+	# the loader where it resolves *today*, and giving a file $ORIGIN
+	# half way through would have it resolve against a directory that
+	# does not hold the answer yet.
+	self!set-origin-rpath($_, :&run) for $lib, |@added;
 
-    @added
+	@added
 }
 
 #| Copy an ELF's non-system dependencies in beside it, recursively.
 method !copy-elf-deps(IO::Path $file, IO::Path $dir, :&run!,
-                      :%seen = {} --> List) {
-    my @added;
-    %seen{$file.absolute} = True;
+					  :%seen = {} --> List) {
+	my @added;
+	%seen{$file.absolute} = True;
 
-    for self!elf-deps($file, :&run) -> $dep {
-        my $name = $dep.key;
-        die "ariza: {$file.basename} needs $name, which the loader cannot"
-          ~ " find on this machine — the library is not self-contained and"
-          ~ " cannot be made so here"
-            without $dep.value;
+	for self!elf-deps($file, :&run) -> $dep {
+		my $name = $dep.key;
+		die "ariza: {$file.basename} needs $name, which the loader cannot"
+		  ~ " find on this machine — the library is not self-contained and"
+		  ~ " cannot be made so here"
+			without $dep.value;
 
-        my $copy = $dir.add($name);
-        unless $copy.e {
-            copy-writable(real-file($dep.value.IO), $copy);
-            @added.push($copy);
-            @added.append: self!copy-elf-deps($copy, $dir, :&run, :%seen)
-                unless %seen{$copy.absolute};
-        }
-    }
+		my $copy = $dir.add($name);
+		unless $copy.e {
+			copy-writable(real-file($dep.value.IO), $copy);
+			@added.push($copy);
+			@added.append: self!copy-elf-deps($copy, $dir, :&run, :%seen)
+				unless %seen{$copy.absolute};
+		}
+	}
 
-    @added.List
+	@added.List
 }
 
 #| The non-system dependencies of an ELF, as C<soname => path> pairs.
@@ -1361,31 +1420,22 @@ method !copy-elf-deps(IO::Path $file, IO::Path $dir, :&run!,
 #| C<ldd> first, because it I<is> the loader: its answer is the one the
 #| machine will give at run time, including whatever the build exported
 #| in C<LD_LIBRARY_PATH> to point at a hand-built prefix. Where there is
-#| no C<ldd> to run, C<readelf -d> plus the loader's own search path is
-#| the same question asked the long way round.
+#| no C<ldd> to run, or it will not answer, the file's own C<DT_NEEDED>
+#| list — read by L<App::Ariza::ELF>, so no tool is involved — plus the
+#| loader's search path is the same question asked the long way round.
 method !elf-deps(IO::Path $file, :&run! --> List) {
-    my ($code, $out, $) = run(['ldd', $file.absolute]);
-    return ldd-deps($out).grep({ !elf-system-lib(.key) }).List
-        if $code == 0 || $out.contains('=>');
+	my ($code, $out, $) = run(['ldd', $file.absolute]);
+	return ldd-deps($out).grep({ !elf-system-lib(.key) }).List
+		if $code == 0 || $out.contains('=>');
 
-    my $reader = elf-reader(:&run)
-        // die "ariza: resolving {$file.basename}'s dependencies needs ldd or"
-             ~ " readelf, and this machine has neither. Install glibc's ldd,"
-             ~ " binutils or elfutils.";
-
-    my ($rc, $rout, $rerr) = run([$reader, '-d', $file.absolute]);
-    die "ariza: $reader failed on {$file.absolute}"
-      ~ (($rerr || $rout).trim ?? ": {($rerr || $rout).trim.lines.head}" !! '')
-        unless $rc == 0;
-
-    elf-needed($rout).grep({ !elf-system-lib($_) })
-        .map({ $_ => self!resolve-soname($_, :&run) }).List
+	elf-dynamic($file)<needed>.unique.grep({ !elf-system-lib($_) })
+		.map({ $_ => self!resolve-soname($_, :&run) }).eager.List
 }
 
 #| Where the loader would find a bare soname, or the undefined C<Str>.
 method !resolve-soname(Str:D $soname, :&run! --> Str) {
-    my ($path, $) = self!find-system-lib($soname, :&run, :dirs(@LINUX-LIB-DIRS));
-    $path.defined ?? $path.absolute !! Str
+	my ($path, $) = self!find-system-lib($soname, :&run, :dirs(@LINUX-LIB-DIRS));
+	$path.defined ?? $path.absolute !! Str
 }
 
 #| C<patchelf --set-rpath '$ORIGIN'>, with no C<|| true> anywhere near
@@ -1393,13 +1443,13 @@ method !resolve-soname(Str:D $soname, :&run! --> Str) {
 #| machine, which is precisely the bug being fixed and is invisible on
 #| the machine that built it.
 method !set-origin-rpath(IO::Path $file, :&run!) {
-    my ($code, $out, $err) = run(['patchelf', '--set-rpath', '$ORIGIN',
-                                  $file.absolute]);
-    die "ariza: patchelf --set-rpath failed on {$file.absolute} (exit $code)"
-      ~ (($err || $out).trim
-            ?? ":\n" ~ ($err || $out).trim.lines.map({ "    $_" }).join("\n")
-            !! '')
-        unless $code == 0;
+	my ($code, $out, $err) = run(['patchelf', '--set-rpath', '$ORIGIN',
+								  $file.absolute]);
+	die "ariza: patchelf --set-rpath failed on {$file.absolute} (exit $code)"
+	  ~ (($err || $out).trim
+			?? ":\n" ~ ($err || $out).trim.lines.map({ "    $_" }).join("\n")
+			!! '')
+		unless $code == 0;
 }
 
 #| Make a staged PE self-contained: copy every non-system DLL it imports
@@ -1422,8 +1472,8 @@ method !set-origin-rpath(IO::Path $file, :&run!) {
 #| A file that is not a PE is skipped, the same way the ELF pass skips a
 #| non-ELF and the audit skips both: there is nothing to walk.
 method !stage-pe-deps(IO::Path $lib, IO::Path $dir, IO::Path $from --> List) {
-    return () unless (binary-format($lib) // '') eq 'PE';
-    self!copy-pe-deps($lib, $dir, $from)
+	return () unless (binary-format($lib) // '') eq 'PE';
+	self!copy-pe-deps($lib, $dir, $from)
 }
 
 #| Copy a PE's non-system imports in beside it, recursively, out of
@@ -1440,34 +1490,34 @@ method !stage-pe-deps(IO::Path $lib, IO::Path $dir, IO::Path $from --> List) {
 #| the name and the directory, because there is nothing honest to do with
 #| it.
 method !copy-pe-deps(IO::Path $file, IO::Path $dir, IO::Path $from,
-                     :%seen = {} --> List) {
-    my @added;
-    %seen{$file.basename.lc} = True;
+					 :%seen = {} --> List) {
+	my @added;
+	%seen{$file.basename.lc} = True;
 
-    for pe-imports($file).grep({ !pe-system-dll($_) }) -> $name {
-        my $src = find-beside($from, $name)
-            // die "ariza: {$file.basename} imports $name, which is not in"
-                 ~ " {$from.absolute}.\n"
-                 ~ "    That directory is where ariza looks for everything a"
-                 ~ " staged DLL needs, because the package that shipped the"
-                 ~ " DLL puts its whole runtime closure there. Point"
-                 ~ " {SQLCIPHER-DIR-ENV} at a directory holding"
-                 ~ " {$file.basename} and every DLL it imports, or — if"
-                 ~ " $name is part of Windows itself — add it to"
-                 ~ " App::Ariza::Native's PE-SYSTEM-DLLS.";
+	for pe-imports($file).grep({ !pe-system-dll($_) }) -> $name {
+		my $src = find-beside($from, $name)
+			// die "ariza: {$file.basename} imports $name, which is not in"
+				 ~ " {$from.absolute}.\n"
+				 ~ "    That directory is where ariza looks for everything a"
+				 ~ " staged DLL needs, because the package that shipped the"
+				 ~ " DLL puts its whole runtime closure there. Point"
+				 ~ " {SQLCIPHER-DIR-ENV} at a directory holding"
+				 ~ " {$file.basename} and every DLL it imports, or — if"
+				 ~ " $name is part of Windows itself — add it to"
+				 ~ " App::Ariza::Native's PE-SYSTEM-DLLS.";
 
-        my $copy = $dir.add($name);
-        unless $copy.e {
-            copy-writable($src, $copy);
-            @added.push($copy);
-        }
-        # Keyed by name rather than by path, and folded, because Windows
-        # resolves imports that way: one file answers for every spelling.
-        @added.append: self!copy-pe-deps($copy, $dir, $from, :%seen)
-            unless %seen{$name.lc};
-    }
+		my $copy = $dir.add($name);
+		unless $copy.e {
+			copy-writable($src, $copy);
+			@added.push($copy);
+		}
+		# Keyed by name rather than by path, and folded, because Windows
+		# resolves imports that way: one file answers for every spelling.
+		@added.append: self!copy-pe-deps($copy, $dir, $from, :%seen)
+			unless %seen{$name.lc};
+	}
 
-    @added.List
+	@added.List
 }
 
 #| Give a staged library its second name — C<libsqlcipher.dylib> beside
@@ -1483,36 +1533,36 @@ method !copy-pe-deps(IO::Path $file, IO::Path $dir, IO::Path $from,
 #| symlinks either, so there it is a copy — one duplicated library, and
 #| honest.
 method !alias-library(IO::Path $lib, IO::Path $link) {
-    $link.unlink if $link.e || $link.l;
+	$link.unlink if $link.e || $link.l;
 
-    unless $*DISTRO.is-win {
-        my ($code, $, $) = try-run(['ln', '-s', $lib.basename, $link.absolute]);
-        return if $code == 0 && ($link.e || $link.l);
-    }
-    copy-writable($lib, $link);
+	unless IS-WINDOWS {
+		my ($code, $, $) = try-run(['ln', '-s', $lib.basename, $link.absolute]);
+		return if $code == 0 && ($link.e || $link.l);
+	}
+	copy-writable($lib, $link);
 }
 
 method !codesign(IO::Path $file) {
-    return unless $*KERNEL.name.lc eq 'darwin';
-    try-run(['codesign', '--remove-signature', $file.absolute]);
-    run-checked(['codesign', '--sign', '-', '--force', $file.absolute],
-                :what("codesigning {$file.basename}"));
+	return unless HOST-KERNEL eq 'darwin';
+	try-run(['codesign', '--remove-signature', $file.absolute]);
+	run-checked(['codesign', '--sign', '-', '--force', $file.absolute],
+				:what("codesigning {$file.basename}"));
 }
 
 method !otool(IO::Path $file --> Str) {
-    run-checked(['otool', '-L', $file.absolute], :what("otool -L {$file.basename}"))
+	run-checked(['otool', '-L', $file.absolute], :what("otool -L {$file.basename}"))
 }
 
 method !find-under(IO::Path $dir, Str:D $name --> IO::Path) {
-    my @queue = $dir;
-    while @queue {
-        my $d = @queue.shift;
-        for $d.dir -> $e {
-            return $e if !$e.d && $e.basename eq $name;
-            @queue.push($e) if $e.d && !$e.l;
-        }
-    }
-    IO::Path
+	my @queue = $dir;
+	while @queue {
+		my $d = @queue.shift;
+		for $d.dir -> $e {
+			return $e if !$e.d && $e.basename eq $name;
+			@queue.push($e) if $e.d && !$e.l;
+		}
+	}
+	IO::Path
 }
 
 #| Every dependency a PE audit can object to.
@@ -1528,31 +1578,31 @@ method !find-under(IO::Path $dir, Str:D $name --> IO::Path) {
 #| uses. With no C<:@inside> given, containment cannot be judged and only
 #| C<not found> is reported.
 our sub pe-strays(Str:D $report, :@inside = () --> List) is export {
-    my @strays;
-    for $report.lines.map(*.trim).grep(*.chars) -> $line {
-        unless $line.contains(' => ') {
-            @strays.push($line);
-            next;
-        }
-        my ($name, $path) = $line.split(' => ', 2).map(*.trim);
-        next unless $name.chars;
-        # The inspector has already dropped these; a hand-written report
-        # (a test, a future inspector) should not be judged differently.
-        # The redistributable family is the exception: it is on the
-        # skiplist so that nothing copies it in, and judged anyway.
-        my $redist = pe-redist-dll($name);
-        next if pe-system-dll($name) && !$redist;
-        unless $path.chars && $path ne 'not found' {
-            @strays.push($redist ?? redist-finding($name, 'not found')
-                                 !! "$name => not found");
-            next;
-        }
-        next unless @inside;
-        unless path-inside($path, @inside) {
-            @strays.push($redist ?? redist-finding($name, $path) !! $line);
-        }
-    }
-    @strays.unique.List
+	my @strays;
+	for $report.lines.map(*.trim).grep(*.chars) -> $line {
+		unless $line.contains(' => ') {
+			@strays.push($line);
+			next;
+		}
+		my ($name, $path) = $line.split(' => ', 2).map(*.trim);
+		next unless $name.chars;
+		# The inspector has already dropped these; a hand-written report
+		# (a test, a future inspector) should not be judged differently.
+		# The redistributable family is the exception: it is on the
+		# skiplist so that nothing copies it in, and judged anyway.
+		my $redist = pe-redist-dll($name);
+		next if pe-system-dll($name) && !$redist;
+		unless $path.chars && $path ne 'not found' {
+			@strays.push($redist ?? redist-finding($name, 'not found')
+								 !! "$name => not found");
+			next;
+		}
+		next unless @inside;
+		unless path-inside($path, @inside) {
+			@strays.push($redist ?? redist-finding($name, $path) !! $line);
+		}
+	}
+	@strays.unique.List
 }
 
 #| What the audit says about an imported Visual C++ runtime the bundle
@@ -1565,14 +1615,14 @@ our sub pe-strays(Str:D $report, :@inside = () --> List) is export {
 #| the redistributable installed. Nothing but the whole explanation is
 #| going to be believed.
 my sub redist-finding(Str:D $name, Str:D $where --> Str) {
-    "$name => $where (Visual C++ Redistributable: not part of Windows and"
-  ~ " not in the bundle, so this file loads only on a machine that has"
-  ~ " installed it — which every CI runner has and a clean install does"
-  ~ " not. Use a UCRT-built library instead: MSYS2's"
-  ~ " mingw-w64-ucrt-x86_64-* packages import ucrtbase.dll, which Windows"
-  ~ " has shipped since Windows 10. Or put $name in the bundle yourself —"
-  ~ " it is Microsoft's to redistribute, so ariza will not copy it in for"
-  ~ " you.)"
+	"$name => $where (Visual C++ Redistributable: not part of Windows and"
+	  ~ " not in the bundle, so this file loads only on a machine that has"
+	  ~ " installed it — which every CI runner has and a clean install does"
+	  ~ " not. Use a UCRT-built library instead: MSYS2's"
+	  ~ " mingw-w64-ucrt-x86_64-* packages import ucrtbase.dll, which Windows"
+	  ~ " has shipped since Windows 10. Or put $name in the bundle yourself —"
+	  ~ " it is Microsoft's to redistribute, so ariza will not copy it in for"
+	  ~ " you.)"
 }
 
 #| The report the PE audit judges: every non-system import of a staged
@@ -1592,14 +1642,14 @@ my sub redist-finding(Str:D $name, Str:D $where --> Str) {
 #| copied in by ariza, so "where did it resolve" is a question worth
 #| asking about it. See C<redist-finding>.
 my sub pe-report(IO::Path $file --> Str) {
-    my @judged = pe-imports($file)
-        .grep({ !pe-system-dll($_) || pe-redist-dll($_) });
-    @judged.map(-> $name {
-        my $found = find-beside($file.parent, $name);
-        "$name => " ~ ($found.defined
-            ?? ((try { $found.resolve.absolute }) // $found.absolute)
-            !! 'not found')
-    }).join("\n")
+	my @judged = pe-imports($file)
+		.grep({ !pe-system-dll($_) || pe-redist-dll($_) });
+	@judged.map(-> $name {
+		my $found = find-beside($file.parent, $name);
+		"$name => " ~ ($found.defined
+			?? ((try { $found.resolve.absolute }) // $found.absolute)
+			!! 'not found')
+	}).join("\n")
 }
 
 #| Audit every native binary ariza put into the bundle.
@@ -1619,136 +1669,130 @@ my sub pe-report(IO::Path $file --> Str) {
 #| of the audit's judgement is then reachable from a test on any machine
 #| — including the Linux and Windows verdicts from a Mac.
 method audit(
-    IO() :$bundle-dir!,
-    Str:D :$slug!,
-    :@extra = (),
-    :&inspect,
-    Str:D :$host-kernel = $*KERNEL.name.lc,
-    :&run = &try-run,
-    --> Hash
+	IO() :$bundle-dir!,
+	Str:D :$slug!,
+	:@extra = (),
+	:&inspect,
+	Str:D :$host-kernel = HOST-KERNEL,
+	:&run = &try-run,
+	--> Hash
 ) {
-    my @files = flat(
-        self!files-under($bundle-dir.add('native')),
-        @extra.map(*.IO).grep({ .f && !.l }),
-    ).unique(as => *.absolute);
+	my @files = flat(
+		self!files-under($bundle-dir.add('native')),
+		@extra.map(*.IO).grep({ .f && !.l }),
+	).unique(as => *.absolute);
 
-    # Both spellings of the bundle's own path: the loader reports where
-    # it resolved $ORIGIN to, and a build directory reached through a
-    # symlink (/tmp on a Mac, a CI workspace mount) is not spelled the
-    # same way twice.
-    my @inside = ($bundle-dir.absolute,
-                  (try { $bundle-dir.resolve.absolute }) // Str)
-                 .grep(*.defined).unique;
+	# Both spellings of the bundle's own path: the loader reports where
+	# it resolved $ORIGIN to, and a build directory reached through a
+	# symlink (/tmp on a Mac, a CI workspace mount) is not spelled the
+	# same way twice.
+	my @inside = ($bundle-dir.absolute,
+				  (try { $bundle-dir.resolve.absolute }) // Str)
+				 .grep(*.defined).unique;
 
-    my $family = $slug.split('-').head;
-    my &strays = do given $family {
-        when 'macos'   { &macho-strays }
-        when 'linux'   { -> Str $r { elf-strays($r, :@inside) } }
-        when 'windows' { -> Str $r { pe-strays($r, :@inside) } }
-        default { die "ariza: no native audit knows how to check '$slug'" }
-    };
-    my &probe = &inspect // self!default-inspector($family, :$host-kernel, :&run);
+	my $family = $slug.split('-').head;
+	my &strays = do given $family {
+		when 'macos'   { &macho-strays }
+		when 'linux'   { -> Str $r { elf-strays($r, :@inside) } }
+		when 'windows' { -> Str $r { pe-strays($r, :@inside) } }
+		default { die "ariza: no native audit knows how to check '$slug'" }
+	};
+	my &probe = &inspect // self!default-inspector($family, :$host-kernel, :&run);
 
-    my %result = checked => 0, skipped => 0, findings => [], family => $family;
+	my %result = checked => 0, skipped => 0, findings => [], family => $family;
 
-    for @files -> $f {
-        my $report = probe($f);
-        without $report { %result<skipped>++; next }
-        %result<checked>++;
-        my @found = strays($report);
-        %result<findings>.push({ file => $f.absolute, strays => @found })
-            if @found;
-    }
+	for @files -> $f {
+		my $report = probe($f);
+		without $report { %result<skipped>++; next }
+		%result<checked>++;
+		my @found = strays($report);
+		%result<findings>.push({ file => $f.absolute, strays => @found })
+			if @found;
+	}
 
-    if %result<findings> {
-        my $detail = %result<findings>.map({
-            "    {.<file>}\n" ~ .<strays>.map({ "        $_" }).join("\n")
-        }).join("\n");
-        die "ariza: {+%result<findings>} native file(s) in the bundle load"
-          ~ " libraries from outside it:\n$detail\n"
-          ~ "  A bundle that resolves a library off the build machine works"
-          ~ " here and nowhere else.";
-    }
+	if %result<findings> {
+		my $detail = %result<findings>.map({
+			"    {.<file>}\n" ~ .<strays>.map({ "        $_" }).join("\n")
+		}).join("\n");
+		die "ariza: {+%result<findings>} native file(s) in the bundle load"
+		  ~ " libraries from outside it:\n$detail\n"
+		  ~ "  A bundle that resolves a library off the build machine works"
+		  ~ " here and nowhere else.";
+	}
 
-    %result
+	%result
 }
 
 #| The tool that produces a report for one file, per platform family.
 #| Returns the undefined C<Str> for a file of the wrong format.
 #|
-#| The Linux inspector asks the loader as well as the file, but only when
-#| it is running B<on> Linux: C<patchelf> and C<ldd> answer for the
-#| machine they are on, and there is no cross-inspecting them. Auditing
-#| an ELF from a Mac is the static half, and says so in the Pod rather
-#| than pretending to more.
+#| The Linux inspector reads every ELF with L<App::Ariza::ELF>, on any
+#| host and with no tool, and asks the loader as well only when it is
+#| running B<on> Linux: C<ldd> answers for the machine it is on, and there
+#| is no cross-inspecting it. Nothing is asked of the machine before the
+#| first ELF turns up, so a bundle with none needs nothing to audit it.
+#| Auditing an ELF from a Mac is the static half, and says so in the Pod
+#| rather than pretending to more.
 method !default-inspector(Str:D $family, Str:D :$host-kernel!,
-                          :&run! --> Callable) {
-    given $family {
-        when 'macos' {
-            -> IO::Path $f {
-                (binary-format($f) // '') eq 'Mach-O' ?? self!otool($f) !! Str
-            }
-        }
-        when 'linux' {
-            my $tool = elf-reader(:&run)
-                // die "ariza: auditing a Linux bundle needs readelf"
-                     ~ " (binutils or elfutils)";
-            my $host = $host-kernel eq 'linux';
+						  :&run! --> Callable) {
+	given $family {
+		when 'macos' {
+			-> IO::Path $f {
+				(binary-format($f) // '') eq 'Mach-O' ?? self!otool($f) !! Str
+			}
+		}
+		when 'linux' {
+			my $host = $host-kernel eq 'linux';
 
-            die "ariza: auditing a Linux bundle on Linux needs patchelf, to"
-              ~ " read back the rpath the loader will use.\n"
-              ~ "    Install it — `dnf install patchelf`, `apt install"
-              ~ " patchelf`, `apk add patchelf`."
-                if $host && !have-command('patchelf', :&run);
-
-            -> IO::Path $f {
-                if (binary-format($f) // '') eq 'ELF' {
-                    my ($code, $out, $err) = run([$tool, '-d', $f.absolute]);
-                    die "ariza: $tool failed on {$f.absolute}: {$err.trim}"
-                        unless $code == 0;
-                    my @report = $out.chomp;
-                    if $host {
-                        @report.push(ELF-RPATH-SECTION, elf-rpath($f, :&run));
-                        @report.push(ELF-LDD-SECTION, elf-clean-ldd($f, :&run));
-                    }
-                    @report.join("\n")
-                }
-                else { Str }
-            }
-        }
-        when 'windows' {
-            # No `return` here: a pointy block is a Block, not a Routine,
-            # and returning from one dies outside its dynamic scope.
-            -> IO::Path $f {
-                if (binary-format($f) // '') eq 'PE' {
-                    pe-report($f)
-                }
-                # A file named like a DLL that is not one is a finding,
-                # not a skip: something put it there, and the loader will
-                # be asked for it by name.
-                elsif $f.basename.lc.ends-with('.dll') {
-                    $f.s > 0 ?? 'not a PE file, though it is named like one'
-                             !! 'empty file'
-                }
-                else { Str }
-            }
-        }
-        default { die "ariza: no native audit knows how to check '$family'" }
-    }
+			-> IO::Path $f {
+				if (binary-format($f) // '') eq 'ELF' {
+					my %dynamic = elf-dynamic($f);
+					my @report = elf-static-report(%dynamic);
+					# A file with no dynamic section loads nothing, so there
+					# is nothing to ask the loader about — and `ldd` on one
+					# says "not a dynamic executable" and fails.
+					if $host && %dynamic<dynamic> {
+						@report.push(ELF-RPATH-SECTION, elf-loader-rpath(%dynamic));
+						@report.push(ELF-LDD-SECTION, elf-clean-ldd($f, :&run));
+					}
+					@report.join("\n")
+				}
+				else { Str }
+			}
+		}
+		when 'windows' {
+			# No `return` here: a pointy block is a Block, not a Routine,
+			# and returning from one dies outside its dynamic scope.
+			-> IO::Path $f {
+				if (binary-format($f) // '') eq 'PE' {
+					pe-report($f)
+				}
+				# A file named like a DLL that is not one is a finding,
+				# not a skip: something put it there, and the loader will
+				# be asked for it by name.
+				elsif $f.basename.lc.ends-with('.dll') {
+					$f.s > 0 ?? 'not a PE file, though it is named like one'
+							 !! 'empty file'
+				}
+				else { Str }
+			}
+		}
+		default { die "ariza: no native audit knows how to check '$family'" }
+	}
 }
 
 method !files-under(IO::Path $dir --> List) {
-    return () unless $dir.d;
-    my @out;
-    my @queue = $dir;
-    while @queue {
-        my $d = @queue.shift;
-        for $d.dir -> $e {
-            next if $e.l;
-            $e.d ?? @queue.push($e) !! @out.push($e);
-        }
-    }
-    @out.sort(*.absolute).List
+	return () unless $dir.d;
+	my @out;
+	my @queue = $dir;
+	while @queue {
+		my $d = @queue.shift;
+		for $d.dir -> $e {
+			next if $e.l;
+			$e.d ?? @queue.push($e) !! @out.push($e);
+		}
+	}
+	@out.sort(*.absolute).List
 }
 
 =begin pod
@@ -1786,6 +1830,10 @@ say App::Ariza::Native.sqlcipher-source(:slug<macos-arm64>)<origin>;
 
 # Stage from a file instead — an air-gapped build, or a cross-build:
 App::Ariza::Native.stage-sqlcipher(..., :archive('/tmp/libsqlcipher-linux-x86_64.tar.gz'));
+
+# Before any of that, is a tool the build will need missing? On a Linux
+# machine with no patchelf, this dies naming the package to install:
+App::Ariza::Native.preflight(:slug<linux-x86_64-glibc>, :native<sqlcipher>);
 
 # Everything ariza put in the bundle must be self-contained. For PE this
 # proves closure and adjacency; the launcher still supplies the live PATH:
@@ -2022,9 +2070,10 @@ spells them:
 =item1 B<Walk.> C<ldd> — which I<is> the loader, and therefore answers
 with what the machine will really do, including whatever the build
 exported in C<LD_LIBRARY_PATH> — reports where each C<NEEDED> soname
-resolves. Where there is no C<ldd>, C<readelf -d> plus C<ldconfig -p>
-and the standard library directories ask the same question the long way
-round.
+resolves. Where there is no C<ldd>, or it will not answer, the file's
+own C<DT_NEEDED> list — read by L<App::Ariza::ELF>, so no tool is
+involved — plus C<ldconfig -p> and the standard library directories ask
+the same question the long way round.
 
 =item1 B<Copy in.> Every dependency that is not on the skiplist is
 copied in beside the library under its soname, and recursed into. The
@@ -2052,13 +2101,19 @@ asking for a bare leaf name with no C<NEEDED> entry pointing anywhere.
 They answer different questions and each is load-bearing.
 
 This pass needs a Linux machine, and says so rather than pretending: it
-resolves sonames against I<this> machine's libraries, with C<ldd> and
-C<patchelf>. Staging an ELF anywhere else — a Mac cross-building from
-C<--sqlcipher-archive> — prints a warning naming what could not be done
-and carries on, because the archive may already be self-contained (one
-made by C<bundle-elf.sh> is) and refusing would take away the only
-cross-build route there is. C<ariza> having no C<patchelf> on a Linux
-host is fatal, and names the package to install.
+resolves sonames against I<this> machine's libraries with C<ldd>, and
+rewrites the copies with C<patchelf>. Staging an ELF anywhere else — a
+Mac cross-building from C<--sqlcipher-archive> — prints a warning naming
+what could not be done and carries on, because the archive may already
+be self-contained (one made by C<bundle-elf.sh> is) and refusing would
+take away the only cross-build route there is.
+
+C<patchelf> is the one tool here that I<writes>, and the only one a
+Linux build cannot do without. Having none on a Linux host is fatal and
+names the package to install — and C<preflight> asks before the build
+starts, so the answer arrives before the runtime is downloaded rather
+than after the app is installed. Nothing that only I<reads> an ELF needs
+it, or any other tool: see "The audit", below.
 
 =head2 Making the staged library self-contained (Windows)
 
@@ -2154,10 +2209,18 @@ the same bug one step removed.
 
 =head2 ELF
 
-Two static checks, on any host. C<readelf -d>: a C<NEEDED> soname
-containing a slash is an absolute path baked into the binary, and an
-C<RPATH>/C<RUNPATH> entry that is not C<$ORIGIN>-relative points at the
-build machine.
+Two static checks, on any host, read out of the file itself by
+L<App::Ariza::ELF> — no C<readelf>, no C<patchelf>, nothing to install:
+a C<NEEDED> soname containing a slash is an absolute path baked into the
+binary, and an C<RPATH>/C<RUNPATH> entry that is not C<$ORIGIN>-relative
+points at the build machine.
+
+Nothing is asked of the machine before the first ELF turns up, either,
+so a bundle with no ELF in it — or one being checked on a host with no
+toolchain at all — audits with no tool. That is not a nicety. It is
+what lets C<ariza smoke> check a Linux bundle on a stock machine, and
+what C<t/14-smoke.rakutest>'s structural subtest holds it to on every
+platform.
 
 =head3 Two host-only checks
 
@@ -2168,12 +2231,15 @@ Nothing I<in> the file says so. You have to ask the loader.
 
 So when the audit runs B<on Linux> it adds C<bundle-elf.sh>'s two:
 
-=item1 C<patchelf --print-rpath> — every entry must be
-C<$ORIGIN>-relative, and a file with a non-system C<NEEDED> must have at
-least one, or nothing tells the loader to look beside it. (A file whose
-only dependency is C<libc> is allowed no rpath: there is nothing beside
-it to find. And C<$ORIGIN:$ORIGIN/../lib> passes — it is relocatable,
-which is the property being checked, not a spelling.)
+=item1 The search path the loader will use — C<DT_RUNPATH>, or
+C<DT_RPATH> where the file has no C<DT_RUNPATH>, which is the loader's
+own precedence and exactly what C<patchelf --print-rpath> prints: every
+entry must be C<$ORIGIN>-relative, and a file with a non-system
+C<NEEDED> must have at least one, or nothing tells the loader to look
+beside it. (A file whose only dependency is C<libc> is allowed no rpath:
+there is nothing beside it to find. And C<$ORIGIN:$ORIGIN/../lib>
+passes — it is relocatable, which is the property being checked, not a
+spelling.)
 
 =item1 C<ldd> with the environment B<replaced> by a bare C<PATH>
 (C<env -i>, in one call): every non-system dependency must resolve to a
@@ -2181,18 +2247,30 @@ path inside the bundle, and C<not found> is a finding. The clean
 environment is the point — a plain C<ldd> in a build that exported
 C<LD_LIBRARY_PATH> paints a picture no user will ever see.
 
-Both tools answer for the machine they are on, so from a Mac
-cross-inspecting an ELF the audit does the static half and says so
-rather than pretending to more. Which is another way of saying: the
-Linux bundle gets built on Linux, and C<xxt/linux-selfcontain-proof.sh>
-runs the whole thing — staging, copy-in, rpath, audit, and three
-negative controls — in a C<manylinux> container to prove it.
+C<ldd> answers for the machine it is on, so from a Mac cross-inspecting
+an ELF there is no loader to ask, and the audit does the static half and
+says so rather than pretending to more. Which is another way of saying:
+the Linux bundle gets built on Linux, and
+C<xxt/linux-selfcontain-proof.sh> runs the whole thing — staging,
+copy-in, rpath, audit, and three negative controls — in a C<manylinux>
+container to prove it.
+
+The rpath check is different in kind — the search path is in the file,
+and L<App::Ariza::ELF> reads it on any host — and it stays a Linux-host
+check on purpose. Off Linux the staging pass cannot set C<$ORIGIN>, and
+says so with a warning that is deliberately not a refusal, because an
+archive passed to a cross-build may already be self-contained; an audit
+that insisted on an rpath there would quietly turn that warning into
+one. A file with no dynamic section — a static executable — gets neither
+check: it loads nothing, so there is nothing to ask the loader about.
 
 The two extra sections travel as text, under the C<ELF-RPATH-SECTION>
-and C<ELF-LDD-SECTION> markers, appended to the C<readelf> output. That
-keeps C<:&inspect> a seam that returns B<a report>, and keeps
-C<elf-strays> a pure function of text — so the Linux verdicts, including
-these two, are reachable from a test on a Mac.
+and C<ELF-LDD-SECTION> markers, appended to the static report — the
+reading written out in C<readelf -d>'s own shape, so every report a test
+hands C<:&inspect> still means what it says. That keeps C<:&inspect> a
+seam that returns B<a report>, and keeps C<elf-strays> a pure function
+of text — so the Linux verdicts, including these two, are reachable from
+a test on a Mac.
 
 =head2 PE
 
@@ -2283,6 +2361,30 @@ including the Linux and Windows verdicts from a Mac.
 
 =head1 METHODS
 
+=head2 preflight(:$slug!, :$native, :$host-kernel, :&run)
+
+What can be known to be missing before a build starts. Today that is
+C<patchelf>, for a Linux C<:$slug> whose C<:$native> (the app's
+C<bundle.native> list, or one name) includes C<sqlcipher>, on a Linux
+C<:$host-kernel>:
+the one combination that will run the staging pass that rewrites
+rpaths. Dies naming the package to install; returns nothing otherwise.
+L<App::Ariza::Bundle>'s C<build> calls it before it creates anything.
+
+=begin code :lang<raku>
+
+# A Linux machine with no patchelf:
+App::Ariza::Native.preflight(:slug<linux-x86_64-glibc>, :native<sqlcipher>);
+# ariza: building a linux-x86_64-glibc bundle with SQLCipher needs
+# patchelf, and there is none on this machine.
+#     Install it — `dnf install patchelf`, `apt install patchelf`, ...
+
+# Fine anywhere: nothing will be rewritten.
+App::Ariza::Native.preflight(:slug<linux-x86_64-glibc>, :native<notcurses>);
+App::Ariza::Native.preflight(:slug<macos-arm64>, :native<sqlcipher>);
+
+=end code
+
 =head2 stage-sqlcipher(:$bundle-dir!, :$slug!, :$versions!, :$archive, :$host-slug, :$host-kernel, :%env, :&run, :@search --> Hash)
 
 Source it, place it, make it self-contained, alias it. Returns
@@ -2291,9 +2393,9 @@ C<library>, C<rel>, C<alias>, C<staged> (the library B<and> everything
 copied in beside it), C<origin>, C<source>, C<kind> and C<sha256>.
 
 C<:$host-kernel> defaults to C<$*KERNEL.name.lc> and decides whether the
-ELF self-containment pass can run at all — C<ldd> and C<patchelf> answer
-for the machine they are on. With C<:&run>, it makes the Linux staging
-path reachable from a test on a Mac.
+ELF self-containment pass can run at all — C<ldd> resolves against, and
+C<patchelf> rewrites for, the machine they are on. With C<:&run>, it
+makes the Linux staging path reachable from a test on a Mac.
 
 =head2 sqlcipher-source(:$slug!, :$archive, :$host-slug, :%env, :&run, :@search --> Hash)
 
@@ -2312,9 +2414,11 @@ reachable from a test on any machine.
 =head2 audit(:$bundle-dir!, :$slug!, :@extra, :&inspect, :$host-kernel, :&run --> Hash)
 
 C<{ checked, skipped, findings, family }>, or a die naming every
-offending file and dependency. C<:&inspect> replaces the tool call
+offending file and dependency. C<:&inspect> replaces the inspection
 outright; C<:$host-kernel> and C<:&run> replace only the machine it is
 standing on, which is what the two host-only ELF checks are decided by.
+The only command the ELF audit ever runs is C<ldd>, once per dynamic
+ELF, and only on a Linux host.
 
 =head2 sqlcipher-version-of(IO() --> Str)
 
@@ -2370,12 +2474,14 @@ inside the bundle. "The redistributable gate" above says why.
 
 =head2 elf-needed(Str --> List) / ldd-deps(Str --> List)
 
-The C<DT_NEEDED> sonames in C<readelf -d> output, and the
+The C<DT_NEEDED> sonames in C<readelf -d> output — or in the static
+report the audit writes in that shape — and the
 C<soname =E<gt> path> pairs in C<ldd> output (the undefined C<Str> for
 C<not found>). Both pure, both exported.
 
 =head1 SEE ALSO
 
+L<App::Ariza::ELF> (which reads every ELF this module inspects),
 L<App::Ariza::Site> (which stages notcurses), L<App::Ariza::Launcher>
 (which names the Linux and Windows library paths at run time),
 C<xxt/linux-selfcontain-proof.sh> (which proves the Linux half of this

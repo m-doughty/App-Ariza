@@ -1,4 +1,5 @@
-# Run App::ExampleApp's own test suite on Linux, macOS and Windows.
+# Run App::ExampleApp's own test suite on Linux, macOS and Windows,
+# under every Rakudo release ariza pins for testing: 2026.07, 2026.09.
 #
 # Scaffolded by ariza 0.0.1 (`ariza scaffold-ci`), and yours
 # from here on: this file is written only when it is absent, and never
@@ -30,18 +31,20 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.raku-version }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # From ariza's rakudo.test-versions pin, oldest supported first.
+        raku-version: ['2026.07', '2026.09']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: Raku/setup-raku@v1
         with:
-          raku-version: 'latest'
+          raku-version: ${{ matrix.raku-version }}
 
       - name: Install Raku dependencies
         run: zef install --/test --test-depends --deps-only .

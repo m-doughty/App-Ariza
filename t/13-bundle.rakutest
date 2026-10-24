@@ -6,221 +6,251 @@ use JSON::Fast;
 use App::Ariza::Bundle;
 use App::Ariza::Tools;
 
-plan 8;
+plan 9;
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-bundle-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-bundle-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 #| An app checkout: a META6.json, an ariza.toml, and nothing else. Enough
 #| for everything `build` decides before it touches the network.
 sub fake-app(IO::Path $dir, :$version = '9.9.9', :$meta = True,
-             :@platforms = <macos-arm64 linux-x86_64-glibc>  --> IO::Path) {
-    $dir.add('META6.json').spurt(to-json({
-        name => 'App::ExampleApp', version => $version, license => 'Artistic-2.0',
-    })) if $meta;
-    $dir.add('ariza.toml').spurt(
-        "[app]\nname = \"App::ExampleApp\"\nexec = \"exampleapp\"\n"
-      ~ "display = \"Example App\"\n\n[bundle]\n"
-      ~ "platforms = [{@platforms.map({ "\"$_\"" }).join(', ')}]\n");
-    $dir;
+			 :@platforms = <macos-arm64 linux-x86_64-glibc>,
+			 :@native = () --> IO::Path) {
+	$dir.add('META6.json').spurt(to-json({
+		name => 'App::ExampleApp', version => $version, license => 'Artistic-2.0',
+	})) if $meta;
+	$dir.add('ariza.toml').spurt(
+		"[app]\nname = \"App::ExampleApp\"\nexec = \"exampleapp\"\n"
+	  ~ "display = \"Example App\"\n\n[bundle]\n"
+	  ~ "platforms = [{@platforms.map({ "\"$_\"" }).join(', ')}]\n"
+	  ~ (@native ?? "native = [{@native.map({ "\"$_\"" }).join(', ')}]\n" !! ''));
+	$dir;
 }
 
 my constant MANIFEST = {
-    'ariza-manifest' => 1,
-    ariza    => '0.1.0',
-    built-at => '2026-08-11T18:43:01Z',
-    platform => 'macos-arm64',
-    app => { name => 'App::ExampleApp', exec => 'exampleapp',
-             display => 'Example App', version => '9.9.9' },
-    components => {
-        rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
-        sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
-        notcurses => { tag => 'binaries-notcurses-3.0.17-r11',
-                       path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib' },
-        runner => { tag => 'runner-v1', artifact => 'ariza-runner-windows-x86_64.exe',
-                    sha256 => 'f' x 64, url => 'https://example.invalid/r.exe',
-                    path => 'bin/exampleapp.exe' },
-    },
+	'ariza-manifest' => 1,
+	ariza    => '0.1.0',
+	built-at => '2026-08-11T18:43:01Z',
+	platform => 'macos-arm64',
+	app => { name => 'App::ExampleApp', exec => 'exampleapp',
+			 display => 'Example App', version => '9.9.9' },
+	components => {
+		rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
+		sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
+		notcurses => { tag => 'binaries-notcurses-3.0.17-r11',
+					   path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib' },
+		runner => { tag => 'runner-v1', artifact => 'ariza-runner-windows-x86_64.exe',
+					sha256 => 'f' x 64, url => 'https://example.invalid/r.exe',
+					path => 'bin/exampleapp.exe' },
+	},
 };
 
 subtest 'the bundle is named after the app, its version and its platform', {
-    plan 2;
-    is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
-                                      :platform<macos-arm64>),
-        'exampleapp-9.9.9-macos-arm64',
-        'which is the workdir name and the archive stem';
-    is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
-                                      :platform<windows-x86_64>),
-        'exampleapp-9.9.9-windows-x86_64', 'per platform, so releases coexist';
+	plan 2;
+	is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
+									  :platform<macos-arm64>),
+		'exampleapp-9.9.9-macos-arm64',
+		'which is the workdir name and the archive stem';
+	is App::Ariza::Bundle.bundle-name(:exec<exampleapp>, :version<9.9.9>,
+									  :platform<windows-x86_64>),
+		'exampleapp-9.9.9-windows-x86_64', 'per platform, so releases coexist';
 };
 
 subtest 'the version comes from the checkout, and a bad one is named', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    is App::Ariza::Bundle.app-version(fake-app($dir)), '9.9.9',
-        'read from the checkout\'s META6.json';
+	is App::Ariza::Bundle.app-version(fake-app($dir)), '9.9.9',
+		'read from the checkout\'s META6.json';
 
-    throws-like { App::Ariza::Bundle.app-version($dir.add('elsewhere')) },
-        Exception, message => /'no META6.json in'/, 'a directory that is not a dist';
+	throws-like { App::Ariza::Bundle.app-version($dir.add('elsewhere')) },
+		Exception, message => /'no META6.json in'/, 'a directory that is not a dist';
 
-    $dir.add('META6.json').spurt('{ not json');
-    throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
-        message => /'malformed META6.json'/, 'a broken META6';
+	$dir.add('META6.json').spurt('{ not json');
+	throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
+		message => /'malformed META6.json'/, 'a broken META6';
 
-    $dir.add('META6.json').spurt(to-json({ name => 'App::ExampleApp' }));
-    throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
-        message => /'has no version'/,
-        'and one with no version, rather than naming the bundle "exampleapp--macos-arm64"';
+	$dir.add('META6.json').spurt(to-json({ name => 'App::ExampleApp' }));
+	throws-like { App::Ariza::Bundle.app-version($dir) }, Exception,
+		message => /'has no version'/,
+		'and one with no version, rather than naming the bundle "exampleapp--macos-arm64"';
 };
 
 subtest 'a build refuses the wrong platform before it downloads anything', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    fake-app($dir);
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	fake-app($dir);
 
-    throws-like {
-        App::Ariza::Bundle.build(:app-dir($dir), :platform<macos-aarch64>,
-                                 :out-dir($dir.add('out')), :!verbose)
-    }, Exception, message => /'not a platform ariza knows'/,
-        'a misspelled slug — macos-aarch64 for macos-arm64 — is caught';
+	throws-like {
+		App::Ariza::Bundle.build(:app-dir($dir), :platform<macos-aarch64>,
+								 :out-dir($dir.add('out')), :!verbose)
+	}, Exception, message => /'not a platform ariza knows'/,
+		'a misspelled slug — macos-aarch64 for macos-arm64 — is caught';
 
-    # An app that lists its platforms has said which ones it is tested
-    # on; producing an artefact named after one it never claimed is a
-    # promise ariza has no business making for it.
-    throws-like {
-        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
-                                 :out-dir($dir.add('out')), :!verbose)
-    }, Exception, message => /'does not declare' .* 'windows-x86_64'/,
-        'and a platform the app does not declare';
+	# An app that lists its platforms has said which ones it is tested
+	# on; producing an artefact named after one it never claimed is a
+	# promise ariza has no business making for it.
+	throws-like {
+		App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
+								 :out-dir($dir.add('out')), :!verbose)
+	}, Exception, message => /'does not declare' .* 'windows-x86_64'/,
+		'and a platform the app does not declare';
 
-    throws-like {
-        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
-                                 :out-dir($dir.add('out')), :!verbose)
-    }, Exception, message => /'macos-arm64, linux-x86_64-glibc'/,
-        'naming the ones it does';
+	throws-like {
+		App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-x86_64>,
+								 :out-dir($dir.add('out')), :!verbose)
+	}, Exception, message => /'macos-arm64, linux-x86_64-glibc'/,
+		'naming the ones it does';
+};
+
+subtest 'a Linux build with no patchelf stops before it creates anything', {
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	fake-app($dir, :native('sqlcipher',));
+
+	# A Linux machine with no patchelf on it, from any host: `which`
+	# finds nothing, and nothing else can be run at all.
+	my @calls;
+	my &run = -> @cmd, |c {
+		@calls.push(@cmd.join(' '));
+		@cmd.head eq 'which' | 'where'
+			?? (1, '', '')
+			!! (-1, '', "could not run '{@cmd.head}'")
+	};
+
+	throws-like {
+		App::Ariza::Bundle.build(:app-dir($dir), :platform<linux-x86_64-glibc>,
+								 :out-dir($dir.add('out')), :!verbose,
+								 :host-kernel<linux>, :&run)
+	}, Exception, message => /'needs patchelf' .* 'apt install patchelf'/,
+		'the build is refused, naming the package to install';
+	nok $dir.add('out').e,
+		'before the output directory exists, let alone a downloaded runtime';
+	is +@calls, 1,
+		'and the one question it asked was whether patchelf is there';
 };
 
 subtest 'an app with no declared platforms constrains nothing', {
-    plan 1;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    fake-app($dir, :platforms(()));
+	plan 1;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	fake-app($dir, :platforms(()));
 
-    # The build will fail later, at the network — the point is that it
-    # gets past the platform gate rather than being refused on principle.
-    throws-like {
-        App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-arm64>,
-                                 :out-dir($dir.add('out')), :!verbose)
-    }, Exception, message => /'publishes no binary build'/,
-        'an unconstrained app reaches the runtime step, and fails there instead';
+	# The build will fail later, at the network — the point is that it
+	# gets past the platform gate rather than being refused on principle.
+	throws-like {
+		App::Ariza::Bundle.build(:app-dir($dir), :platform<windows-arm64>,
+								 :out-dir($dir.add('out')), :!verbose)
+	}, Exception, message => /'publishes no binary build'/,
+		'an unconstrained app reaches the runtime step, and fails there instead';
 };
 
 subtest 'VERSION is one screen a human can quote in a bug report', {
-    plan 8;
-    my $text = App::Ariza::Bundle.version-file(MANIFEST);
-    my @lines = $text.lines;
+	plan 8;
+	my $text = App::Ariza::Bundle.version-file(MANIFEST);
+	my @lines = $text.lines;
 
-    is @lines[0], 'Example App 9.9.9 (macos-arm64)',
-        'the headline names the product, the version and the platform';
-    ok @lines.first(/^ 'app' \s+ 'App::ExampleApp 9.9.9'/), 'the distribution';
-    ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
-    ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
-    ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r11'/),
-        'the notcurses build, by the tag it was actually staged under';
-    ok @lines.first(/^ 'runner' \s+ 'runner-v1'/),
-        'the compiled Windows launcher, by the release it was pinned from';
-    ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
-    ok $text.contains('Run bin/exampleapp'),
-        'ending with the one thing the reader has to do';
+	is @lines[0], 'Example App 9.9.9 (macos-arm64)',
+		'the headline names the product, the version and the platform';
+	ok @lines.first(/^ 'app' \s+ 'App::ExampleApp 9.9.9'/), 'the distribution';
+	ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
+	ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
+	ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r11'/),
+		'the notcurses build, by the tag it was actually staged under';
+	ok @lines.first(/^ 'runner' \s+ 'runner-v1'/),
+		'the compiled Windows launcher, by the release it was pinned from';
+	ok @lines.first(/^ 'built' \s+ '2026-08-11T18:43:01Z'/), 'and when';
+	ok $text.contains('Run bin/exampleapp'),
+		'ending with the one thing the reader has to do';
 };
 
 subtest 'the manifest keeps Site\'s exact notcurses library directory', {
-    plan 3;
-    my %component = App::Ariza::Bundle.notcurses-component(%(
-        notcurses-tag => 'binaries-notcurses-3.0.17-r11',
-        notcurses-lib-rel =>
-            'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
-    ));
-    is %component<tag>, 'binaries-notcurses-3.0.17-r11',
-        'the staged binary tag is recorded';
-    is %component<path>,
-        'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
-        'with the exact tag-selected lib directory passed out by Site';
+	plan 3;
+	my %component = App::Ariza::Bundle.notcurses-component(%(
+		notcurses-tag => 'binaries-notcurses-3.0.17-r11',
+		notcurses-lib-rel =>
+			'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+	));
+	is %component<tag>, 'binaries-notcurses-3.0.17-r11',
+		'the staged binary tag is recorded';
+	is %component<path>,
+		'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+		'with the exact tag-selected lib directory passed out by Site';
 
-    my %legacy = App::Ariza::Bundle.notcurses-component(%(
-        notcurses-tag => 'binaries-notcurses-3.0.17-r10',
-    ));
-    is %legacy<path>,
-        'native/Notcurses-Native/binaries-notcurses-3.0.17-r10/lib',
-        'and an older Site result still has one canonical derivation';
+	my %legacy = App::Ariza::Bundle.notcurses-component(%(
+		notcurses-tag => 'binaries-notcurses-3.0.17-r10',
+	));
+	is %legacy<path>,
+		'native/Notcurses-Native/binaries-notcurses-3.0.17-r10/lib',
+		'and an older Site result still has one canonical derivation';
 };
 
 subtest 'the manifest records the SQLCipher that was staged, not the pin', {
-    plan 6;
+	plan 6;
 
-    # The pin is advisory: the build machine's package manager decides
-    # what is actually bundled, so a manifest quoting the pin would be
-    # quoting a number nobody verified.
-    my %m = App::Ariza::Bundle.sqlcipher-component(%(
-        version => '4.17.0', pinned => '4.14.0',
-        rel => 'rakudo/lib/libsqlcipher.0.dylib', sha256 => 'abc123',
-        origin => 'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
-    ));
-    is %m<version>, '4.17.0', 'the version staged';
-    is %m<pinned>, '4.14.0', 'with the version expected beside it, so a'
-                           ~ ' reader can see the two disagree';
-    is %m<path>, 'rakudo/lib/libsqlcipher.0.dylib', 'where it went';
-    is %m<source>,
-        'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
-        'and where it came from';
+	# The pin is advisory: the build machine's package manager decides
+	# what is actually bundled, so a manifest quoting the pin would be
+	# quoting a number nobody verified.
+	my %m = App::Ariza::Bundle.sqlcipher-component(%(
+		version => '4.17.0', pinned => '4.14.0',
+		rel => 'rakudo/lib/libsqlcipher.0.dylib', sha256 => 'abc123',
+		origin => 'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
+	));
+	is %m<version>, '4.17.0', 'the version staged';
+	is %m<pinned>, '4.14.0', 'with the version expected beside it, so a'
+						   ~ ' reader can see the two disagree';
+	is %m<path>, 'rakudo/lib/libsqlcipher.0.dylib', 'where it went';
+	is %m<source>,
+		'homebrew keg: /opt/homebrew/opt/sqlcipher/lib/libsqlcipher.0.dylib',
+		'and where it came from';
 
-    # A library whose bytes did not name a version: still not the pin.
-    my %unknown = App::Ariza::Bundle.sqlcipher-component(%(
-        version => Str, pinned => '4.14.0', rel => 'native/sqlcipher/sqlcipher.dll',
-        sha256 => 'def456', origin => 'SQLCIPHER_LIB_DIR: C:\\vcpkg\\bin\\sqlcipher.dll',
-    ));
-    is %unknown<version>, 'unknown', 'said plainly rather than filled in';
-    is %unknown<pinned>, '4.14.0', 'the pin is still recorded as the expectation';
+	# A library whose bytes did not name a version: still not the pin.
+	my %unknown = App::Ariza::Bundle.sqlcipher-component(%(
+		version => Str, pinned => '4.14.0', rel => 'native/sqlcipher/sqlcipher.dll',
+		sha256 => 'def456', origin => 'SQLCIPHER_LIB_DIR: C:\\vcpkg\\bin\\sqlcipher.dll',
+	));
+	is %unknown<version>, 'unknown', 'said plainly rather than filled in';
+	is %unknown<pinned>, '4.14.0', 'the pin is still recorded as the expectation';
 };
 
 subtest 'the manifest can account for the runner it downloaded', {
-    plan 6;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 6;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $exe = ensure-dir($dir.add('bin')).add('exampleapp.exe');
-    $exe.spurt('MZ');
+	my $exe = ensure-dir($dir.add('bin')).add('exampleapp.exe');
+	$exe.spurt('MZ');
 
-    # The one binary in a bundle that is not somebody else's software is
-    # still a downloaded one, and everything else downloaded is recorded
-    # with the URL it came from and the digest it was checked against.
-    # Without this entry the file a Windows user actually runs is the
-    # only thing in the bundle a reader cannot trace back to a release.
-    my %c = App::Ariza::Bundle.runner-component(%(
-        path     => $exe,
-        artifact => 'ariza-runner-windows-x86_64.exe',
-        tag      => 'runner-v1',
-        url      => 'https://example.invalid/download/runner-v1/ariza-runner-windows-x86_64.exe',
-        sha256   => 'f' x 64,
-    ), $dir);
+	# The one binary in a bundle that is not somebody else's software is
+	# still a downloaded one, and everything else downloaded is recorded
+	# with the URL it came from and the digest it was checked against.
+	# Without this entry the file a Windows user actually runs is the
+	# only thing in the bundle a reader cannot trace back to a release.
+	my %c = App::Ariza::Bundle.runner-component(%(
+		path     => $exe,
+		artifact => 'ariza-runner-windows-x86_64.exe',
+		tag      => 'runner-v1',
+		url      => 'https://example.invalid/download/runner-v1/ariza-runner-windows-x86_64.exe',
+		sha256   => 'f' x 64,
+	), $dir);
 
-    is %c<artifact>, 'ariza-runner-windows-x86_64.exe', 'the published artefact';
-    is %c<tag>, 'runner-v1', 'the release it came from';
-    is %c<sha256>, 'f' x 64, 'the digest it was verified against';
-    ok %c<url>.ends-with('ariza-runner-windows-x86_64.exe'),
-        'the URL a reader can fetch it from themselves';
-    is %c<path>, 'bin/exampleapp.exe',
-        'and where it went, bundle-relative and forward-slashed';
+	is %c<artifact>, 'ariza-runner-windows-x86_64.exe', 'the published artefact';
+	is %c<tag>, 'runner-v1', 'the release it came from';
+	is %c<sha256>, 'f' x 64, 'the digest it was verified against';
+	ok %c<url>.ends-with('ariza-runner-windows-x86_64.exe'),
+		'the URL a reader can fetch it from themselves';
+	is %c<path>, 'bin/exampleapp.exe',
+		'and where it went, bundle-relative and forward-slashed';
 
-    # A platform with no runner, or a Windows build made before the
-    # first release was pinned: `stage` returns an empty hash, and the
-    # manifest simply has no runner entry rather than an empty one.
-    is App::Ariza::Bundle.runner-component(%(), $dir)<path>, '',
-        'nothing staged reports nothing rather than a half-filled row';
+	# A platform with no runner, or a Windows build made before the
+	# first release was pinned: `stage` returns an empty hash, and the
+	# manifest simply has no runner entry rather than an empty one.
+	is App::Ariza::Bundle.runner-component(%(), $dir)<path>, '',
+		'nothing staged reports nothing rather than a half-filled row';
 };

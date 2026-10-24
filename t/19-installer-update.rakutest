@@ -8,7 +8,7 @@ use App::Ariza::Platform;
 use App::Ariza::Tools;
 
 sub temp-dir(Str $leaf --> IO::Path) {
-    ensure-dir($*TMPDIR.add("ariza-update-installer-{$*PID}-{(^1_000_000).pick}").add($leaf))
+	ensure-dir($*TMPDIR.add("ariza-update-installer-{$*PID}-{(^1_000_000).pick}").add($leaf))
 }
 
 my $scratch = temp-dir('root');
@@ -32,89 +32,89 @@ $script.spurt(App::Ariza::Installer.snapshot(:$config, :family<posix>));
 $script.chmod(0o755);
 
 subtest 'snapshot rendering is the published installer implementation', {
-    plan 3;
-    is App::Ariza::Installer.snapshot(:$config, :family<posix>), $script.slurp,
-        'POSIX snapshot renders from the install template';
-    ok App::Ariza::Installer.snapshot(:$config, :family<windows>)
-        .contains('[string] $ArizaUpdateCandidate'),
-        'Windows snapshot exposes the frozen private parameter';
-    throws-like { App::Ariza::Installer.snapshot(:$config, :family<plan9>) },
-        Exception, message => /"no installer snapshot family 'plan9'"/,
-        'unknown snapshot families fail closed';
+	plan 3;
+	is App::Ariza::Installer.snapshot(:$config, :family<posix>), $script.slurp,
+		'POSIX snapshot renders from the install template';
+	ok App::Ariza::Installer.snapshot(:$config, :family<windows>)
+		.contains('[string] $ArizaUpdateCandidate'),
+		'Windows snapshot exposes the frozen private parameter';
+	throws-like { App::Ariza::Installer.snapshot(:$config, :family<plan9>) },
+		Exception, message => /"no installer snapshot family 'plan9'"/,
+		'unknown snapshot families fail closed';
 }
 
 subtest 'private syntax and public escape hatches are separated', {
-    plan 8;
-    my $text = $script.slurp;
-    ok $text.contains('--ariza-update-candidate'), 'candidate argument is present';
-    ok $text.contains('--ariza-handoff'), 'handoff argument is present';
-    ok $text.contains('--ariza-nonce'), 'nonce argument is present';
-    ok $text.contains('--ariza-expected-current'), 'expected-current argument is present';
-    ok $text.contains('public version/insecure options are forbidden'),
-        'private mode rejects public policy controls';
-    ok $text.contains('protocol=1\nnonce=%s\ncandidate=%s\n'),
-        'handoff is the bounded line protocol, without an executable path';
-    ok $text.contains('ariza_validate_private_manifest'),
-        'the extracted bundle identity is validated';
-    ok $text.contains('[ "$ARIZA_PRIVATE" -eq 1 ] && exit 0'),
-        'private installs return before public warm-up and reporting';
+	plan 8;
+	my $text = $script.slurp;
+	ok $text.contains('--ariza-update-candidate'), 'candidate argument is present';
+	ok $text.contains('--ariza-handoff'), 'handoff argument is present';
+	ok $text.contains('--ariza-nonce'), 'nonce argument is present';
+	ok $text.contains('--ariza-expected-current'), 'expected-current argument is present';
+	ok $text.contains('public version/insecure options are forbidden'),
+		'private mode rejects public policy controls';
+	ok $text.contains('protocol=1\nnonce=%s\ncandidate=%s\n'),
+		'handoff is the bounded line protocol, without an executable path';
+	ok $text.contains('ariza_validate_private_manifest'),
+		'the extracted bundle identity is validated';
+	ok $text.contains('[ "$ARIZA_PRIVATE" -eq 1 ] && exit 0'),
+		'private installs return before public warm-up and reporting';
 }
 
 subtest 'private exact-candidate install commits and retains exact pre-switch', {
-    plan 11;
-    if $*DISTRO.is-win || !have-command('sh') {
-        skip-rest 'POSIX private installer execution needs sh';
-    }
-    else {
-    my $home = ensure-dir($scratch.add('home'));
-    my $data-home = ensure-dir($scratch.add('data'));
-    my $root = ensure-dir($data-home.add('exampleapp'));
-    my $versions = ensure-dir($root.add('versions'));
-    my $old = ensure-dir($versions.add('1.0.0'));
-    ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
-    $old.add('bin/exampleapp').chmod(0o755);
-    run-checked(['ln', '-s', 'versions/1.0.0', $root.add('current').absolute], :what<ln>);
+	plan 11;
+	if $*DISTRO.is-win || !have-command('sh') {
+		skip-rest 'POSIX private installer execution needs sh';
+	}
+	else {
+	my $home = ensure-dir($scratch.add('home'));
+	my $data-home = ensure-dir($scratch.add('data'));
+	my $root = ensure-dir($data-home.add('exampleapp'));
+	my $versions = ensure-dir($root.add('versions'));
+	my $old = ensure-dir($versions.add('1.0.0'));
+	ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+	$old.add('bin/exampleapp').chmod(0o755);
+	run-checked(['ln', '-s', 'versions/1.0.0', $root.add('current').absolute], :what<ln>);
 
-    # A stale newest-by-mtime directory proves retention is identity-based.
-    my $stale = ensure-dir($versions.add('9.9.9'));
-    ensure-dir($stale.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
-    $stale.add('bin/exampleapp').chmod(0o755);
+	# A stale newest-by-mtime directory proves retention is identity-based.
+	my $stale = ensure-dir($versions.add('9.9.9'));
+	ensure-dir($stale.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+	$stale.add('bin/exampleapp').chmod(0o755);
 
-    my $candidate = '1.1.0';
-    my $slug = current-slug();
-    my $name = "exampleapp-$candidate-$slug";
-    my $pack = ensure-dir($scratch.add('pack'));
-    my $top = ensure-dir($pack.add($name));
-    ensure-dir($top.add('bin')).add('exampleapp').spurt(
-        q:to/SH/);
+	my $candidate = '1.1.0';
+	my $slug = current-slug();
+	my $name = "exampleapp-$candidate-$slug";
+	my $pack = ensure-dir($scratch.add('pack'));
+	my $top = ensure-dir($pack.add($name));
+	ensure-dir($top.add('bin')).add('exampleapp').spurt(
+		q:to/SH/);
 #!/bin/sh
 printf ran >"${ARIZA_TEST_WARM_MARKER:?}"
 SH
-    $top.add('bin/exampleapp').chmod(0o755);
-    ensure-dir($top.add('libexec/ariza'));
-    $top.add('libexec/ariza/update.raku').spurt("say 'update'\n");
-    $top.add('libexec/ariza/install.sh').spurt("#!/bin/sh\n");
-    ensure-dir($top.add('site/bin')).add('application').spurt("say 'app'\n");
-    $top.add('ariza-manifest.json').spurt(to-json({
-        'ariza-manifest' => 1,
-        app => { name => 'App::ExampleApp', exec => 'exampleapp', version => $candidate },
-        updates => {
-            protocol => 1, enabled => True,
-            repository => 'example-org/App-ExampleApp',
-            coordinator => 'libexec/ariza/update.raku',
-            installer => 'libexec/ariza/install.sh',
-            'application-target' => 'site/bin/application',
-        },
-    }, :sorted-keys) ~ "\n");
-    my $archive = $scratch.add("$name.tar.gz");
-    run-checked(['tar', '-c', '-z', '-f', $archive.absolute,
-                 '-C', $pack.absolute, $name], :what<tar>);
-    my $digest = $scratch.add("$name.tar.gz.sha256");
-    $digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
+	$top.add('bin/exampleapp').chmod(0o755);
+	ensure-dir($top.add('libexec/ariza'));
+	$top.add('libexec/ariza/update.raku').spurt("say 'update'\n");
+	$top.add('libexec/ariza/install.sh').spurt("#!/bin/sh\n");
+	ensure-dir($top.add('site/bin')).add('application').spurt("say 'app'\n");
+	$top.add('ariza-manifest.json').spurt(to-json({
+		'ariza-manifest' => 1,
+		app => { name => 'App::ExampleApp', exec => 'exampleapp', version => $candidate },
+		updates => {
+			protocol => 1, enabled => True,
+			repository => 'example-org/App-ExampleApp',
+			coordinator => 'libexec/ariza/update.raku',
+			installer => 'libexec/ariza/install.sh',
+			'application-target' => 'site/bin/application',
+		},
+	}, :sorted-keys) ~ "\n");
+	my $archive = $scratch.add("$name.tar.gz");
+	run-checked(['tar', '-c', '-z', '-f', $archive.absolute,
+				 '-C', $pack.absolute, $name], :what<tar>);
+	my $digest = $scratch.add("$name.tar.gz.sha256");
+	$digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
 
-    my $mock = ensure-dir($scratch.add('mock-bin'));
-    my $curl = $mock.add('curl');
-    $curl.spurt(qq:to/SH/);
+	my $mock = ensure-dir($scratch.add('mock-bin'));
+	my $curl = $mock.add('curl');
+	$curl.spurt(qq:to/SH/);
 #!/bin/sh
 dest=''
 url=''
@@ -130,111 +130,111 @@ case \$url in
     *) cp '{ $archive.absolute }' "\$dest" ;;
 esac
 SH
-    $curl.chmod(0o755);
+	$curl.chmod(0o755);
 
-    my $handoff-dir = ensure-dir($root.add('.ariza/update-v1'));
-    my $nonce = 'a' x 64;
-    my $challenge = ensure-dir($handoff-dir.add("handoff-{$*PID}-$nonce"));
-    my $handoff = $challenge.add('result');
-    my $warm-marker = $scratch.add('private-warmed');
-    my %env =
-        HOME => $home.absolute,
-        XDG_DATA_HOME => $data-home.absolute,
-        PATH => "{$mock.absolute}:/usr/bin:/bin",
-        ARIZA_TEST_WARM_MARKER => $warm-marker.absolute,
-    ;
-    my ($code, $out, $err) = try-run([
-        'sh', $script.absolute,
-        '--ariza-update-candidate', $candidate,
-        '--ariza-handoff', $handoff.absolute,
-        '--ariza-nonce', $nonce,
-        '--ariza-expected-current', $old.absolute,
-    ], :%env);
+	my $handoff-dir = ensure-dir($root.add('.ariza/update-v1'));
+	my $nonce = 'a' x 64;
+	my $challenge = ensure-dir($handoff-dir.add("handoff-{$*PID}-$nonce"));
+	my $handoff = $challenge.add('result');
+	my $warm-marker = $scratch.add('private-warmed');
+	my %env =
+		HOME => $home.absolute,
+		XDG_DATA_HOME => $data-home.absolute,
+		PATH => "{$mock.absolute}:/usr/bin:/bin",
+		ARIZA_TEST_WARM_MARKER => $warm-marker.absolute,
+	;
+	my ($code, $out, $err) = try-run([
+		'sh', $script.absolute,
+		'--ariza-update-candidate', $candidate,
+		'--ariza-handoff', $handoff.absolute,
+		'--ariza-nonce', $nonce,
+		'--ariza-expected-current', $old.absolute,
+	], :%env);
 
-    is $code, 0, 'private installer commits successfully' or diag $err ~ $out;
-    ok $out.contains('sha256 verified'), 'mandatory checksum was verified';
-    is $root.add('current').resolve.basename, $candidate, 'current switched to candidate';
-    is $root.add('previous').resolve.absolute, $old.resolve.absolute,
-        'previous is the exact physical pre-switch bundle';
-    is-deeply $versions.dir.map(*.basename).sort.List, ('1.0.0', '1.1.0'),
-        'retention is exactly new plus exact pre-switch, not newest-by-mtime';
-    is $handoff.slurp,
-        "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
-        'authenticated handoff record has the exact protocol bytes';
-    nok $handoff.slurp.contains($root.absolute), 'handoff contains no target path';
-    nok $warm-marker.e, 'private install never warms the application';
-    nok $root.add('.ariza/update-v1/transaction').e,
-        'transaction journal is cleared after commit';
-    ok $root.add('current').l && $root.add('previous').l,
-        'both managed pointers are links';
-    ok $err eq '' || !$err.contains('error'), 'no installer error was reported' or diag $err;
-    }
+	is $code, 0, 'private installer commits successfully' or diag $err ~ $out;
+	ok $out.contains('sha256 verified'), 'mandatory checksum was verified';
+	is $root.add('current').resolve.basename, $candidate, 'current switched to candidate';
+	is $root.add('previous').resolve.absolute, $old.resolve.absolute,
+		'previous is the exact physical pre-switch bundle';
+	is-deeply $versions.dir.map(*.basename).sort.List, ('1.0.0', '1.1.0'),
+		'retention is exactly new plus exact pre-switch, not newest-by-mtime';
+	is $handoff.slurp,
+		"protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
+		'authenticated handoff record has the exact protocol bytes';
+	nok $handoff.slurp.contains($root.absolute), 'handoff contains no target path';
+	nok $warm-marker.e, 'private install never warms the application';
+	nok $root.add('.ariza/update-v1/transaction').e,
+		'transaction journal is cleared after commit';
+	ok $root.add('current').l && $root.add('previous').l,
+		'both managed pointers are links';
+	ok $err eq '' || !$err.contains('error'), 'no installer error was reported' or diag $err;
+	}
 }
 
 subtest 'private argument boundary fails before download or mutation', {
-    plan 8;
-    if $*DISTRO.is-win || !have-command('sh') {
-        skip-rest 'POSIX private installer execution needs sh';
-    }
-    else {
-    my $home = ensure-dir($scratch.add('negative-home'));
-    my $data-home = ensure-dir($scratch.add('negative-data'));
-    my $root = ensure-dir($data-home.add('exampleapp'));
-    my $versions = ensure-dir($root.add('versions'));
-    my $old = ensure-dir($versions.add('2.0.0'));
-    ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
-    $old.add('bin/exampleapp').chmod(0o755);
-    run-checked(['ln', '-s', 'versions/2.0.0', $root.add('current').absolute], :what<ln>);
-    my $state = ensure-dir($root.add('.ariza/update-v1'));
-    my %env = HOME => $home.absolute, XDG_DATA_HOME => $data-home.absolute,
-              PATH => '/usr/bin:/bin';
+	plan 8;
+	if $*DISTRO.is-win || !have-command('sh') {
+		skip-rest 'POSIX private installer execution needs sh';
+	}
+	else {
+	my $home = ensure-dir($scratch.add('negative-home'));
+	my $data-home = ensure-dir($scratch.add('negative-data'));
+	my $root = ensure-dir($data-home.add('exampleapp'));
+	my $versions = ensure-dir($root.add('versions'));
+	my $old = ensure-dir($versions.add('2.0.0'));
+	ensure-dir($old.add('bin')).add('exampleapp').spurt("#!/bin/sh\nexit 0\n");
+	$old.add('bin/exampleapp').chmod(0o755);
+	run-checked(['ln', '-s', 'versions/2.0.0', $root.add('current').absolute], :what<ln>);
+	my $state = ensure-dir($root.add('.ariza/update-v1'));
+	my %env = HOME => $home.absolute, XDG_DATA_HOME => $data-home.absolute,
+			  PATH => '/usr/bin:/bin';
 
-    sub attempt(Str $candidate, Str $nonce = 'b' x 64,
-                IO::Path $handoff = $state.add('handoff.bad') --> List) {
-        try-run(['sh', $script.absolute,
-            '--ariza-update-candidate', $candidate,
-            '--ariza-handoff', $handoff.absolute,
-            '--ariza-nonce', $nonce,
-            '--ariza-expected-current', $old.absolute], :%env)
-    }
+	sub attempt(Str $candidate, Str $nonce = 'b' x 64,
+				IO::Path $handoff = $state.add('handoff.bad') --> List) {
+		try-run(['sh', $script.absolute,
+			'--ariza-update-candidate', $candidate,
+			'--ariza-handoff', $handoff.absolute,
+			'--ariza-nonce', $nonce,
+			'--ariza-expected-current', $old.absolute], :%env)
+	}
 
-    my ($vcode, $, $verr) = attempt('v2.1.0');
-    isnt $vcode, 0, 'v-prefixed private candidate is rejected';
-    ok $verr.contains('bare ASCII x.y.z'), 'candidate error names the exact grammar';
+	my ($vcode, $, $verr) = attempt('v2.1.0');
+	isnt $vcode, 0, 'v-prefixed private candidate is rejected';
+	ok $verr.contains('bare ASCII x.y.z'), 'candidate error names the exact grammar';
 
-    my ($ncode, $, $nerr) = attempt('2.1.0', 'B' x 64);
-    isnt $ncode, 0, 'uppercase nonce is rejected';
-    ok $nerr.contains('64 lowercase hexadecimal'), 'nonce error names the exact grammar';
+	my ($ncode, $, $nerr) = attempt('2.1.0', 'B' x 64);
+	isnt $ncode, 0, 'uppercase nonce is rejected';
+	ok $nerr.contains('64 lowercase hexadecimal'), 'nonce error names the exact grammar';
 
-    my ($hcode, $, $herr) = attempt('2.1.0', 'b' x 64,
-                                    $root.add('handoff-outside-state'));
-    isnt $hcode, 0, 'handoff outside update-v1 state is rejected';
-    ok $herr.contains('inside update-v1 state'), 'handoff containment is explained';
+	my ($hcode, $, $herr) = attempt('2.1.0', 'b' x 64,
+									$root.add('handoff-outside-state'));
+	isnt $hcode, 0, 'handoff outside update-v1 state is rejected';
+	ok $herr.contains('inside update-v1 state'), 'handoff containment is explained';
 
-    is $root.add('current').resolve.absolute, $old.resolve.absolute,
-        'all argument failures leave current untouched';
-    nok $state.add('handoff.bad').e, 'and none can forge a handoff record';
-    }
+	is $root.add('current').resolve.absolute, $old.resolve.absolute,
+		'all argument failures leave current untouched';
+	nok $state.add('handoff.bad').e, 'and none can forge a handoff record';
+	}
 }
 
 subtest 'Windows private updater executes natively', {
-    plan 22;
-    my $powershell = $*DISTRO.is-win
-        ?? (have-command('powershell.exe') ?? 'powershell.exe'
-            !! (have-command('pwsh') ?? 'pwsh' !! ''))
-        !! '';
-    if !$powershell {
-        skip-rest 'Windows private installer runtime needs powershell.exe or pwsh on Windows';
-    }
-    else {
+	plan 22;
+	my $powershell = $*DISTRO.is-win
+		?? (have-command('powershell.exe') ?? 'powershell.exe'
+			!! (have-command('pwsh') ?? 'pwsh' !! ''))
+		!! '';
+	if !$powershell {
+		skip-rest 'Windows private installer runtime needs powershell.exe or pwsh on Windows';
+	}
+	else {
 
-    my $win = ensure-dir($scratch.add('windows-native'));
-    my $installer = $win.add('install.ps1');
-    $installer.spurt(App::Ariza::Installer.snapshot(
-        :$config, :family<windows>));
+	my $win = ensure-dir($scratch.add('windows-native'));
+	my $installer = $win.add('install.ps1');
+	$installer.spurt(App::Ariza::Installer.snapshot(
+		:$config, :family<windows>));
 
-    my $archive-helper = $win.add('make-archive.ps1');
-    $archive-helper.spurt(q:to/POWERSHELL/);
+	my $archive-helper = $win.add('make-archive.ps1');
+	$archive-helper.spurt(q:to/POWERSHELL/);
 param([string] $Top, [string] $Archive)
 $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
 if (-not $tar) { throw 'Windows tar.exe is required for the installer fixture' }
@@ -243,20 +243,20 @@ $leaf = Split-Path -Leaf $Top
 & $tar.Path -c -z -f $Archive -C $parent $leaf
 if ($LASTEXITCODE -ne 0) { throw "tar.exe failed with exit $LASTEXITCODE" }
 POWERSHELL
-    my $junction-helper = $win.add('junction.ps1');
-    $junction-helper.spurt(q:to/POWERSHELL/);
+	my $junction-helper = $win.add('junction.ps1');
+	$junction-helper.spurt(q:to/POWERSHELL/);
 param([string] $Link, [string] $Target)
 New-Item -ItemType Junction -Path $Link -Target $Target -Force | Out-Null
 POWERSHELL
-    my $target-helper = $win.add('junction-target.ps1');
-    $target-helper.spurt(q:to/POWERSHELL/);
+	my $target-helper = $win.add('junction-target.ps1');
+	$target-helper.spurt(q:to/POWERSHELL/);
 param([string] $Link)
 $item = Get-Item -LiteralPath $Link -Force
 $target = [string] $item.Target
 [IO.Path]::GetFileName($target.TrimEnd('\'))
 POWERSHELL
-    my $unlink-helper = $win.add('unlink-junctions.ps1');
-    $unlink-helper.spurt(q:to/POWERSHELL/);
+	my $unlink-helper = $win.add('unlink-junctions.ps1');
+	$unlink-helper.spurt(q:to/POWERSHELL/);
 param([string[]] $Links)
 foreach ($link in $Links) {
     if (Test-Path -LiteralPath $link) {
@@ -265,8 +265,8 @@ foreach ($link in $Links) {
     }
 }
 POWERSHELL
-    my $invoke = $win.add('invoke-private.ps1');
-    $invoke.spurt(q:to/POWERSHELL/);
+	my $invoke = $win.add('invoke-private.ps1');
+	$invoke.spurt(q:to/POWERSHELL/);
 [CmdletBinding()]
 param(
     [string] $Installer,
@@ -300,223 +300,223 @@ if (-not $?) { exit 1 }
 exit 0
 POWERSHELL
 
-    sub ps-run(IO::Path $file, *@args --> List) {
-        my %env = %*ENV;
-        %env<PROCESSOR_ARCHITECTURE> //= 'AMD64';
-        try-run([
-            $powershell, '-NoProfile', '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass', '-File', $file.absolute, |@args,
-        ], :%env)
-    }
+	sub ps-run(IO::Path $file, *@args --> List) {
+		my %env = %*ENV;
+		%env<PROCESSOR_ARCHITECTURE> //= 'AMD64';
+		try-run([
+			$powershell, '-NoProfile', '-NonInteractive',
+			'-ExecutionPolicy', 'Bypass', '-File', $file.absolute, |@args,
+		], :%env)
+	}
 
-    my $arch = (%*ENV<PROCESSOR_ARCHITECTURE> // 'AMD64').uc;
-    my $slug = $arch eq 'ARM64' ?? 'windows-arm64' !! 'windows-x86_64';
-    my $candidate = '3.1.0';
-    my $name = "exampleapp-$candidate-$slug";
-    my $pack = ensure-dir($win.add('pack'));
-    my $top = ensure-dir($pack.add($name));
-    ensure-dir($top.add('bin')).add('exampleapp.cmd').spurt(
-        "\@echo off\r\n> \"%ARIZA_TEST_WARM_MARKER%\" echo ran\r\n");
-    ensure-dir($top.add('libexec/ariza'));
-    $top.add('libexec/ariza/update.raku').spurt("say 'update'\n");
-    $top.add('libexec/ariza/install.ps1').spurt("# local snapshot\r\n");
-    ensure-dir($top.add('site')).add('application.raku').spurt("say 'app'\n");
-    $top.add('ariza-manifest.json').spurt(to-json({
-        'ariza-manifest' => 1,
-        app => {
-            name => 'App::ExampleApp', exec => 'exampleapp',
-            version => $candidate,
-        },
-        updates => {
-            protocol => 1, enabled => True,
-            repository => 'example-org/App-ExampleApp',
-            coordinator => 'libexec/ariza/update.raku',
-            installer => 'libexec/ariza/install.ps1',
-            'application-target' => 'site/application.raku',
-        },
-    }, :sorted-keys) ~ "\n");
-    my $archive = $win.add("$name.tar.gz");
-    my ($archive-code, $, $archive-err) = ps-run(
-        $archive-helper, $top.absolute, $archive.absolute);
-    die "PowerShell could not create the Windows installer fixture: $archive-err"
-        if $archive-code != 0;
-    my $digest = $win.add("$name.tar.gz.sha256");
-    $digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
+	my $arch = (%*ENV<PROCESSOR_ARCHITECTURE> // 'AMD64').uc;
+	my $slug = $arch eq 'ARM64' ?? 'windows-arm64' !! 'windows-x86_64';
+	my $candidate = '3.1.0';
+	my $name = "exampleapp-$candidate-$slug";
+	my $pack = ensure-dir($win.add('pack'));
+	my $top = ensure-dir($pack.add($name));
+	ensure-dir($top.add('bin')).add('exampleapp.cmd').spurt(
+		"\@echo off\r\n> \"%ARIZA_TEST_WARM_MARKER%\" echo ran\r\n");
+	ensure-dir($top.add('libexec/ariza'));
+	$top.add('libexec/ariza/update.raku').spurt("say 'update'\n");
+	$top.add('libexec/ariza/install.ps1').spurt("# local snapshot\r\n");
+	ensure-dir($top.add('site')).add('application.raku').spurt("say 'app'\n");
+	$top.add('ariza-manifest.json').spurt(to-json({
+		'ariza-manifest' => 1,
+		app => {
+			name => 'App::ExampleApp', exec => 'exampleapp',
+			version => $candidate,
+		},
+		updates => {
+			protocol => 1, enabled => True,
+			repository => 'example-org/App-ExampleApp',
+			coordinator => 'libexec/ariza/update.raku',
+			installer => 'libexec/ariza/install.ps1',
+			'application-target' => 'site/application.raku',
+		},
+	}, :sorted-keys) ~ "\n");
+	my $archive = $win.add("$name.tar.gz");
+	my ($archive-code, $, $archive-err) = ps-run(
+		$archive-helper, $top.absolute, $archive.absolute);
+	die "PowerShell could not create the Windows installer fixture: $archive-err"
+		if $archive-code != 0;
+	my $digest = $win.add("$name.tar.gz.sha256");
+	$digest.spurt(sha256-file($archive) ~ "  $name.tar.gz\n");
 
-    sub installed-root(Str $leaf --> List) {
-        my $local = ensure-dir($win.add($leaf).add('local-app-data'));
-        my $root = ensure-dir($local.add('Example App'));
-        my $versions = ensure-dir($root.add('versions'));
-        ($local, $root, $versions)
-    }
+	sub installed-root(Str $leaf --> List) {
+		my $local = ensure-dir($win.add($leaf).add('local-app-data'));
+		my $root = ensure-dir($local.add('Example App'));
+		my $versions = ensure-dir($root.add('versions'));
+		($local, $root, $versions)
+	}
 
-    my ($local, $root, $versions) = installed-root('success');
-    my $old = ensure-dir($versions.add('3.0.0'));
-    ensure-dir($old.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
-    my $stale = ensure-dir($versions.add('9.9.9'));
-    ensure-dir($stale.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
-    my ($link-code, $, $link-err) = ps-run(
-        $junction-helper, $root.add('current').absolute, $old.absolute);
-    die "PowerShell could not create the managed current junction: $link-err"
-        if $link-code != 0;
-    my $state = ensure-dir($root.add('.ariza/update-v1'));
-    my $nonce = 'c' x 64;
-    my $challenge = ensure-dir($state.add("handoff-{$*PID}-$nonce"));
-    my $handoff = $challenge.add('result');
-    my $download-marker = $win.add('success-downloads');
-    my $warm-marker = $win.add('success-warmed');
-    my %success-env = %*ENV;
-    %success-env<LOCALAPPDATA> = $local.absolute.Str;
-    %success-env<PROCESSOR_ARCHITECTURE> = $arch;
-    %success-env<ARIZA_TEST_WARM_MARKER> = $warm-marker.absolute.Str;
-    %success-env<ARIZA_TEST_ARCHIVE> = $archive.absolute.Str;
-    %success-env<ARIZA_TEST_DIGEST> = $digest.absolute.Str;
-    %success-env<ARIZA_TEST_DOWNLOAD_MARKER> = $download-marker.absolute.Str;
-    %success-env<EXAMPLEAPP_BUNDLE_URL>:delete;
-    my ($code, $out, $err) = try-run([
-        $powershell, '-NoProfile', '-NonInteractive',
-        '-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
-        '-Installer', $installer.absolute,
-        '-Candidate', $candidate,
-        '-Handoff', $handoff.absolute,
-        '-Nonce', $nonce,
-        '-ExpectedCurrent', $old.absolute,
-    ], :env(%success-env));
+	my ($local, $root, $versions) = installed-root('success');
+	my $old = ensure-dir($versions.add('3.0.0'));
+	ensure-dir($old.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
+	my $stale = ensure-dir($versions.add('9.9.9'));
+	ensure-dir($stale.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
+	my ($link-code, $, $link-err) = ps-run(
+		$junction-helper, $root.add('current').absolute, $old.absolute);
+	die "PowerShell could not create the managed current junction: $link-err"
+		if $link-code != 0;
+	my $state = ensure-dir($root.add('.ariza/update-v1'));
+	my $nonce = 'c' x 64;
+	my $challenge = ensure-dir($state.add("handoff-{$*PID}-$nonce"));
+	my $handoff = $challenge.add('result');
+	my $download-marker = $win.add('success-downloads');
+	my $warm-marker = $win.add('success-warmed');
+	my %success-env = %*ENV;
+	%success-env<LOCALAPPDATA> = $local.absolute.Str;
+	%success-env<PROCESSOR_ARCHITECTURE> = $arch;
+	%success-env<ARIZA_TEST_WARM_MARKER> = $warm-marker.absolute.Str;
+	%success-env<ARIZA_TEST_ARCHIVE> = $archive.absolute.Str;
+	%success-env<ARIZA_TEST_DIGEST> = $digest.absolute.Str;
+	%success-env<ARIZA_TEST_DOWNLOAD_MARKER> = $download-marker.absolute.Str;
+	%success-env<EXAMPLEAPP_BUNDLE_URL>:delete;
+	my ($code, $out, $err) = try-run([
+		$powershell, '-NoProfile', '-NonInteractive',
+		'-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
+		'-Installer', $installer.absolute,
+		'-Candidate', $candidate,
+		'-Handoff', $handoff.absolute,
+		'-Nonce', $nonce,
+		'-ExpectedCurrent', $old.absolute,
+	], :env(%success-env));
 
-    is $code, 0, 'PowerShell private installer commits successfully'
-        or diag $err ~ $out;
-    ok $out.contains('sha256 verified'),
-        'Windows runtime verifies the mandatory checksum' or diag $out ~ $err;
-    my ($cur-code, $cur-out, $cur-err) = ps-run(
-        $target-helper, $root.add('current').absolute);
-    is $cur-code == 0 ?? $cur-out.trim !! $cur-err.trim, $candidate,
-        'current is the candidate junction target';
-    my ($prev-code, $prev-out, $prev-err) = ps-run(
-        $target-helper, $root.add('previous').absolute);
-    is $prev-code == 0 ?? $prev-out.trim !! $prev-err.trim, '3.0.0',
-        'previous is the exact physical pre-switch junction target';
-    is-deeply $versions.dir.map(*.basename).sort.List, ('3.0.0', '3.1.0'),
-        'Windows retention is exactly new plus exact pre-switch';
-    my $handoff-text = $handoff.f ?? $handoff.slurp !! '<missing handoff>';
-    is $handoff-text, "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
-        'Windows handoff bytes match protocol v1 exactly';
-    nok $handoff-text.contains($root.absolute),
-        'Windows handoff contains no executable or bundle path';
-    nok $warm-marker.e, 'private Windows install does not warm the app';
-    nok $state.add('transaction').e, 'successful Windows commit clears its journal';
-    is $download-marker.f ?? $download-marker.slurp.lines.elems !! -1, 2,
-        'both mocked downloads ran locally with no network request';
+	is $code, 0, 'PowerShell private installer commits successfully'
+		or diag $err ~ $out;
+	ok $out.contains('sha256 verified'),
+		'Windows runtime verifies the mandatory checksum' or diag $out ~ $err;
+	my ($cur-code, $cur-out, $cur-err) = ps-run(
+		$target-helper, $root.add('current').absolute);
+	is $cur-code == 0 ?? $cur-out.trim !! $cur-err.trim, $candidate,
+		'current is the candidate junction target';
+	my ($prev-code, $prev-out, $prev-err) = ps-run(
+		$target-helper, $root.add('previous').absolute);
+	is $prev-code == 0 ?? $prev-out.trim !! $prev-err.trim, '3.0.0',
+		'previous is the exact physical pre-switch junction target';
+	is-deeply $versions.dir.map(*.basename).sort.List, ('3.0.0', '3.1.0'),
+		'Windows retention is exactly new plus exact pre-switch';
+	my $handoff-text = $handoff.f ?? $handoff.slurp !! '<missing handoff>';
+	is $handoff-text, "protocol=1\nnonce=$nonce\ncandidate=$candidate\n",
+		'Windows handoff bytes match protocol v1 exactly';
+	nok $handoff-text.contains($root.absolute),
+		'Windows handoff contains no executable or bundle path';
+	nok $warm-marker.e, 'private Windows install does not warm the app';
+	nok $state.add('transaction').e, 'successful Windows commit clears its journal';
+	is $download-marker.f ?? $download-marker.slurp.lines.elems !! -1, 2,
+		'both mocked downloads ran locally with no network request';
 
-    # Repack the same structurally valid candidate with the wrong repository.
-    # It reaches the manifest boundary after download, checksum, and extract,
-    # then must fail before any managed pointer changes.
-    $top.add('ariza-manifest.json').spurt(
-        $top.add('ariza-manifest.json').slurp.subst(
-            'example-org/App-ExampleApp', 'attacker/Wrong-App'));
-    my $bad-manifest-archive = $win.add("{$name}-bad-manifest.tar.gz");
-    my ($bad-archive-code, $, $bad-archive-err) = ps-run(
-        $archive-helper, $top.absolute, $bad-manifest-archive.absolute);
-    die "PowerShell could not create the bad-manifest fixture: $bad-archive-err"
-        if $bad-archive-code != 0;
-    my $bad-manifest-digest = $win.add("{$name}-bad-manifest.tar.gz.sha256");
-    $bad-manifest-digest.spurt(
-        sha256-file($bad-manifest-archive)
-            ~ "  {$name}-bad-manifest.tar.gz\n");
-    my ($manifest-local, $manifest-root, $manifest-versions) =
-        installed-root('invalid-manifest');
-    my $manifest-old = ensure-dir($manifest-versions.add('5.0.0'));
-    ensure-dir($manifest-old.add('bin')).add('exampleapp.cmd')
-        .spurt("\@echo off\r\n");
-    my ($manifest-link-code, $, $manifest-link-err) = ps-run(
-        $junction-helper, $manifest-root.add('current').absolute,
-        $manifest-old.absolute);
-    die "PowerShell could not create the manifest-test junction: $manifest-link-err"
-        if $manifest-link-code != 0;
-    my $manifest-state = ensure-dir($manifest-root.add('.ariza/update-v1'));
-    my $manifest-challenge = ensure-dir(
-        $manifest-state.add("handoff-{$*PID}-manifest"));
-    my $manifest-handoff = $manifest-challenge.add('result');
-    my %manifest-env = %*ENV;
-    %manifest-env<LOCALAPPDATA> = $manifest-local.absolute.Str;
-    %manifest-env<PROCESSOR_ARCHITECTURE> = $arch;
-    %manifest-env<ARIZA_TEST_ARCHIVE> = $bad-manifest-archive.absolute.Str;
-    %manifest-env<ARIZA_TEST_DIGEST> = $bad-manifest-digest.absolute.Str;
-    %manifest-env<ARIZA_TEST_DOWNLOAD_MARKER> =
-        $win.add('manifest-downloads').absolute.Str;
-    %manifest-env<EXAMPLEAPP_BUNDLE_URL>:delete;
-    my ($manifest-code, $manifest-out, $manifest-err) = try-run([
-        $powershell, '-NoProfile', '-NonInteractive',
-        '-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
-        '-Installer', $installer.absolute,
-        '-Candidate', $candidate,
-        '-Handoff', $manifest-handoff.absolute,
-        '-Nonce', ('e' x 64),
-        '-ExpectedCurrent', $manifest-old.absolute,
-    ], :env(%manifest-env));
-    isnt $manifest-code, 0, 'mismatched Windows update manifest is rejected';
-    ok ($manifest-out ~ $manifest-err).contains(
-        'invalid update protocol metadata'),
-        'manifest rejection names the failed protocol boundary';
-    my ($manifest-cur-code, $manifest-cur-out, $manifest-cur-err) = ps-run(
-        $target-helper, $manifest-root.add('current').absolute);
-    is $manifest-cur-code == 0
-        ?? $manifest-cur-out.trim
-        !! $manifest-cur-err.trim,
-        '5.0.0', 'manifest rejection leaves current unchanged';
-    is-deeply $manifest-versions.dir.map(*.basename).sort.List, ('5.0.0',),
-        'manifest rejection never installs the candidate directory';
-    nok $manifest-handoff.e,
-        'manifest rejection cannot emit an authenticated handoff';
+	# Repack the same structurally valid candidate with the wrong repository.
+	# It reaches the manifest boundary after download, checksum, and extract,
+	# then must fail before any managed pointer changes.
+	$top.add('ariza-manifest.json').spurt(
+		$top.add('ariza-manifest.json').slurp.subst(
+			'example-org/App-ExampleApp', 'attacker/Wrong-App'));
+	my $bad-manifest-archive = $win.add("{$name}-bad-manifest.tar.gz");
+	my ($bad-archive-code, $, $bad-archive-err) = ps-run(
+		$archive-helper, $top.absolute, $bad-manifest-archive.absolute);
+	die "PowerShell could not create the bad-manifest fixture: $bad-archive-err"
+		if $bad-archive-code != 0;
+	my $bad-manifest-digest = $win.add("{$name}-bad-manifest.tar.gz.sha256");
+	$bad-manifest-digest.spurt(
+		sha256-file($bad-manifest-archive)
+			~ "  {$name}-bad-manifest.tar.gz\n");
+	my ($manifest-local, $manifest-root, $manifest-versions) =
+		installed-root('invalid-manifest');
+	my $manifest-old = ensure-dir($manifest-versions.add('5.0.0'));
+	ensure-dir($manifest-old.add('bin')).add('exampleapp.cmd')
+		.spurt("\@echo off\r\n");
+	my ($manifest-link-code, $, $manifest-link-err) = ps-run(
+		$junction-helper, $manifest-root.add('current').absolute,
+		$manifest-old.absolute);
+	die "PowerShell could not create the manifest-test junction: $manifest-link-err"
+		if $manifest-link-code != 0;
+	my $manifest-state = ensure-dir($manifest-root.add('.ariza/update-v1'));
+	my $manifest-challenge = ensure-dir(
+		$manifest-state.add("handoff-{$*PID}-manifest"));
+	my $manifest-handoff = $manifest-challenge.add('result');
+	my %manifest-env = %*ENV;
+	%manifest-env<LOCALAPPDATA> = $manifest-local.absolute.Str;
+	%manifest-env<PROCESSOR_ARCHITECTURE> = $arch;
+	%manifest-env<ARIZA_TEST_ARCHIVE> = $bad-manifest-archive.absolute.Str;
+	%manifest-env<ARIZA_TEST_DIGEST> = $bad-manifest-digest.absolute.Str;
+	%manifest-env<ARIZA_TEST_DOWNLOAD_MARKER> =
+		$win.add('manifest-downloads').absolute.Str;
+	%manifest-env<EXAMPLEAPP_BUNDLE_URL>:delete;
+	my ($manifest-code, $manifest-out, $manifest-err) = try-run([
+		$powershell, '-NoProfile', '-NonInteractive',
+		'-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
+		'-Installer', $installer.absolute,
+		'-Candidate', $candidate,
+		'-Handoff', $manifest-handoff.absolute,
+		'-Nonce', ('e' x 64),
+		'-ExpectedCurrent', $manifest-old.absolute,
+	], :env(%manifest-env));
+	isnt $manifest-code, 0, 'mismatched Windows update manifest is rejected';
+	ok ($manifest-out ~ $manifest-err).contains(
+		'invalid update protocol metadata'),
+		'manifest rejection names the failed protocol boundary';
+	my ($manifest-cur-code, $manifest-cur-out, $manifest-cur-err) = ps-run(
+		$target-helper, $manifest-root.add('current').absolute);
+	is $manifest-cur-code == 0
+		?? $manifest-cur-out.trim
+		!! $manifest-cur-err.trim,
+		'5.0.0', 'manifest rejection leaves current unchanged';
+	is-deeply $manifest-versions.dir.map(*.basename).sort.List, ('5.0.0',),
+		'manifest rejection never installs the candidate directory';
+	nok $manifest-handoff.e,
+		'manifest rejection cannot emit an authenticated handoff';
 
-    my ($bad-local, $bad-root, $bad-versions) = installed-root('invalid');
-    my $bad-old = ensure-dir($bad-versions.add('4.0.0'));
-    ensure-dir($bad-old.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
-    my $bad-stale = ensure-dir($bad-versions.add('8.8.8'));
-    ensure-dir($bad-stale.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
-    my ($bad-link-code, $, $bad-link-err) = ps-run(
-        $junction-helper, $bad-root.add('current').absolute, $bad-old.absolute);
-    die "PowerShell could not create the negative-test junction: $bad-link-err"
-        if $bad-link-code != 0;
-    my $bad-state = ensure-dir($bad-root.add('.ariza/update-v1'));
-    my $bad-challenge = ensure-dir($bad-state.add("handoff-{$*PID}-bad"));
-    my $bad-handoff = $bad-challenge.add('result');
-    my $bad-download = $win.add('invalid-downloads');
-    my %bad-env = %*ENV;
-    %bad-env<LOCALAPPDATA> = $bad-local.absolute.Str;
-    %bad-env<PROCESSOR_ARCHITECTURE> = $arch;
-    %bad-env<ARIZA_TEST_ARCHIVE> = $archive.absolute.Str;
-    %bad-env<ARIZA_TEST_DIGEST> = $digest.absolute.Str;
-    %bad-env<ARIZA_TEST_DOWNLOAD_MARKER> = $bad-download.absolute.Str;
-    %bad-env<EXAMPLEAPP_BUNDLE_URL>:delete;
-    my ($bad-code, $bad-out, $bad-err) = try-run([
-        $powershell, '-NoProfile', '-NonInteractive',
-        '-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
-        '-Installer', $installer.absolute,
-        '-Candidate', 'v4.1.0',
-        '-Handoff', $bad-handoff.absolute,
-        '-Nonce', ('d' x 64),
-        '-ExpectedCurrent', $bad-old.absolute,
-    ], :env(%bad-env));
-    isnt $bad-code, 0, 'invalid Windows private candidate is rejected';
-    ok ($bad-out ~ $bad-err).contains('bare ASCII x.y.z'),
-        'Windows rejection names the exact candidate grammar';
-    my ($bad-cur-code, $bad-cur-out, $bad-cur-err) = ps-run(
-        $target-helper, $bad-root.add('current').absolute);
-    is $bad-cur-code == 0 ?? $bad-cur-out.trim !! $bad-cur-err.trim, '4.0.0',
-        'argument rejection leaves current unchanged';
-    is-deeply $bad-versions.dir.map(*.basename).sort.List, ('4.0.0', '8.8.8'),
-        'argument rejection leaves every installed version unchanged';
-    nok $bad-handoff.e, 'argument rejection cannot emit a handoff';
-    nok $bad-download.e, 'argument rejection occurs before any download';
-    ok !$bad-root.add('previous').e,
-        'argument rejection creates no previous junction';
+	my ($bad-local, $bad-root, $bad-versions) = installed-root('invalid');
+	my $bad-old = ensure-dir($bad-versions.add('4.0.0'));
+	ensure-dir($bad-old.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
+	my $bad-stale = ensure-dir($bad-versions.add('8.8.8'));
+	ensure-dir($bad-stale.add('bin')).add('exampleapp.cmd').spurt("\@echo off\r\n");
+	my ($bad-link-code, $, $bad-link-err) = ps-run(
+		$junction-helper, $bad-root.add('current').absolute, $bad-old.absolute);
+	die "PowerShell could not create the negative-test junction: $bad-link-err"
+		if $bad-link-code != 0;
+	my $bad-state = ensure-dir($bad-root.add('.ariza/update-v1'));
+	my $bad-challenge = ensure-dir($bad-state.add("handoff-{$*PID}-bad"));
+	my $bad-handoff = $bad-challenge.add('result');
+	my $bad-download = $win.add('invalid-downloads');
+	my %bad-env = %*ENV;
+	%bad-env<LOCALAPPDATA> = $bad-local.absolute.Str;
+	%bad-env<PROCESSOR_ARCHITECTURE> = $arch;
+	%bad-env<ARIZA_TEST_ARCHIVE> = $archive.absolute.Str;
+	%bad-env<ARIZA_TEST_DIGEST> = $digest.absolute.Str;
+	%bad-env<ARIZA_TEST_DOWNLOAD_MARKER> = $bad-download.absolute.Str;
+	%bad-env<EXAMPLEAPP_BUNDLE_URL>:delete;
+	my ($bad-code, $bad-out, $bad-err) = try-run([
+		$powershell, '-NoProfile', '-NonInteractive',
+		'-ExecutionPolicy', 'Bypass', '-File', $invoke.absolute,
+		'-Installer', $installer.absolute,
+		'-Candidate', 'v4.1.0',
+		'-Handoff', $bad-handoff.absolute,
+		'-Nonce', ('d' x 64),
+		'-ExpectedCurrent', $bad-old.absolute,
+	], :env(%bad-env));
+	isnt $bad-code, 0, 'invalid Windows private candidate is rejected';
+	ok ($bad-out ~ $bad-err).contains('bare ASCII x.y.z'),
+		'Windows rejection names the exact candidate grammar';
+	my ($bad-cur-code, $bad-cur-out, $bad-cur-err) = ps-run(
+		$target-helper, $bad-root.add('current').absolute);
+	is $bad-cur-code == 0 ?? $bad-cur-out.trim !! $bad-cur-err.trim, '4.0.0',
+		'argument rejection leaves current unchanged';
+	is-deeply $bad-versions.dir.map(*.basename).sort.List, ('4.0.0', '8.8.8'),
+		'argument rejection leaves every installed version unchanged';
+	nok $bad-handoff.e, 'argument rejection cannot emit a handoff';
+	nok $bad-download.e, 'argument rejection occurs before any download';
+	ok !$bad-root.add('previous').e,
+		'argument rejection creates no previous junction';
 
-    # Remove junction objects before the shared recursive scratch cleanup.
-    ps-run($unlink-helper,
-        $root.add('current').absolute, $root.add('previous').absolute,
-        $manifest-root.add('current').absolute,
-        $bad-root.add('current').absolute);
-    }
+	# Remove junction objects before the shared recursive scratch cleanup.
+	ps-run($unlink-helper,
+		$root.add('current').absolute, $root.add('previous').absolute,
+		$manifest-root.add('current').absolute,
+		$bad-root.add('current').absolute);
+	}
 }
 
 done-testing;

@@ -1,0 +1,12 @@
+
+Dynamic section at offset 0x1a8 contains 9 entries:
+  Tag        Type                         Name/Value
+ 0x0000000f (RPATH)                      Library rpath: [/opt/build/lib]
+ 0x00000001 (NEEDED)                     Shared library: [libcrypto.so.3]
+ 0x00000006 (SYMTAB)                     0x134
+ 0x0000000b (SYMENT)                     16 (bytes)
+ 0x00000005 (STRTAB)                     0x170
+ 0x0000000a (STRSZ)                      45 (bytes)
+ 0x6ffffef5 (GNU_HASH)                   0x154
+ 0x70000000 (PPC_GOT)                    0x0
+ 0x00000000 (NULL)                       0x0

@@ -6,8 +6,8 @@ unit module App::Ariza::Resources;
 #| parents up is the distribution root — and that root is only meaningful
 #| as a checkout if it still has the `resources/` tree beside it.
 our sub checkout-root(--> IO::Path) is export {
-    my $root = $?FILE.IO.resolve.parent(4);
-    $root.add('resources').d ?? $root !! IO::Path
+	my $root = $?FILE.IO.resolve.parent(4);
+	$root.add('resources').d ?? $root !! IO::Path
 }
 
 #| Locate one resource file by its distribution-relative path (the same
@@ -22,18 +22,18 @@ our sub checkout-root(--> IO::Path) is export {
 #| because a missing resource is always a packaging bug (an unlisted
 #| entry in META6 `resources`) rather than anything a user can fix.
 our sub resource(Str:D $rel --> IO::Path) is export {
-    with staged-resource($rel) -> $staged {
-        return $staged;
-    }
-    with checkout-root() -> $root {
-        my $path = $root.add('resources').add($rel);
-        # `.f`, not `.e`: every resource is a file, and a prefix that
-        # happens to name a directory must fail like any other missing
-        # resource rather than being handed back as an unopenable path.
-        return $path if $path.f;
-        die "ariza: missing resource '$rel' (looked in {$path})";
-    }
-    die "ariza: missing resource '$rel' (not in %?RESOURCES and no source checkout found)";
+	with staged-resource($rel) -> $staged {
+		return $staged;
+	}
+	with checkout-root() -> $root {
+		my $path = $root.add('resources').add($rel);
+		# `.f`, not `.e`: every resource is a file, and a prefix that
+		# happens to name a directory must fail like any other missing
+		# resource rather than being handed back as an unopenable path.
+		return $path if $path.f;
+		die "ariza: missing resource '$rel' (looked in {$path})";
+	}
+	die "ariza: missing resource '$rel' (not in %?RESOURCES and no source checkout found)";
 }
 
 #| Every resource whose distribution-relative path starts with `$prefix`,
@@ -48,27 +48,27 @@ our sub resource(Str:D $rel --> IO::Path) is export {
 #| which keeps a freshly-added-but-not-yet-listed resource visible while
 #| you are working on it.
 our sub resource-list(Str:D $prefix --> List) is export {
-    with checkout-root() -> $root {
-        my $dir = $root.add('resources').add($prefix);
-        if $dir.d {
-            my $base = $root.add('resources').absolute;
-            # These are META6 `resources` keys, not filesystem paths, and
-            # a key is forward-slash by spec on every platform — it is
-            # what gets fed back through `resource` and compared against
-            # the manifest. `.absolute` speaks the native separator, so
-            # Windows would otherwise hand back `templates\ci\...` here
-            # and nowhere else. Normalise at this one seam, where the
-            # filesystem is consulted, so a checkout and an installed run
-            # return identical strings.
-            return $dir.dir.grep(*.f).map({
-                .absolute.substr($base.chars + 1).subst('\\', '/', :g)
-            }).sort.List;
-        }
-    }
-    declared-resources()
-        .grep({ .starts-with($prefix ~ '/') })
-        .grep({ !.substr($prefix.chars + 1).contains('/') })
-        .sort.List
+	with checkout-root() -> $root {
+		my $dir = $root.add('resources').add($prefix);
+		if $dir.d {
+			my $base = $root.add('resources').absolute;
+			# These are META6 `resources` keys, not filesystem paths, and
+			# a key is forward-slash by spec on every platform — it is
+			# what gets fed back through `resource` and compared against
+			# the manifest. `.absolute` speaks the native separator, so
+			# Windows would otherwise hand back `templates\ci\...` here
+			# and nowhere else. Normalise at this one seam, where the
+			# filesystem is consulted, so a checkout and an installed run
+			# return identical strings.
+			return $dir.dir.grep(*.f).map({
+				.absolute.substr($base.chars + 1).subst('\\', '/', :g)
+			}).sort.List;
+		}
+	}
+	declared-resources()
+		.grep({ .starts-with($prefix ~ '/') })
+		.grep({ !.substr($prefix.chars + 1).contains('/') })
+		.sort.List
 }
 
 #| The distribution-relative paths this distribution declares in META6
@@ -76,7 +76,7 @@ our sub resource-list(Str:D $prefix --> List) is export {
 #| which is the ordinary case under `raku -Ilib`, where there is no
 #| META6-backed distribution object at all.
 my sub declared-resources(--> List) {
-    ((try { $?DISTRIBUTION.meta<resources>.list }) // ()).grep(Str).List
+	((try { $?DISTRIBUTION.meta<resources>.list }) // ()).grep(Str).List
 }
 
 #| `%?RESOURCES` lookup, hardened, returning the staged path or the
@@ -95,13 +95,13 @@ my sub declared-resources(--> List) {
 #|      warning off the user's terminal.
 #|   3. The declared key stages to something that is not a file.
 my sub staged-resource(Str:D $rel --> IO::Path) {
-    my @declared = declared-resources();
-    return IO::Path if @declared && !@declared.first($rel);
-    my $res = try { %?RESOURCES{$rel} };
-    return IO::Path without $res;
-    my $path = try { $res.IO };
-    return IO::Path without $path;
-    $path.f ?? $path !! IO::Path
+	my @declared = declared-resources();
+	return IO::Path if @declared && !@declared.first($rel);
+	my $res = try { %?RESOURCES{$rel} };
+	return IO::Path without $res;
+	my $path = try { $res.IO };
+	return IO::Path without $path;
+	$path.f ?? $path !! IO::Path
 }
 
 =begin pod

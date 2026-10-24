@@ -4,7 +4,6 @@ use Test;
 use App::Ariza::Config;
 use App::Ariza::Launcher;
 use App::Ariza::Native;
-use App::Ariza::Resources;
 use App::Ariza::Site;
 use App::Ariza::Tools;
 
@@ -23,22 +22,22 @@ my $NOTCURSES = 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib';
 my $NOTCURSES-WIN = $NOTCURSES.subst('/', '\\', :g);
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-launcher-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-launcher-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 sub config(--> App::Ariza::Config) {
-    my $dir = tmp-dir;
-    $dir.add('ariza.toml').spurt(q:to/TOML/);
+	my $dir = tmp-dir;
+	$dir.add('ariza.toml').spurt(q:to/TOML/);
     [app]
     name = "App::ExampleApp"
     exec = "exampleapp"
     display = "Example App"
     TOML
-    my $cfg = App::Ariza::Config.load($dir);
-    rm-rf($dir);
-    $cfg;
+	my $cfg = App::Ariza::Config.load($dir);
+	rm-rf($dir);
+	$cfg;
 }
 
 my $CFG = config();
@@ -46,259 +45,262 @@ my $CFG = config();
 #| The context every golden file was rendered from. Fixed inputs, so a
 #| diff is always a change in the templates and never in the fixture.
 sub ctx(Str $slug --> Hash) {
-    App::Ariza::Launcher.context(
-        :config($CFG), :$slug,
-        :target($SITE ~ '/bin/exampleapp.raku'),
-        :app-version<9.9.9>,
-        :notcurses-rel($NOTCURSES),
-        :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
-    )
+	App::Ariza::Launcher.context(
+		:config($CFG), :$slug,
+		:target($SITE ~ '/bin/exampleapp.raku'),
+		:app-version<9.9.9>,
+		:notcurses-rel($NOTCURSES),
+		:sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:$slug)),
+	)
 }
 
+# Beside this file rather than under checkout-root(): `zef install` runs
+# the suite against a staging repository, where the library has no
+# checkout to report but the test tree is still right here.
 sub golden-path(Str $slug, Str $suffix --> IO::Path) {
-    checkout-root().add('t/golden').add("launcher-$slug$suffix")
+	$*PROGRAM.parent.add('golden').add("launcher-$slug$suffix")
 }
 
 subtest 'each platform family gets the scripts it can run', {
-    plan 5;
-    is App::Ariza::Launcher.scripts-for('macos-arm64').map(*.<suffix>).List, ('',),
-        'macOS gets one bare POSIX launcher';
-    is App::Ariza::Launcher.scripts-for('linux-x86_64-glibc').map(*.<template>).List,
-        ('launcher-posix.sh.j2',), 'Linux gets the same template';
-    is App::Ariza::Launcher.scripts-for('windows-x86_64').map(*.<suffix>).List,
-        ('.ps1', '.cmd', '.ariza'),
-        'Windows gets both script twins and the compiled launcher\'s sidecar';
-    is App::Ariza::Launcher.scripts-for('macos-arm64')[0]<mode>, 0o755,
-        'and the POSIX one is executable';
+	plan 5;
+	is App::Ariza::Launcher.scripts-for('macos-arm64').map(*.<suffix>).List, ('',),
+		'macOS gets one bare POSIX launcher';
+	is App::Ariza::Launcher.scripts-for('linux-x86_64-glibc').map(*.<template>).List,
+		('launcher-posix.sh.j2',), 'Linux gets the same template';
+	is App::Ariza::Launcher.scripts-for('windows-x86_64').map(*.<suffix>).List,
+		('.ps1', '.cmd', '.ariza'),
+		'Windows gets both script twins and the compiled launcher\'s sidecar';
+	is App::Ariza::Launcher.scripts-for('macos-arm64')[0]<mode>, 0o755,
+		'and the POSIX one is executable';
 
-    throws-like { App::Ariza::Launcher.scripts-for('plan9-mips') }, Exception,
-        message => /'no launcher template'/, 'an unknown family is named';
+	throws-like { App::Ariza::Launcher.scripts-for('plan9-mips') }, Exception,
+		message => /'no launcher template'/, 'an unknown family is named';
 };
 
 subtest 'nothing absolute, and nothing about this machine, gets baked in', {
-    plan 6;
-    for SLUGS -> $slug {
-        my %c = ctx($slug);
-        my @paths = %c<target>, %c<sqlcipher_lib>, %c<sqlcipher_dir>;
-        nok @paths.first(*.starts-with('/')),
-            "$slug: every path in the context is bundle-relative";
-        nok @paths.first(*.contains($*HOME.absolute)),
-            "$slug: and none of them mentions the machine that built it";
-    }
+	plan 6;
+	for SLUGS -> $slug {
+		my %c = ctx($slug);
+		my @paths = %c<target>, %c<sqlcipher_lib>, %c<sqlcipher_dir>;
+		nok @paths.first(*.starts-with('/')),
+			"$slug: every path in the context is bundle-relative";
+		nok @paths.first(*.contains($*HOME.absolute)),
+			"$slug: and none of them mentions the machine that built it";
+	}
 };
 
 subtest 'the rendered launchers match their golden files', {
-    plan 4;
+	plan 4;
 
-    # Set ARIZA_REGENERATE_GOLDEN=1 to rewrite these after an
-    # intentional template change; read the diff before you commit it.
-    my $regenerate = ?%*ENV<ARIZA_REGENERATE_GOLDEN>;
+	# Set ARIZA_REGENERATE_GOLDEN=1 to rewrite these after an
+	# intentional template change; read the diff before you commit it.
+	my $regenerate = ?%*ENV<ARIZA_REGENERATE_GOLDEN>;
 
-    for SLUGS -> $slug {
-        my @rendered = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
-            %( suffix => %s<suffix> || '.sh',
-               text   => App::Ariza::Launcher.render(:template(%s<template>), |ctx($slug)) )
-        });
+	for SLUGS -> $slug {
+		my @rendered = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
+			%( suffix => %s<suffix> || '.sh',
+			   text   => App::Ariza::Launcher.render(:template(%s<template>), |ctx($slug)) )
+		});
 
-        for @rendered -> %r {
-            my $golden = golden-path($slug, %r<suffix>);
-            ensure-dir($golden.parent);
-            $golden.spurt(%r<text>) if $regenerate || !$golden.f;
-        }
+		for @rendered -> %r {
+			my $golden = golden-path($slug, %r<suffix>);
+			ensure-dir($golden.parent);
+			$golden.spurt(%r<text>) if $regenerate || !$golden.f;
+		}
 
-        # Read as bytes: IO::Handle normalises CRLF to LF in text mode,
-        # so a text slurp would silently agree with an LF-only Windows
-        # launcher — the one thing the golden file is there to catch.
-        my $joined = @rendered.map({ .<text> }).join("\n----\n");
-        my $expected = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
-            golden-path($slug, %s<suffix> || '.sh').slurp(:bin).decode('utf8')
-        }).join("\n----\n");
+		# Read as bytes: IO::Handle normalises CRLF to LF in text mode,
+		# so a text slurp would silently agree with an LF-only Windows
+		# launcher — the one thing the golden file is there to catch.
+		my $joined = @rendered.map({ .<text> }).join("\n----\n");
+		my $expected = App::Ariza::Launcher.scripts-for($slug).map(-> %s {
+			golden-path($slug, %s<suffix> || '.sh').slurp(:bin).decode('utf8')
+		}).join("\n----\n");
 
-        my $matched = is $joined, $expected,
-            "$slug renders byte-for-byte as committed";
-        # A difference that is nothing but line endings is git, not
-        # ariza: this distribution ships .gitattributes with `* -text` so
-        # that no checkout rewrites these files, and a working tree
-        # created before that existed still has the converted bytes.
-        diag 'the only difference is CRLF — the golden file was converted'
-           ~ ' on checkout; see .gitattributes'
-            if !$matched && $expected.subst("\r\n", "\n", :g) eq $joined;
-    }
+		my $matched = is $joined, $expected,
+			"$slug renders byte-for-byte as committed";
+		# A difference that is nothing but line endings is git, not
+		# ariza: this distribution ships .gitattributes with `* -text` so
+		# that no checkout rewrites these files, and a working tree
+		# created before that existed still has the converted bytes.
+		diag 'the only difference is CRLF — the golden file was converted'
+		   ~ ' on checkout; see .gitattributes'
+			if !$matched && $expected.subst("\r\n", "\n", :g) eq $joined;
+	}
 
-    ok golden-path('windows-x86_64', '.cmd').f,
-       'and the Windows twins are committed even though nothing here runs them';
+	ok golden-path('windows-x86_64', '.cmd').f,
+	   'and the Windows twins are committed even though nothing here runs them';
 };
 
 subtest 'the POSIX launcher does what a bundle needs', {
-    plan 9;
-    my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
-                                         |ctx('macos-arm64'));
+	plan 9;
+	my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+										 |ctx('macos-arm64'));
 
-    ok $sh.starts-with("#!/bin/sh\n"), 'it is a POSIX shell script';
+	ok $sh.starts-with("#!/bin/sh\n"), 'it is a POSIX shell script';
 
-    # readlink -f is a GNU extension: absent on macOS before Monterey and
-    # on the BSDs. A launcher that only resolves symlinks on Linux breaks
-    # the first time someone links it into ~/bin. (Checked against code,
-    # not comments — the template explains why it does not use it.)
-    my @code = $sh.lines.grep({ !.trim.starts-with('#') });
-    nok @code.first(/'readlink -f'/), 'no readlink -f in the code';
-    ok $sh.contains('while [ -L "$ariza_target" ]'),
-        'symlinks are chased with a loop over plain readlink';
+	# readlink -f is a GNU extension: absent on macOS before Monterey and
+	# on the BSDs. A launcher that only resolves symlinks on Linux breaks
+	# the first time someone links it into ~/bin. (Checked against code,
+	# not comments — the template explains why it does not use it.)
+	my @code = $sh.lines.grep({ !.trim.starts-with('#') });
+	nok @code.first(/'readlink -f'/), 'no readlink -f in the code';
+	ok $sh.contains('while [ -L "$ariza_target" ]'),
+		'symlinks are chased with a loop over plain readlink';
 
-    ok $sh.contains("RAKULIB=\"inst#\$BUNDLE_ROOT/$SITE\""),
-        'the bundle is the only module repository';
-    ok $sh.contains('unset PERL6LIB'),
-        "and the user's PERL6LIB cannot get in front of it";
-    ok $sh.contains('NOTCURSES_NATIVE_DATA_DIR="$BUNDLE_ROOT/native"'),
-        'notcurses is found inside the bundle';
-    nok @code.first(/'NOTCURSES_NATIVE_LIB_DIR'/),
-        'never via LIB_DIR, which suppresses the TERMINFO_DIRS setup';
+	ok $sh.contains("RAKULIB=\"inst#\$BUNDLE_ROOT/$SITE\""),
+		'the bundle is the only module repository';
+	ok $sh.contains('unset PERL6LIB'),
+		"and the user's PERL6LIB cannot get in front of it";
+	ok $sh.contains('NOTCURSES_NATIVE_DATA_DIR="$BUNDLE_ROOT/native"'),
+		'notcurses is found inside the bundle';
+	nok @code.first(/'NOTCURSES_NATIVE_LIB_DIR'/),
+		'never via LIB_DIR, which suppresses the TERMINFO_DIRS setup';
 
-    ok $sh.contains("exec \"\$ARIZA_RAKU\" \"\$BUNDLE_ROOT/$SITE/bin/exampleapp.raku\" \"\$\@\""),
-        'and it execs the bundled interpreter on the installed script';
+	ok $sh.contains("exec \"\$ARIZA_RAKU\" \"\$BUNDLE_ROOT/$SITE/bin/exampleapp.raku\" \"\$\@\""),
+		'and it execs the bundled interpreter on the installed script';
 
-    # A quoting slip here is a bundle that only works from a path with no
-    # spaces, which is most of macOS and all of Windows. Every expansion
-    # of $BUNDLE_ROOT opens a double-quoted string, directly or after an
-    # `inst#` prefix inside one.
-    is +$sh.comb(/ '$BUNDLE_ROOT' /), +$sh.comb(/ <["\#]> '$BUNDLE_ROOT' /),
-        'every expansion of $BUNDLE_ROOT is inside double quotes';
+	# A quoting slip here is a bundle that only works from a path with no
+	# spaces, which is most of macOS and all of Windows. Every expansion
+	# of $BUNDLE_ROOT opens a double-quoted string, directly or after an
+	# `inst#` prefix inside one.
+	is +$sh.comb(/ '$BUNDLE_ROOT' /), +$sh.comb(/ <["\#]> '$BUNDLE_ROOT' /),
+		'every expansion of $BUNDLE_ROOT is inside double quotes';
 };
 
 subtest 'macOS and Linux differ in exactly one place', {
-    plan 5;
-    my $mac   = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
-                                            |ctx('macos-arm64'));
-    my $linux = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
-                                            |ctx('linux-x86_64-glibc'));
+	plan 5;
+	my $mac   = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+											|ctx('macos-arm64'));
+	my $linux = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+											|ctx('linux-x86_64-glibc'));
 
-    # macOS stages SQLCipher into rakudo/lib, which the interpreter's own
-    # LC_RPATH already covers; Linux has no such implicit path.
-    nok $mac.contains('LD_LIBRARY_PATH'), 'macOS needs no library path';
-    nok $mac.contains('DBIISH_SQLCIPHER_LIB'), 'and no DBIish hint';
+	# macOS stages SQLCipher into rakudo/lib, which the interpreter's own
+	# LC_RPATH already covers; Linux has no such implicit path.
+	nok $mac.contains('LD_LIBRARY_PATH'), 'macOS needs no library path';
+	nok $mac.contains('DBIISH_SQLCIPHER_LIB'), 'and no DBIish hint';
 
-    ok $linux.contains('LD_LIBRARY_PATH="$BUNDLE_ROOT/native/sqlcipher${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'),
-        'Linux prepends the bundle to LD_LIBRARY_PATH, keeping what was there';
-    ok $linux.contains('DBIISH_SQLCIPHER_LIB="$BUNDLE_ROOT/native/sqlcipher/libsqlcipher.so.0"'),
-        'and points DBIish straight at the library';
+	ok $linux.contains('LD_LIBRARY_PATH="$BUNDLE_ROOT/native/sqlcipher${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'),
+		'Linux prepends the bundle to LD_LIBRARY_PATH, keeping what was there';
+	ok $linux.contains('DBIISH_SQLCIPHER_LIB="$BUNDLE_ROOT/native/sqlcipher/libsqlcipher.so.0"'),
+		'and points DBIish straight at the library';
 
-    my $none = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
-        |App::Ariza::Launcher.context(:config($CFG), :slug<linux-x86_64-glibc>,
-                                      :target($SITE ~ '/bin/exampleapp.raku')));
-    nok $none.contains('DBIISH_SQLCIPHER_LIB'),
-        'an app that does not use SQLCipher gets no SQLCipher wiring at all';
+	my $none = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+		|App::Ariza::Launcher.context(:config($CFG), :slug<linux-x86_64-glibc>,
+									  :target($SITE ~ '/bin/exampleapp.raku')));
+	nok $none.contains('DBIISH_SQLCIPHER_LIB'),
+		'an app that does not use SQLCipher gets no SQLCipher wiring at all';
 };
 
 subtest 'the POSIX launcher is syntactically valid, and writes where it should', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<macos-arm64>, :target($SITE ~ '/bin/exampleapp.raku'),
-        :app-version<9.9.9>,
-        :sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
-    my @written = %w<written>.list;
+	my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+		:slug<macos-arm64>, :target($SITE ~ '/bin/exampleapp.raku'),
+		:app-version<9.9.9>,
+		:sqlcipher-rel(App::Ariza::Native.sqlcipher-rel(:slug<macos-arm64>)));
+	my @written = %w<written>.list;
 
-    is +@written, 1, 'one launcher for macOS';
-    # `.relative` speaks the native separator, so Windows says
-    # `bin\exampleapp` for a launcher written to exactly the right place.
-    # The bundle names this member `bin/<exec>` — that is the archive
-    # path a manifest records and a POSIX sh consumes — so the comparison
-    # is made in the bundle's spelling, not the build machine's.
-    is @written[0].relative($dir).subst('\\', '/', :g), 'bin/exampleapp',
-        'at bin/<exec>';
-    # POSIX permission bits, on a platform that has them: a downloaded
-    # launcher that is not executable is a support ticket. Windows has no
-    # such bit to set, so there is nothing to assert there beyond the
-    # file existing, which the line above already did.
-    if $*DISTRO.is-win {
-        ok @written[0].f, 'the file is written (Windows has no executable bit)';
-    }
-    else {
-        ok @written[0].x, 'and executable — a launcher that is not is a support ticket';
-    }
+	is +@written, 1, 'one launcher for macOS';
+	# `.relative` speaks the native separator, so Windows says
+	# `bin\exampleapp` for a launcher written to exactly the right place.
+	# The bundle names this member `bin/<exec>` — that is the archive
+	# path a manifest records and a POSIX sh consumes — so the comparison
+	# is made in the bundle's spelling, not the build machine's.
+	is @written[0].relative($dir).subst('\\', '/', :g), 'bin/exampleapp',
+		'at bin/<exec>';
+	# POSIX permission bits, on a platform that has them: a downloaded
+	# launcher that is not executable is a support ticket. Windows has no
+	# such bit to set, so there is nothing to assert there beyond the
+	# file existing, which the line above already did.
+	if $*DISTRO.is-win {
+		ok @written[0].f, 'the file is written (Windows has no executable bit)';
+	}
+	else {
+		ok @written[0].x, 'and executable — a launcher that is not is a support ticket';
+	}
 
-    if have-command('sh') {
-        my ($code, $, $err) = try-run(['sh', '-n', @written[0].absolute]);
-        is $code, 0, 'sh -n accepts it' or diag $err;
-    }
-    else {
-        # No POSIX shell to ask; the golden comparison above still ran.
-        skip 'no sh on this machine to syntax-check with', 1;
-    }
+	if have-command('sh') {
+		my ($code, $, $err) = try-run(['sh', '-n', @written[0].absolute]);
+		is $code, 0, 'sh -n accepts it' or diag $err;
+	}
+	else {
+		# No POSIX shell to ask; the golden comparison above still ran.
+		skip 'no sh on this machine to syntax-check with', 1;
+	}
 
-    # `:stage-runner` stands in for App::Ariza::Runner, which is the one
-    # thing in `write` that would otherwise reach the network. Its
-    # behaviour has its own file; what is asserted here is the wiring.
-    my %win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
-        :stage-runner(-> |c { %() }));
-    is %win<written>.map(*.basename).List,
-        ('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza'),
-        'and Windows gets both twins plus the runner\'s sidecar';
+	# `:stage-runner` stands in for App::Ariza::Runner, which is the one
+	# thing in `write` that would otherwise reach the network. Its
+	# behaviour has its own file; what is asserted here is the wiring.
+	my %win = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+		:slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
+		:stage-runner(-> |c { %() }));
+	is %win<written>.map(*.basename).List,
+		('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza'),
+		'and Windows gets both twins plus the runner\'s sidecar';
 };
 
 subtest 'Windows output is CRLF and preserves native PATH priority', {
-    plan 6;
-    my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>,
-                                          |ctx('windows-x86_64'));
-    # cmd.exe mis-parses an LF-only batch file in ways that look nothing
-    # like a line-ending problem.
-    ok $cmd.contains("\r\n"), 'the batch file has CRLF line endings';
-    nok $cmd.subst("\r\n", '', :g).contains("\n"), 'and no bare LF anywhere';
+	plan 6;
+	my $cmd = App::Ariza::Launcher.render(:template<launcher-windows.cmd.j2>,
+										  |ctx('windows-x86_64'));
+	# cmd.exe mis-parses an LF-only batch file in ways that look nothing
+	# like a line-ending problem.
+	ok $cmd.contains("\r\n"), 'the batch file has CRLF line endings';
+	nok $cmd.subst("\r\n", '', :g).contains("\n"), 'and no bare LF anywhere';
 
-    # The sidecar is read by a C program that handles either, so this is
-    # consistency rather than necessity — one file in bin/ disagreeing
-    # with the others about line endings is a difference nobody should
-    # have to think about.
-    my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
-                                           |ctx('windows-x86_64'));
-    nok $side.subst("\r\n", '', :g).contains("\n"),
-        'and the runner\'s sidecar agrees with them';
+	# The sidecar is read by a C program that handles either, so this is
+	# consistency rather than necessity — one file in bin/ disagreeing
+	# with the others about line endings is a difference nobody should
+	# have to think about.
+	my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+										   |ctx('windows-x86_64'));
+	nok $side.subst("\r\n", '', :g).contains("\n"),
+		'and the runner\'s sidecar agrees with them';
 
-    # Each statement prepends immediately. SQLCipher is rendered first
-    # so the final value is Notcurses;SQLCipher;system PATH: a same-named
-    # transitive DLL must come from the closure audited with Notcurses.
-    ok $cmd.index("set \"PATH=%BUNDLE_ROOT%\\native\\sqlcipher;%PATH%\"")
-       < $cmd.index("set \"PATH=%BUNDLE_ROOT%\\$NOTCURSES-WIN;%PATH%\""),
-        'the cmd operations produce Notcurses before SQLCipher on PATH';
+	# Each statement prepends immediately. SQLCipher is rendered first
+	# so the final value is Notcurses;SQLCipher;system PATH: a same-named
+	# transitive DLL must come from the closure audited with Notcurses.
+	ok $cmd.index("set \"PATH=%BUNDLE_ROOT%\\native\\sqlcipher;%PATH%\"")
+	   < $cmd.index("set \"PATH=%BUNDLE_ROOT%\\$NOTCURSES-WIN;%PATH%\""),
+		'the cmd operations produce Notcurses before SQLCipher on PATH';
 
-    my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
-                                          |ctx('windows-x86_64'));
-    ok $ps1.index("Join-Path \$BundleRoot 'native\\sqlcipher'")
-       < $ps1.index("Join-Path \$BundleRoot '$NOTCURSES-WIN'"),
-        'and PowerShell applies the same effective ordering';
+	my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
+										  |ctx('windows-x86_64'));
+	ok $ps1.index("Join-Path \$BundleRoot 'native\\sqlcipher'")
+	   < $ps1.index("Join-Path \$BundleRoot '$NOTCURSES-WIN'"),
+		'and PowerShell applies the same effective ordering';
 
-    my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
-                                         |ctx('macos-arm64'));
-    nok $sh.contains("\r"), 'while the POSIX script has none';
+	my $sh = App::Ariza::Launcher.render(:template<launcher-posix.sh.j2>,
+										 |ctx('macos-arm64'));
+	nok $sh.contains("\r"), 'while the POSIX script has none';
 };
 
 subtest 'the PowerShell launcher is valid in Windows PowerShell 5.1', {
-    plan 3;
-    my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
-                                          |ctx('windows-x86_64'));
-    my $normalized = $ps1.subst("\r\n", "\n", :g);
+	plan 3;
+	my $ps1 = App::Ariza::Launcher.render(:template<launcher-windows.ps1.j2>,
+										  |ctx('windows-x86_64'));
+	my $normalized = $ps1.subst("\r\n", "\n", :g);
 
-    nok $ps1.contains(' ? '),
-        'it does not use the PowerShell 7 ternary operator';
-    ok $normalized.contains(q:to/FALLBACK/.trim),
+	nok $ps1.contains(' ? '),
+		'it does not use the PowerShell 7 ternary operator';
+	ok $normalized.contains(q:to/FALLBACK/.trim),
 $ArizaStateRoot = $env:LOCALAPPDATA
 if (-not $ArizaStateRoot) {
     $ArizaStateRoot = $env:TEMP
 }
 $ArizaStateDir = Join-Path $ArizaStateRoot 'exampleapp'
 FALLBACK
-        'the state directory falls back to TEMP with PowerShell 5.1 syntax';
+		'the state directory falls back to TEMP with PowerShell 5.1 syntax';
 
-    if $*DISTRO.is-win {
-        my $dir = tmp-dir;
-        LEAVE { rm-rf($dir) }
-        my $path = $dir.add('launcher.ps1');
-        $path.spurt($ps1);
-        my %env = child-env(ARIZA_LAUNCHER_PARSE_PATH => $path.absolute.Str);
-        my $parse = q:to/POWERSHELL/.trim;
+	if $*DISTRO.is-win {
+		my $dir = tmp-dir;
+		LEAVE { rm-rf($dir) }
+		my $path = $dir.add('launcher.ps1');
+		$path.spurt($ps1);
+		my %env = child-env(ARIZA_LAUNCHER_PARSE_PATH => $path.absolute.Str);
+		my $parse = q:to/POWERSHELL/.trim;
 $tokens = $null
 $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -311,105 +313,105 @@ if ($errors.Count -ne 0) {
     exit 1
 }
 POWERSHELL
-        my ($code, $, $err) = try-run(
-            [
-                'powershell.exe', '-NoProfile', '-NonInteractive',
-                '-Command', $parse,
-            ],
-            :%env,
-        );
-        is $code, 0, 'Windows PowerShell 5.1 parses it without execution'
-            or diag $err;
-    }
-    else {
-        skip 'Windows PowerShell 5.1 parser check only runs on Windows', 1;
-    }
+		my ($code, $, $err) = try-run(
+			[
+				'powershell.exe', '-NoProfile', '-NonInteractive',
+				'-Command', $parse,
+			],
+			:%env,
+		);
+		is $code, 0, 'Windows PowerShell 5.1 parses it without execution'
+			or diag $err;
+	}
+	else {
+		skip 'Windows PowerShell 5.1 parser check only runs on Windows', 1;
+	}
 };
 
 #| The directive lines of a rendered sidecar, in order, with comments
 #| and blanks dropped — the same reading runner/src/config.c does.
 sub directives(Str $text --> List) {
-    $text.subst("\r\n", "\n", :g).lines
-         .map(*.trim)
-         .grep({ .chars && !.starts-with('#') })
-         .List
+	$text.subst("\r\n", "\n", :g).lines
+		 .map(*.trim)
+		 .grep({ .chars && !.starts-with('#') })
+		 .List
 }
 
 subtest 'the sidecar tells the compiled launcher what it cannot know', {
-    plan 9;
-    my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
-                                           |ctx('windows-x86_64'));
+	plan 9;
+	my $side = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+										   |ctx('windows-x86_64'));
 
-    # The whole file, in order, because order is the contract: the
-    # runner applies these top to bottom and knows nothing about what
-    # any of them mean. This is the same environment the .cmd launcher
-    # sets, expressed as instructions rather than as batch.
-    is directives($side).List, (
-        "target $SITE-WIN\\bin\\exampleapp.raku",
-        'app-exec exampleapp',
-        'app-display Example App',
-        "set RAKULIB=inst#\{root}\\$SITE-WIN",
-        'unset PERL6LIB',
-        'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
-        'prepend-path {root}\native\sqlcipher',
-        'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
-        'set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll',
-    ), 'every directive, in the order the runner will apply them';
+	# The whole file, in order, because order is the contract: the
+	# runner applies these top to bottom and knows nothing about what
+	# any of them mean. This is the same environment the .cmd launcher
+	# sets, expressed as instructions rather than as batch.
+	is directives($side).List, (
+		"target $SITE-WIN\\bin\\exampleapp.raku",
+		'app-exec exampleapp',
+		'app-display Example App',
+		"set RAKULIB=inst#\{root}\\$SITE-WIN",
+		'unset PERL6LIB',
+		'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
+		'prepend-path {root}\native\sqlcipher',
+		'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
+		'set DBIISH_SQLCIPHER_LIB={root}\native\sqlcipher\sqlcipher.dll',
+	), 'every directive, in the order the runner will apply them';
 
-    # PERL6LIB is *removed*, never set to empty: a set-but-empty one is
-    # not "unset" to Rakudo, which prints a deprecation warning across
-    # the whole run because of it.
-    ok directives($side).first('unset PERL6LIB'),
-        'PERL6LIB is unset rather than emptied';
-    nok directives($side).first(*.starts-with('set PERL6LIB')),
-        'and never assigned, because a set-but-empty one is not unset';
+	# PERL6LIB is *removed*, never set to empty: a set-but-empty one is
+	# not "unset" to Rakudo, which prints a deprecation warning across
+	# the whole run because of it.
+	ok directives($side).first('unset PERL6LIB'),
+		'PERL6LIB is unset rather than emptied';
+	nok directives($side).first(*.starts-with('set PERL6LIB')),
+		'and never assigned, because a set-but-empty one is not unset';
 
-    nok directives($side).first(*.contains(':\\')),
-        'nothing absolute: {root} is resolved by the runner at launch';
-    ok $side.starts-with('#'),
-        'it opens with a comment saying what it is and who reads it';
-    ok $side.contains('#   set NAME=VALUE'),
-        'and documents the grammar it is written in, for whoever opens it';
+	nok directives($side).first(*.contains(':\\')),
+		'nothing absolute: {root} is resolved by the runner at launch';
+	ok $side.starts-with('#'),
+		'it opens with a comment saying what it is and who reads it';
+	ok $side.contains('#   set NAME=VALUE'),
+		'and documents the grammar it is written in, for whoever opens it';
 
-    # An app with no SQLCipher contributes no SQLCipher lines. Nothing
-    # about the runner changes: it is the renderer that knows this
-    # bundle has a DLL to find, which is the point of the directive
-    # design — a future recipe adds lines here and no new executable.
-    my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
-        |App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
-                                      :target($SITE ~ '/bin/exampleapp.raku'),
-                                      :notcurses-rel($NOTCURSES)));
-    is directives($none).List, (
-        "target $SITE-WIN\\bin\\exampleapp.raku",
-        'app-exec exampleapp',
-        'app-display Example App',
-        "set RAKULIB=inst#\{root}\\$SITE-WIN",
-        'unset PERL6LIB',
-        'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
-        'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
-    ), 'an app without SQLCipher still puts its staged Notcurses closure on PATH';
+	# An app with no SQLCipher contributes no SQLCipher lines. Nothing
+	# about the runner changes: it is the renderer that knows this
+	# bundle has a DLL to find, which is the point of the directive
+	# design — a future recipe adds lines here and no new executable.
+	my $none = App::Ariza::Launcher.render(:template<launcher-windows.ariza.j2>,
+		|App::Ariza::Launcher.context(:config($CFG), :slug<windows-x86_64>,
+									  :target($SITE ~ '/bin/exampleapp.raku'),
+									  :notcurses-rel($NOTCURSES)));
+	is directives($none).List, (
+		"target $SITE-WIN\\bin\\exampleapp.raku",
+		'app-exec exampleapp',
+		'app-display Example App',
+		"set RAKULIB=inst#\{root}\\$SITE-WIN",
+		'unset PERL6LIB',
+		'set NOTCURSES_NATIVE_DATA_DIR={root}\native',
+		'prepend-path {root}' ~ '\\' ~ $NOTCURSES-WIN,
+	), 'an app without SQLCipher still puts its staged Notcurses closure on PATH';
 
-    # The runner is named after the exec, beside the sidecar, so the
-    # executable can find its own configuration from its own path.
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
-        :slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
-        :stage-runner(-> :$bundle-dir, :$slug, :$exec {
-            my $exe = $bundle-dir.IO.add('bin').add("$exec.exe");
-            $exe.spurt('MZ');
-            %( path => $exe, artifact => "ariza-runner-windows-x86_64.exe",
-               tag => 'runner-v1', url => 'https://example.invalid/runner.exe',
-               sha256 => 'a' x 64 );
-        }));
-    is %w<written>.map(*.basename).List,
-        ('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza', 'exampleapp.exe'),
-        'a staged runner is written into bin/ beside its sidecar and reported';
+	# The runner is named after the exec, beside the sidecar, so the
+	# executable can find its own configuration from its own path.
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my %w = App::Ariza::Launcher.write(:bundle-dir($dir), :config($CFG),
+		:slug<windows-x86_64>, :target($SITE ~ '/bin/exampleapp.raku'),
+		:stage-runner(-> :$bundle-dir, :$slug, :$exec {
+			my $exe = $bundle-dir.IO.add('bin').add("$exec.exe");
+			$exe.spurt('MZ');
+			%( path => $exe, artifact => "ariza-runner-windows-x86_64.exe",
+			   tag => 'runner-v1', url => 'https://example.invalid/runner.exe',
+			   sha256 => 'a' x 64 );
+		}));
+	is %w<written>.map(*.basename).List,
+		('exampleapp.ps1', 'exampleapp.cmd', 'exampleapp.ariza', 'exampleapp.exe'),
+		'a staged runner is written into bin/ beside its sidecar and reported';
 
-    # What the runner step found is carried out of `write` rather than
-    # dropped: it is the only place in a build that knows the URL the
-    # executable came from and the digest it was checked against, and
-    # the manifest records both.
-    is %w<runner><sha256>, 'a' x 64,
-        'and its provenance comes back with it, for the manifest';
+	# What the runner step found is carried out of `write` rather than
+	# dropped: it is the only place in a build that knows the URL the
+	# executable came from and the digest it was checked against, and
+	# the manifest records both.
+	is %w<runner><sha256>, 'a' x 64,
+		'and its provenance comes back with it, for the manifest';
 };

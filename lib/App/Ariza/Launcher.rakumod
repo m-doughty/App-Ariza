@@ -22,25 +22,25 @@ my constant TEMPLATE-PREFIX = 'templates';
 # executable is not is a much easier thing to reason about than the
 # reverse.
 my constant %SCRIPTS =
-    macos => (
-        { template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
-    ),
-    linux => (
-        { template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
-    ),
-    windows => (
-        { template => 'launcher-windows.ps1.j2',   suffix => '.ps1',   mode => 0o644 },
-        { template => 'launcher-windows.cmd.j2',   suffix => '.cmd',   mode => 0o644 },
-        { template => 'launcher-windows.ariza.j2', suffix => '.ariza', mode => 0o644 },
-    ),
+	macos => (
+		{ template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
+	),
+	linux => (
+		{ template => 'launcher-posix.sh.j2',      suffix => '',       mode => 0o755 },
+	),
+	windows => (
+		{ template => 'launcher-windows.ps1.j2',   suffix => '.ps1',   mode => 0o644 },
+		{ template => 'launcher-windows.cmd.j2',   suffix => '.cmd',   mode => 0o644 },
+		{ template => 'launcher-windows.ariza.j2', suffix => '.ariza', mode => 0o644 },
+	),
 ;
 
 #| The launcher files a slug's bundle gets rendered: C<template>,
 #| C<suffix> and C<mode>, in write order.
 method scripts-for(Str:D $slug --> List) {
-    my $family = $slug.split('-').head;
-    (%SCRIPTS{$family}
-        // die "ariza: no launcher template for platform '$slug'").List
+	my $family = $slug.split('-').head;
+	(%SCRIPTS{$family}
+		// die "ariza: no launcher template for platform '$slug'").List
 }
 
 #| The Jinja2 context a launcher template renders against.
@@ -55,52 +55,52 @@ method scripts-for(Str:D $slug --> List) {
 #| a launcher that names a different directory than the one the bundle
 #| was installed into is a bundle that finds no modules at all.
 method context(
-    App::Ariza::Config:D :$config!,
-    Str:D :$slug!,
-    Str:D :$target!,
-    Str:D :$site = App::Ariza::Site.site-rel('.'),
-    Str :$app-version = '',
-    Str :$notcurses-rel,
-    Str :$sqlcipher-rel,
-    --> Hash
+	App::Ariza::Config:D :$config!,
+	Str:D :$slug!,
+	Str:D :$target!,
+	Str:D :$site = App::Ariza::Site.site-rel('.'),
+	Str :$app-version = '',
+	Str :$notcurses-rel,
+	Str :$sqlcipher-rel,
+	--> Hash
 ) {
-    my $family = $slug.split('-').head;
-    my $sql-dir = $sqlcipher-rel.defined
-        ?? $sqlcipher-rel.subst(/ '/' <-[/]>+ $ /, '')
-        !! Str;
-    (
-        app_exec    => $config.app-exec,
-        app_display => $config.app-display,
-        app_name    => $config.app-name,
-        app_version => $app-version,
-        updates_enabled => $config.updates-enabled,
-        platform    => $slug,
-        os          => $family,
-        target      => $target,
-        target_win  => $target.subst('/', '\\', :g),
-        site        => $site,
-        site_win    => $site.subst('/', '\\', :g),
-        notcurses   => $notcurses-rel.defined,
-        notcurses_dir     => $notcurses-rel // '',
-        notcurses_dir_win => ($notcurses-rel // '').subst('/', '\\', :g),
-        sqlcipher   => $sqlcipher-rel.defined,
-        sqlcipher_lib     => $sqlcipher-rel // '',
-        sqlcipher_dir     => $sql-dir // '',
-        sqlcipher_lib_win => ($sqlcipher-rel // '').subst('/', '\\', :g),
-        sqlcipher_dir_win => ($sql-dir // '').subst('/', '\\', :g),
-    ).Hash
+	my $family = $slug.split('-').head;
+	my $sql-dir = $sqlcipher-rel.defined
+		?? $sqlcipher-rel.subst(/ '/' <-[/]>+ $ /, '')
+		!! Str;
+	(
+		app_exec    => $config.app-exec,
+		app_display => $config.app-display,
+		app_name    => $config.app-name,
+		app_version => $app-version,
+		updates_enabled => $config.updates-enabled,
+		platform    => $slug,
+		os          => $family,
+		target      => $target,
+		target_win  => $target.subst('/', '\\', :g),
+		site        => $site,
+		site_win    => $site.subst('/', '\\', :g),
+		notcurses   => $notcurses-rel.defined,
+		notcurses_dir     => $notcurses-rel // '',
+		notcurses_dir_win => ($notcurses-rel // '').subst('/', '\\', :g),
+		sqlcipher   => $sqlcipher-rel.defined,
+		sqlcipher_lib     => $sqlcipher-rel // '',
+		sqlcipher_dir     => $sql-dir // '',
+		sqlcipher_lib_win => ($sqlcipher-rel // '').subst('/', '\\', :g),
+		sqlcipher_dir_win => ($sql-dir // '').subst('/', '\\', :g),
+	).Hash
 }
 
 #| Render one launcher template to a string. Line endings are normalised
 #| per family — LF for the POSIX script, CRLF for the Windows ones, since
 #| C<cmd.exe> mis-parses an LF-only batch file.
 method render(Str:D :$template!, *%ctx --> Str) {
-    my $source = resource("{TEMPLATE-PREFIX}/$template").slurp;
-    my $out = Template::Jinja2.new.from-string($source).render(|%ctx);
-    $out ~= "\n" unless $out.ends-with("\n");
-    $template.contains('windows')
-        ?? $out.subst("\r\n", "\n", :g).subst("\n", "\r\n", :g)
-        !! $out
+	my $source = resource("{TEMPLATE-PREFIX}/$template").slurp;
+	my $out = Template::Jinja2.new.from-string($source).render(|%ctx);
+	$out ~= "\n" unless $out.ends-with("\n");
+	$template.contains('windows')
+		?? $out.subst("\r\n", "\n", :g).subst("\n", "\r\n", :g)
+		!! $out
 }
 
 #| Write every launcher a slug's bundle needs into C<< <bundle>/bin >>,
@@ -117,44 +117,44 @@ method render(Str:D :$template!, *%ctx --> Str) {
 #| — and so the one platform that fetches anything here is as testable
 #| as the three that do not.
 method write(
-    IO() :$bundle-dir!,
-    App::Ariza::Config:D :$config!,
-    Str:D :$slug!,
-    Str:D :$target!,
-    Str:D :$site = App::Ariza::Site.site-rel($bundle-dir),
-    Str :$app-version = '',
-    Str :$notcurses-rel,
-    Str :$sqlcipher-rel,
-    :&stage-runner = -> |c { App::Ariza::Runner.stage(|c) },
-    --> Hash
+	IO() :$bundle-dir!,
+	App::Ariza::Config:D :$config!,
+	Str:D :$slug!,
+	Str:D :$target!,
+	Str:D :$site = App::Ariza::Site.site-rel($bundle-dir),
+	Str :$app-version = '',
+	Str :$notcurses-rel,
+	Str :$sqlcipher-rel,
+	:&stage-runner = -> |c { App::Ariza::Runner.stage(|c) },
+	--> Hash
 ) {
-    my %ctx = self.context(:$config, :$slug, :$target, :$site, :$app-version,
-                           :$notcurses-rel, :$sqlcipher-rel);
-    my $bin = ensure-dir($bundle-dir.add('bin'));
+	my %ctx = self.context(:$config, :$slug, :$target, :$site, :$app-version,
+						   :$notcurses-rel, :$sqlcipher-rel);
+	my $bin = ensure-dir($bundle-dir.add('bin'));
 
-    my @written;
-    for self.scripts-for($slug) -> %s {
-        my $path = $bin.add($config.app-exec ~ %s<suffix>);
-        $path.spurt(self.render(:template(%s<template>), |%ctx));
-        $path.chmod(%s<mode>);
-        @written.push($path);
-    }
+	my @written;
+	for self.scripts-for($slug) -> %s {
+		my $path = $bin.add($config.app-exec ~ %s<suffix>);
+		$path.spurt(self.render(:template(%s<template>), |%ctx));
+		$path.chmod(%s<mode>);
+		@written.push($path);
+	}
 
-    # Empty for every non-Windows platform, and for a Windows one built
-    # before the first runner release was pinned. Both are ordinary
-    # outcomes rather than failures, and both leave a bundle whose
-    # scripts do the whole job.
-    my %runner = stage-runner(:$bundle-dir, :$slug, :exec($config.app-exec));
-    die "ariza: update-enabled Windows bundles require updater-capable runner-v2+"
-      ~ " for '$slug'; refusing to ship script launchers that cannot"
-      ~ " authenticate an update handoff"
-        if $config.updates-enabled
-        && $slug.starts-with('windows-')
-        && (!%runner<path>.defined
-            || !App::Ariza::Runner.update-handoff-capable(%runner<tag>));
-    @written.push(%runner<path>) if %runner<path>.defined;
+	# Empty for every non-Windows platform, and for a Windows one built
+	# before the first runner release was pinned. Both are ordinary
+	# outcomes rather than failures, and both leave a bundle whose
+	# scripts do the whole job.
+	my %runner = stage-runner(:$bundle-dir, :$slug, :exec($config.app-exec));
+	die "ariza: update-enabled Windows bundles require updater-capable runner-v2+"
+	  ~ " for '$slug'; refusing to ship script launchers that cannot"
+	  ~ " authenticate an update handoff"
+		if $config.updates-enabled
+		&& $slug.starts-with('windows-')
+		&& (!%runner<path>.defined
+			|| !App::Ariza::Runner.update-handoff-capable(%runner<tag>));
+	@written.push(%runner<path>) if %runner<path>.defined;
 
-    %( written => @written.List, runner => %runner )
+	%( written => @written.List, runner => %runner )
 }
 
 =begin pod

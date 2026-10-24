@@ -18,10 +18,10 @@ our constant INDEX-URL = 'https://rakudo.org/dl/rakudo';
 # it). An absent entry produces a die naming what *is* available, which
 # is far better than a 404 from a URL assembled out of hope.
 my constant %INDEX-PLATFORM =
-    'macos-arm64'        => { platform => 'macos', arch => 'arm64'  },
-    'macos-x86_64'       => { platform => 'macos', arch => 'x86_64' },
-    'linux-x86_64-glibc' => { platform => 'linux', arch => 'x86_64' },
-    'windows-x86_64'     => { platform => 'win',   arch => 'x86_64' },
+	'macos-arm64'        => { platform => 'macos', arch => 'arm64'  },
+	'macos-x86_64'       => { platform => 'macos', arch => 'x86_64' },
+	'linux-x86_64-glibc' => { platform => 'linux', arch => 'x86_64' },
+	'windows-x86_64'     => { platform => 'win',   arch => 'x86_64' },
 ;
 
 #| Every slug this module can fetch a runtime for, sorted.
@@ -30,41 +30,41 @@ method fetchable-slugs(--> List) { %INDEX-PLATFORM.keys.sort.List }
 #| The C<(platform, arch)> index coordinates for a slug, or a die naming
 #| every slug that has coordinates.
 method index-platform(Str:D $slug --> Hash) {
-    %INDEX-PLATFORM{$slug}
-        // die "ariza: rakudo.org publishes no binary build for '$slug'"
-             ~ " (bundleable platforms: {self.fetchable-slugs.join(', ')})";
+	%INDEX-PLATFORM{$slug}
+		// die "ariza: rakudo.org publishes no binary build for '$slug'"
+			 ~ " (bundleable platforms: {self.fetchable-slugs.join(', ')})";
 }
 
 #| The download cache root: C<$XDG_CACHE_HOME/ariza/rakudo>, falling back
 #| to C<~/.cache> as the XDG spec requires.
 method cache-dir(--> IO::Path) {
-    my $base = %*ENV<XDG_CACHE_HOME> || $*HOME.add('.cache').absolute;
-    $base.IO.add('ariza').add('rakudo')
+	my $base = %*ENV<XDG_CACHE_HOME> || $*HOME.add('.cache').absolute;
+	$base.IO.add('ariza').add('rakudo')
 }
 
 #| Fetch and parse the release index. C<:&fetch> replaces the HTTP call
 #| for tests; C<:$url> replaces the endpoint.
 method fetch-index(Str :$url = INDEX-URL, :&fetch = &http-get --> List) {
-    my $body = do {
-        CATCH {
-            default {
-                die "ariza: could not reach the Rakudo release index at $url"
-                  ~ " ({.message.subst(/^ 'ariza: '/, '')});"
-                  ~ " a bundle needs network access the first time it is built";
-            }
-        }
-        fetch($url);
-    }
+	my $body = do {
+		CATCH {
+			default {
+				die "ariza: could not reach the Rakudo release index at $url"
+				  ~ " ({.message.subst(/^ 'ariza: '/, '')});"
+				  ~ " a bundle needs network access the first time it is built";
+			}
+		}
+		fetch($url);
+	}
 
-    my $data = do {
-        CATCH { default { die "ariza: the Rakudo release index at $url is not JSON: {.message}" } }
-        from-json($body);
-    }
+	my $data = do {
+		CATCH { default { die "ariza: the Rakudo release index at $url is not JSON: {.message}" } }
+		from-json($body);
+	}
 
-    die "ariza: the Rakudo release index at $url is not a list of releases"
-        unless $data ~~ Positional;
+	die "ariza: the Rakudo release index at $url is not a list of releases"
+		unless $data ~~ Positional;
 
-    $data.grep(* ~~ Associative).List
+	$data.grep(* ~~ Associative).List
 }
 
 #| Pick the one index entry for a slug at an exact pinned version and
@@ -73,44 +73,44 @@ method fetch-index(Str :$url = INDEX-URL, :&fetch = &http-get --> List) {
 #| C<$revision> is the C<build_rev> in the index — C<"01"> in a pin file,
 #| C<1> in the JSON — so it is compared numerically.
 method select-entry(
-    @entries,
-    Str:D :$slug!,
-    Str:D :$version!,
-    Str:D :$revision!,
-    --> Hash
+	@entries,
+	Str:D :$slug!,
+	Str:D :$version!,
+	Str:D :$revision!,
+	--> Hash
 ) {
-    my %want = self.index-platform($slug);
-    my $rev = do { CATCH { default { die "ariza: rakudo revision '$revision' is not a number" } }; $revision.Int };
+	my %want = self.index-platform($slug);
+	my $rev = do { CATCH { default { die "ariza: rakudo revision '$revision' is not a number" } }; $revision.Int };
 
-    my @matches = @entries.grep({
-             (.<type>     // '') eq 'archive'
-          && (.<platform> // '') eq %want<platform>
-          && (.<arch>     // '') eq %want<arch>
-          && (.<ver>      // '') eq $version
-          && (.<build_rev> // -1) == $rev
-          && (.<url>      // '').chars
-    });
+	my @matches = @entries.grep({
+			 (.<type>     // '') eq 'archive'
+		  && (.<platform> // '') eq %want<platform>
+		  && (.<arch>     // '') eq %want<arch>
+		  && (.<ver>      // '') eq $version
+		  && (.<build_rev> // -1) == $rev
+		  && (.<url>      // '').chars
+	});
 
-    if !@matches {
-        my @near = @entries.grep({
-                 (.<type>     // '') eq 'archive'
-              && (.<platform> // '') eq %want<platform>
-              && (.<arch>     // '') eq %want<arch>
-        }).map({ "{.<ver>}-{(.<build_rev> // 0).fmt('%02d')}" }).unique.sort;
-        die "ariza: no Rakudo {$version}-{$revision} build for $slug"
-          ~ " ({%want<platform>}/{%want<arch>}) in the release index"
-          ~ (@near ?? "; that platform has: {@near.tail(6).join(', ')}" !! '');
-    }
+	if !@matches {
+		my @near = @entries.grep({
+				 (.<type>     // '') eq 'archive'
+			  && (.<platform> // '') eq %want<platform>
+			  && (.<arch>     // '') eq %want<arch>
+		}).map({ "{.<ver>}-{(.<build_rev> // 0).fmt('%02d')}" }).unique.sort;
+		die "ariza: no Rakudo {$version}-{$revision} build for $slug"
+		  ~ " ({%want<platform>}/{%want<arch>}) in the release index"
+		  ~ (@near ?? "; that platform has: {@near.tail(6).join(', ')}" !! '');
+	}
 
-    # More than one match means upstream published two archives for the
-    # same platform, version and revision (a second toolchain, say).
-    # Refuse to guess: the pin file is where that choice belongs.
-    die "ariza: the release index has {+@matches} archives for"
-      ~ " Rakudo {$version}-{$revision} on $slug"
-      ~ " ({@matches.map({ .<url>.split('/').tail }).join(', ')})"
-        if @matches > 1;
+	# More than one match means upstream published two archives for the
+	# same platform, version and revision (a second toolchain, say).
+	# Refuse to guess: the pin file is where that choice belongs.
+	die "ariza: the release index has {+@matches} archives for"
+	  ~ " Rakudo {$version}-{$revision} on $slug"
+	  ~ " ({@matches.map({ .<url>.split('/').tail }).join(', ')})"
+		if @matches > 1;
 
-    @matches[0].Hash
+	@matches[0].Hash
 }
 
 #| Download an index entry's archive into the cache, or reuse the cached
@@ -119,72 +119,72 @@ method select-entry(
 #| Returns C<{ archive, sha256, cached }>. C<:&download> replaces the
 #| transfer for tests.
 method fetch-archive(
-    %entry,
-    IO() :$cache-dir = self.cache-dir,
-    :&download = &http-download,
-    --> Hash
+	%entry,
+	IO() :$cache-dir = self.cache-dir,
+	:&download = &http-download,
+	--> Hash
 ) {
-    my $url = %entry<url> // die "ariza: release index entry has no url";
-    my $file = $url.split('/').tail;
-    die "ariza: release index entry has an unusable url ($url)" unless $file.chars;
+	my $url = %entry<url> // die "ariza: release index entry has no url";
+	my $file = $url.split('/').tail;
+	die "ariza: release index entry has an unusable url ($url)" unless $file.chars;
 
-    ensure-dir($cache-dir);
-    my $archive = $cache-dir.add($file);
-    my $sidecar = $cache-dir.add($file ~ '.sha256');
+	ensure-dir($cache-dir);
+	my $archive = $cache-dir.add($file);
+	my $sidecar = $cache-dir.add($file ~ '.sha256');
 
-    if $archive.f && $sidecar.f {
-        my $recorded = $sidecar.slurp.trim.lc;
-        my $actual   = sha256-file($archive);
-        return %( archive => $archive, sha256 => $actual, cached => True )
-            if $recorded eq $actual;
-        # A cached archive that no longer matches what was recorded for
-        # it is corrupt (a half-written file from a killed process, a
-        # touched disk). Throwing it away and re-fetching is right;
-        # trusting it is how a broken byte gets into every bundle built
-        # on this machine from now on.
-        note "ariza: cached {$file} failed its recorded digest, re-downloading";
-        $archive.unlink;
-        $sidecar.unlink;
-    }
-    elsif $archive.f {
-        # Present but never recorded: an archive from an interrupted
-        # earlier run, or one dropped in by hand. Record it now rather
-        # than re-download, then verify on every subsequent build.
-        my $actual = sha256-file($archive);
-        $sidecar.spurt($actual ~ "\n");
-        return { archive => $archive, sha256 => $actual, cached => True };
-    }
+	if $archive.f && $sidecar.f {
+		my $recorded = $sidecar.slurp.trim.lc;
+		my $actual   = sha256-file($archive);
+		return %( archive => $archive, sha256 => $actual, cached => True )
+			if $recorded eq $actual;
+		# A cached archive that no longer matches what was recorded for
+		# it is corrupt (a half-written file from a killed process, a
+		# touched disk). Throwing it away and re-fetching is right;
+		# trusting it is how a broken byte gets into every bundle built
+		# on this machine from now on.
+		note "ariza: cached {$file} failed its recorded digest, re-downloading";
+		$archive.unlink;
+		$sidecar.unlink;
+	}
+	elsif $archive.f {
+		# Present but never recorded: an archive from an interrupted
+		# earlier run, or one dropped in by hand. Record it now rather
+		# than re-download, then verify on every subsequent build.
+		my $actual = sha256-file($archive);
+		$sidecar.spurt($actual ~ "\n");
+		return { archive => $archive, sha256 => $actual, cached => True };
+	}
 
-    download($url, $archive);
-    my $sha = sha256-file($archive);
-    $sidecar.spurt($sha ~ "\n");
-    { archive => $archive, sha256 => $sha, cached => False }
+	download($url, $archive);
+	my $sha = sha256-file($archive);
+	$sidecar.spurt($sha ~ "\n");
+	{ archive => $archive, sha256 => $sha, cached => False }
 }
 
 #| Unpack a runtime archive into C<< <$bundle-dir>/rakudo >>, stripping
 #| the single wrapper directory every official build ships. Any existing
 #| C<rakudo/> is replaced.
 method unpack(IO() $archive, IO() $bundle-dir --> IO::Path) {
-    my $root    = ensure-dir($bundle-dir).add('rakudo');
-    my $staging = $bundle-dir.add('.rakudo-staging');
+	my $root    = ensure-dir($bundle-dir).add('rakudo');
+	my $staging = $bundle-dir.add('.rakudo-staging');
 
-    rm-rf($staging);
-    rm-rf($root);
-    LEAVE rm-rf($staging);
+	rm-rf($staging);
+	rm-rf($root);
+	LEAVE rm-rf($staging);
 
-    extract-archive($archive, $staging);
-    my $top = sole-child($staging);
-    die "ariza: {$archive.basename} does not contain a runtime directory"
-        unless $top.d;
+	extract-archive($archive, $staging);
+	my $top = sole-child($staging);
+	die "ariza: {$archive.basename} does not contain a runtime directory"
+		unless $top.d;
 
-    $top.rename($root);
-    die "ariza: unpacking {$archive.basename} produced no $root" unless $root.d;
-    $root
+	$top.rename($root);
+	die "ariza: unpacking {$archive.basename} produced no $root" unless $root.d;
+	$root
 }
 
 #| The bundled C<raku> interpreter inside an unpacked runtime.
 method raku-bin(IO() $root, Str:D :$slug --> IO::Path) {
-    $root.add('bin').add($slug.starts-with('windows') ?? 'raku.exe' !! 'raku')
+	$root.add('bin').add($slug.starts-with('windows') ?? 'raku.exe' !! 'raku')
 }
 
 #| The bundled C<zef> inside an unpacked runtime.
@@ -200,8 +200,8 @@ method raku-bin(IO() $root, Str:D :$slug --> IO::Path) {
 #| C<raku> rather than exec'd. See L<App::Ariza::Site> for how the two
 #| shapes are invoked.
 method zef-bin(IO() $root, Str:D :$slug --> IO::Path) {
-    my $bin = $root.add('share').add('perl6').add('site').add('bin');
-    $bin.add($slug.starts-with('windows') ?? 'zef.raku' !! 'zef')
+	my $bin = $root.add('share').add('perl6').add('site').add('bin');
+	$bin.add($slug.starts-with('windows') ?? 'zef.raku' !! 'zef')
 }
 
 #| Resolve, download, cache and unpack the pinned runtime into a bundle.
@@ -210,49 +210,49 @@ method zef-bin(IO() $root, Str:D :$slug --> IO::Path) {
 #| root, the C<raku> and C<zef> entry points, the cached archive and its
 #| digest, and the URL it came from (for the manifest).
 method provision(
-    IO() :$bundle-dir!,
-    Str:D :$slug!,
-    App::Ariza::Versions:D :$versions!,
-    IO() :$cache-dir = self.cache-dir,
-    Str :$url = INDEX-URL,
-    :&fetch = &http-get,
-    :&download = &http-download,
-    --> Hash
+	IO() :$bundle-dir!,
+	Str:D :$slug!,
+	App::Ariza::Versions:D :$versions!,
+	IO() :$cache-dir = self.cache-dir,
+	Str :$url = INDEX-URL,
+	:&fetch = &http-get,
+	:&download = &http-download,
+	--> Hash
 ) {
-    my $version  = $versions.rakudo-version
-        // die "ariza: {$versions.path} has no rakudo.version to bundle";
-    my $revision = $versions.rakudo-revision
-        // die "ariza: {$versions.path} has no rakudo.revision to bundle";
+	my $version  = $versions.rakudo-version
+		// die "ariza: {$versions.path} has no rakudo.version to bundle";
+	my $revision = $versions.rakudo-revision
+		// die "ariza: {$versions.path} has no rakudo.revision to bundle";
 
-    # Before the network: a slug with no upstream build cannot be
-    # satisfied by any index, and downloading 260KB of JSON to discover
-    # that is both slow and a needless dependency on being online.
-    self.index-platform($slug);
+	# Before the network: a slug with no upstream build cannot be
+	# satisfied by any index, and downloading 260KB of JSON to discover
+	# that is both slow and a needless dependency on being online.
+	self.index-platform($slug);
 
-    my @entries = self.fetch-index(:$url, :&fetch);
-    my %entry   = self.select-entry(@entries, :$slug, :$version, :$revision);
-    my %got     = self.fetch-archive(%entry, :$cache-dir, :&download);
-    my $root    = self.unpack(%got<archive>, $bundle-dir);
+	my @entries = self.fetch-index(:$url, :&fetch);
+	my %entry   = self.select-entry(@entries, :$slug, :$version, :$revision);
+	my %got     = self.fetch-archive(%entry, :$cache-dir, :&download);
+	my $root    = self.unpack(%got<archive>, $bundle-dir);
 
-    my $raku = self.raku-bin($root, :$slug);
-    my $zef  = self.zef-bin($root, :$slug);
-    die "ariza: the unpacked runtime has no interpreter at $raku"
-        unless $raku.f;
-    die "ariza: the unpacked runtime has no zef entry point at $zef"
-        unless $zef.f;
+	my $raku = self.raku-bin($root, :$slug);
+	my $zef  = self.zef-bin($root, :$slug);
+	die "ariza: the unpacked runtime has no interpreter at $raku"
+		unless $raku.f;
+	die "ariza: the unpacked runtime has no zef entry point at $zef"
+		unless $zef.f;
 
-    {
-        root     => $root,
-        raku     => $raku,
-        zef      => $zef,
-        archive  => %got<archive>,
-        sha256   => %got<sha256>,
-        cached   => %got<cached>,
-        url      => %entry<url>,
-        version  => $version,
-        revision => $revision,
-        tag      => "$version-$revision",
-    }
+	{
+		root     => $root,
+		raku     => $raku,
+		zef      => $zef,
+		archive  => %got<archive>,
+		sha256   => %got<sha256>,
+		cached   => %got<cached>,
+		url      => %entry<url>,
+		version  => $version,
+		revision => $revision,
+		tag      => "$version-$revision",
+	}
 }
 
 =begin pod

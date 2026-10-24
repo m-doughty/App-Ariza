@@ -4,49 +4,49 @@ use App::Ariza;
 my %*SUB-MAIN-OPTS = :named-anywhere;
 
 sub cli(&code) {
-    CATCH {
-        default {
-            note .message;
-            exit 1;
-        }
-    }
-    &code();
+	CATCH {
+		default {
+			note .message;
+			exit 1;
+		}
+	}
+	&code();
 }
 
 multi MAIN("bundle", Str :$app!, Str :$platform, Str :$out-dir,
-           Str :$sqlcipher-archive) {
-    cli { App::Ariza.cmd-bundle(:$app, :$platform, :$out-dir, :$sqlcipher-archive) };
+		   Str :$sqlcipher-archive) {
+	cli { App::Ariza.cmd-bundle(:$app, :$platform, :$out-dir, :$sqlcipher-archive) };
 }
 
 multi MAIN("installers", Str :$app!, Str :$out-dir, Str :$branch = 'HEAD') {
-    cli { App::Ariza.cmd-installers(:$app, :$out-dir, :$branch) };
+	cli { App::Ariza.cmd-installers(:$app, :$out-dir, :$branch) };
 }
 
 multi MAIN("scaffold-ci", Str :$app!, Str :$out-dir, Bool :$force = False) {
-    cli { App::Ariza.cmd-scaffold-ci(:$app, :$out-dir, :$force) };
+	cli { App::Ariza.cmd-scaffold-ci(:$app, :$out-dir, :$force) };
 }
 
 multi MAIN("smoke", Str :$archive!, Bool :$keep = False) {
-    cli {
-        my %r = App::Ariza.cmd-smoke(:$archive, :$keep);
-        exit 1 unless %r<passed>;
-    };
+	cli {
+		my %r = App::Ariza.cmd-smoke(:$archive, :$keep);
+		exit 1 unless %r<passed>;
+	};
 }
 
 multi MAIN("version") {
-    say App::Ariza.dist-version;
+	say App::Ariza.dist-version;
 }
 
 multi MAIN("help") {
-    USAGE();
+	USAGE();
 }
 
 multi MAIN(Bool :h(:$help)!) {
-    USAGE();
+	USAGE();
 }
 
 sub USAGE {
-    say q:to/END/;
+	say q:to/END/;
     Usage:
       ariza bundle               build a self-contained bundle: the app,
                                  a Rakudo runtime, every Raku dependency
@@ -91,5 +91,5 @@ sub USAGE {
       ariza version              show ariza's own version
       ariza help                 show this help
     END
-    exit 1;
+	exit 1;
 }

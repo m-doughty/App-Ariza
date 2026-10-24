@@ -14,9 +14,9 @@ plan 12;
 my $SITE = App::Ariza::Site.site-rel('.');
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-smoke-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-smoke-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 #| Whether this machine can host a fake bundle whose "launcher" and
@@ -39,14 +39,14 @@ sub runnable-fixtures(--> Bool) { !$*DISTRO.is-win && have-command('sh') }
 #| an absolute path is a place on the machine that compiled it and does
 #| not.
 sub fake-unit(IO::Path $path, Str :$src!) {
-    my $id = 'A' x 40;
-    $path.spurt(
-        ('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
-      ~ ($id, $src, 'D' x 40,
-         'CompUnit::DependencySpecification.new(:short-name<Example::Dep>)'
-        ).join("\0") ~ "\n"
-      ~ "_______\n" ~ 'bytecode'
-    );
+	my $id = 'A' x 40;
+	$path.spurt(
+		('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
+	  ~ ($id, $src, 'D' x 40,
+		 'CompUnit::DependencySpecification.new(:short-name<Example::Dep>)'
+		).join("\0") ~ "\n"
+	  ~ "_______\n" ~ 'bytecode'
+	);
 }
 
 #| A bundle with the shape of a real one and none of the weight: a
@@ -63,469 +63,492 @@ sub fake-unit(IO::Path $path, Str :$src!) {
 #| the runtime's C<vendor> prefix, and one whose store names the machine
 #| that built it.
 sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
-                :$platform = current-slug(), :$runner,
-                Bool :$notcurses = False,
-                :$site-rel = $SITE, :$legacy-manifest = False,
-                :$dep-src = 'vendor#sources/' ~ 'A' x 40 --> IO::Path) {
-    my $root = ensure-dir($where.add("exampleapp-9.9.9-$platform"));
-    my $win  = $platform.starts-with('windows');
+				:$platform = current-slug(), :$runner,
+				Bool :$notcurses = False,
+				:$site-rel = $SITE, :$legacy-manifest = False,
+				:$dep-src = 'vendor#sources/' ~ 'A' x 40 --> IO::Path) {
+	my $root = ensure-dir($where.add("exampleapp-9.9.9-$platform"));
+	my $win  = $platform.starts-with('windows');
 
-    # Non-interpolating heredocs: these are shell scripts, and `${VAR}`
-    # and `{...}` both mean something to qq.
-    my $launcher = ensure-dir($root.add('bin'))
-        .add('exampleapp' ~ ($win ?? '.cmd' !! ''));
-    $launcher.spurt(q:to/SH/.subst('EXIT_STATUS', $exec-status));
+	# Non-interpolating heredocs: these are shell scripts, and `${VAR}`
+	# and `{...}` both mean something to qq.
+	my $launcher = ensure-dir($root.add('bin'))
+		.add('exampleapp' ~ ($win ?? '.cmd' !! ''));
+	$launcher.spurt(q:to/SH/.subst('EXIT_STATUS', $exec-status));
         #!/bin/sh
         # Prints whether anything leaked in from the invoking shell —
         # which is what Smoke's replaced environment prevents.
         printf 'launcher ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
         exit EXIT_STATUS
         SH
-    $launcher.chmod(0o755);
+	$launcher.chmod(0o755);
 
-    my $raku = ensure-dir($root.add('rakudo/bin')).add('raku' ~ ($win ?? '.exe' !! ''));
-    $raku.spurt(q:to/SH/);
+	my $raku = ensure-dir($root.add('rakudo/bin')).add('raku' ~ ($win ?? '.exe' !! ''));
+	$raku.spurt(q:to/SH/);
         #!/bin/sh
         printf 'raku ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
         SH
-    $raku.chmod(0o755);
+	$raku.chmod(0o755);
 
-    # The compiled Windows launcher and the sidecar it reads. A stand-in
-    # for both, since what is under test here is that Smoke finds them,
-    # runs the one and requires the other — the executable's own
-    # behaviour is the runner suite's business.
-    if $runner {
-        my $exe = $root.add('bin').add('exampleapp.exe');
-        $exe.spurt(q:to/SH/);
+	# The compiled Windows launcher and the sidecar it reads. A stand-in
+	# for both, since what is under test here is that Smoke finds them,
+	# runs the one and requires the other — the executable's own
+	# behaviour is the runner suite's business.
+	if $runner {
+		my $exe = $root.add('bin').add('exampleapp.exe');
+		$exe.spurt(q:to/SH/);
             #!/bin/sh
             printf 'runner ok RAKULIB=%s LEAK=%s\n' "${RAKULIB:-none}" "${ARIZA_LEAK_MARKER:-none}"
             SH
-        $exe.chmod(0o755);
-        $root.add('bin').add('exampleapp.ariza').spurt(
-            "target {$SITE.subst('/', '\\', :g)}\\bin\\exampleapp.raku\r\n"
-          ~ "app-exec exampleapp\r\napp-display Example App\r\n")
-            unless $runner eq 'no-sidecar';
-    }
+		$exe.chmod(0o755);
+		$root.add('bin').add('exampleapp.ariza').spurt(
+			"target {$SITE.subst('/', '\\', :g)}\\bin\\exampleapp.raku\r\n"
+		  ~ "app-exec exampleapp\r\napp-display Example App\r\n")
+			unless $runner eq 'no-sidecar';
+	}
 
-    my $site = $root.add($site-rel);
-    ensure-dir($site.add('bin')).add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
-    fake-unit(ensure-dir($site.add('precomp/ABC')).add('DEF'), :src($dep-src));
+	my $site = $root.add($site-rel);
+	ensure-dir($site.add('bin')).add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
+	fake-unit(ensure-dir($site.add('precomp/ABC')).add('DEF'), :src($dep-src));
 
-    $root.add('ariza-manifest.json').spurt(to-json({
-        'ariza-manifest' => 1,
-        platform => $platform,
-        app => { name => 'App::ExampleApp', exec => 'exampleapp',
-                 display => 'Example App', version => '9.9.9' },
-        launcher => {
-            target => "$site-rel/bin/exampleapp.raku",
-            scripts => ['bin/exampleapp'],
-            # Absent in an archive built before the repository moved,
-            # which `ariza smoke` still has to be able to check.
-            |($legacy-manifest ?? () !! (site => $site-rel,)),
-        },
-        components => {
-            rakudo => { tag => '2026.07-01' },
-            |($notcurses
-                ?? (notcurses => {
-                    tag => 'binaries-notcurses-3.0.17-r11',
-                    path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
-                },)
-                !! ()),
-        },
-        # Trailing comma: `[ %h ]` hits the single-arg rule and flattens
-        # the Hash into Pairs, producing exactly the broken shape the
-        # manifest check exists to catch.
-        dists => $dists // [{ name => 'App::ExampleApp', version => '9.9.9' },],
-        smoke => @smoke,
-    }));
+	$root.add('ariza-manifest.json').spurt(to-json({
+		'ariza-manifest' => 1,
+		platform => $platform,
+		app => { name => 'App::ExampleApp', exec => 'exampleapp',
+				 display => 'Example App', version => '9.9.9' },
+		launcher => {
+			target => "$site-rel/bin/exampleapp.raku",
+			scripts => ['bin/exampleapp'],
+			# Absent in an archive built before the repository moved,
+			# which `ariza smoke` still has to be able to check.
+			|($legacy-manifest ?? () !! (site => $site-rel,)),
+		},
+		components => {
+			rakudo => { tag => '2026.07-01' },
+			|($notcurses
+				?? (notcurses => {
+					tag => 'binaries-notcurses-3.0.17-r11',
+					path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib',
+				},)
+				!! ()),
+		},
+		# Trailing comma: `[ %h ]` hits the single-arg rule and flattens
+		# the Hash into Pairs, producing exactly the broken shape the
+		# manifest check exists to catch.
+		dists => $dists // [{ name => 'App::ExampleApp', version => '9.9.9' },],
+		smoke => @smoke,
+	}));
 
-    $root;
+	$root;
 }
 
 sub pack(IO::Path $root --> IO::Path) {
-    my $archive = $root.parent.add($root.basename ~ '.tar.gz');
-    run 'tar', '-c', '-z', '-f', $archive.absolute,
-        '-C', $root.parent.absolute, $root.basename;
-    $archive;
+	my $archive = $root.parent.add($root.basename ~ '.tar.gz');
+	run 'tar', '-c', '-z', '-f', $archive.absolute,
+		'-C', $root.parent.absolute, $root.basename;
+	$archive;
 }
 
 sub checks-by-name(%r --> Hash) {
-    %r<checks>.map({ .<name> => $_ }).Hash
+	%r<checks>.map({ .<name> => $_ }).Hash
 }
 
 subtest 'the scratch directory has a space in its name', {
-    plan 2;
-    my $dir = App::Ariza::Smoke.scratch-dir(:work-dir($*TMPDIR));
-    ok $dir.basename.contains(' '),
-        'because a bundle that only works from an unspaced path is broken'
-      ~ ' for most of macOS and all of Windows';
-    nok $dir.e, 'and it does not exist yet';
+	plan 2;
+	my $dir = App::Ariza::Smoke.scratch-dir(:work-dir($*TMPDIR));
+	ok $dir.basename.contains(' '),
+		'because a bundle that only works from an unspaced path is broken'
+	  ~ ' for most of macOS and all of Windows';
+	nok $dir.e, 'and it does not exist yet';
 };
 
 subtest 'the environment is replaced, not filtered', {
-    plan 14;
-    temp %*ENV;
-    %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
-    %*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
-    %*ENV<PATH> = 'developer-toolchain';
+	plan 14;
+	temp %*ENV;
+	%*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
+	%*ENV<DBIISH_SQLCIPHER_LIB> = '/opt/homebrew/lib/libsqlcipher.dylib';
+	%*ENV<PATH> = 'developer-toolchain';
 
-    my %env = App::Ariza::Smoke.base-env;
-    nok %env<ARIZA_LEAK_MARKER>:exists, 'nothing arbitrary survives';
-    nok %env<DBIISH_SQLCIPHER_LIB>:exists,
-        'least of all a library path into Homebrew, which is the exact'
-      ~ ' variable that makes a broken bundle look perfect here';
-    ok %env<PATH>:exists, 'PATH is set, so a shebang can find /bin/sh';
-    nok %env<PATH>.contains('developer-toolchain'),
-        'and the Windows implementation does not inherit a toolchain PATH';
-    isnt %env<PATH>, %*ENV<PATH>,
-        'the replacement PATH is not the caller\'s value';
+	my %env = App::Ariza::Smoke.base-env;
+	nok %env<ARIZA_LEAK_MARKER>:exists, 'nothing arbitrary survives';
+	nok %env<DBIISH_SQLCIPHER_LIB>:exists,
+		'least of all a library path into Homebrew, which is the exact'
+	  ~ ' variable that makes a broken bundle look perfect here';
+	ok %env<PATH>:exists, 'PATH is set, so a shebang can find /bin/sh';
+	nok %env<PATH>.contains('developer-toolchain'),
+		'and the Windows implementation does not inherit a toolchain PATH';
+	isnt %env<PATH>, %*ENV<PATH>,
+		'the replacement PATH is not the caller\'s value';
 
-    # A stand-in bundle root, and every expectation below derived from
-    # that same IO::Path rather than written out as a POSIX literal:
-    # these variables hold real paths for a real child process, so on
-    # Windows a bare `/b` acquires the current drive letter and native
-    # separators. What is asserted is that the environment names the
-    # bundle root and the manifest's paths beneath it — not that it
-    # spells them the way this machine happens to.
-    my $root = '/b'.IO;
-    my $sqlcipher-rel = 'native/sqlcipher/libsqlcipher.so.0';
-    my %rt = App::Ariza::Smoke.runtime-env($root,
-        { platform => 'linux-x86_64-glibc',
-          launcher => { site => $SITE },
-          components => { sqlcipher => { path => $sqlcipher-rel } } });
-    ok %rt<RAKULIB>.starts-with('inst#'),
-        'RAKULIB names an installation repository, not a -I path';
-    is %rt<RAKULIB>, 'inst#' ~ $root.add($SITE).absolute,
-        'and it is the repository the bundle itself says it installed into';
-    is App::Ariza::Smoke.site-dir($root, { launcher => {} }).absolute,
-        $root.add('site').absolute,
-        'an archive from before that was recorded keeps its old layout';
-    is %rt<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel).absolute,
-        'and on Linux, where the loader needs telling, points at SQLCipher';
+	# A stand-in bundle root, and every expectation below derived from
+	# that same IO::Path rather than written out as a POSIX literal:
+	# these variables hold real paths for a real child process, so on
+	# Windows a bare `/b` acquires the current drive letter and native
+	# separators. What is asserted is that the environment names the
+	# bundle root and the manifest's paths beneath it — not that it
+	# spells them the way this machine happens to.
+	my $root = '/b'.IO;
+	my $sqlcipher-rel = 'native/sqlcipher/libsqlcipher.so.0';
+	my %rt = App::Ariza::Smoke.runtime-env($root,
+		{ platform => 'linux-x86_64-glibc',
+		  launcher => { site => $SITE },
+		  components => { sqlcipher => { path => $sqlcipher-rel } } });
+	ok %rt<RAKULIB>.starts-with('inst#'),
+		'RAKULIB names an installation repository, not a -I path';
+	is %rt<RAKULIB>, 'inst#' ~ $root.add($SITE).absolute,
+		'and it is the repository the bundle itself says it installed into';
+	is App::Ariza::Smoke.site-dir($root, { launcher => {} }).absolute,
+		$root.add('site').absolute,
+		'an archive from before that was recorded keeps its old layout';
+	is %rt<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel).absolute,
+		'and on Linux, where the loader needs telling, points at SQLCipher';
 
-    # Windows resolves a DLL by name off PATH rather than a linker
-    # variable, so it gets a different pair of exports — the same ones
-    # the launcher templates set.
-    my $sqlcipher-rel-win = 'native/sqlcipher/sqlcipher.dll';
-    my $notcurses-rel-win =
-        'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib';
-    my %rt-win = App::Ariza::Smoke.runtime-env($root,
-        { platform => 'windows-x86_64',
-          components => {
-              notcurses => {
-                  tag => 'binaries-notcurses-3.0.17-r11',
-                  path => $notcurses-rel-win,
-              },
-              sqlcipher => { path => $sqlcipher-rel-win },
-          } });
-    is %rt-win<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel-win).absolute,
-        'on Windows, the same verbatim-path preload';
-    my @win-path = %rt-win<PATH>.split(';');
-    is @win-path[0], $root.add($notcurses-rel-win).absolute,
-        'the exact staged Notcurses lib directory is first on Windows PATH';
-    is @win-path[1], $root.add($sqlcipher-rel-win).parent.absolute,
-        'with SQLCipher second, matching every generated launcher';
-    nok %rt-win<LD_LIBRARY_PATH>:exists,
-        'and none of the POSIX-only variable, which means nothing there';
-    is App::Ariza::Smoke.notcurses-lib-dir($root, {
-            components => { notcurses => { tag => 'legacy-r9' } },
-        }).absolute,
-        $root.add('native/Notcurses-Native/legacy-r9/lib').absolute,
-        'older manifests derive the same tag-selected directory';
+	# Windows resolves a DLL by name off PATH rather than a linker
+	# variable, so it gets a different pair of exports — the same ones
+	# the launcher templates set.
+	my $sqlcipher-rel-win = 'native/sqlcipher/sqlcipher.dll';
+	my $notcurses-rel-win =
+		'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib';
+	my %rt-win = App::Ariza::Smoke.runtime-env($root,
+		{ platform => 'windows-x86_64',
+		  components => {
+			  notcurses => {
+				  tag => 'binaries-notcurses-3.0.17-r11',
+				  path => $notcurses-rel-win,
+			  },
+			  sqlcipher => { path => $sqlcipher-rel-win },
+		  } });
+	is %rt-win<DBIISH_SQLCIPHER_LIB>, $root.add($sqlcipher-rel-win).absolute,
+		'on Windows, the same verbatim-path preload';
+	my @win-path = %rt-win<PATH>.split(';');
+	is @win-path[0], $root.add($notcurses-rel-win).absolute,
+		'the exact staged Notcurses lib directory is first on Windows PATH';
+	is @win-path[1], $root.add($sqlcipher-rel-win).parent.absolute,
+		'with SQLCipher second, matching every generated launcher';
+	nok %rt-win<LD_LIBRARY_PATH>:exists,
+		'and none of the POSIX-only variable, which means nothing there';
+	is App::Ariza::Smoke.notcurses-lib-dir($root, {
+			components => { notcurses => { tag => 'legacy-r9' } },
+		}).absolute,
+		$root.add('native/Notcurses-Native/legacy-r9/lib').absolute,
+		'older manifests derive the same tag-selected directory';
 };
 
 subtest 'notcurses smoke loads the full library without opening a terminal', {
-    plan 8;
-    my $program = App::Ariza::Smoke.notcurses-probe-program;
-    my $full-at = $program.index('my Str $full = nc-lib();');
-    my $visual-at = $program.index('ncvisual_from_rgba');
-    ok $full-at.defined, 'the probe explicitly invokes the full-library resolver';
-    ok $visual-at.defined, 'and creates a one-pixel visual as an operational proof';
-    cmp-ok $full-at, '<', $visual-at,
-        'the full-library resolver runs before the core visual binding';
-    ok $program.index('ncvisual_destroy', $visual-at).defined,
-        'the core visual handle is destroyed after it is created';
-    nok $program.contains('notcurses_version'),
-        'a core-only version query cannot stand in for either proof';
-    nok ($program.contains('notcurses_init') || $program.contains('ncdirect_init')),
-        'and no terminal or Notcurses context is opened';
+	plan 8;
+	my $program = App::Ariza::Smoke.notcurses-probe-program;
+	my $full-at = $program.index('my Str $full = nc-lib();');
+	my $visual-at = $program.index('ncvisual_from_rgba');
+	ok $full-at.defined, 'the probe explicitly invokes the full-library resolver';
+	ok $visual-at.defined, 'and creates a one-pixel visual as an operational proof';
+	cmp-ok $full-at, '<', $visual-at,
+		'the full-library resolver runs before the core visual binding';
+	ok $program.index('ncvisual_destroy', $visual-at).defined,
+		'the core visual handle is destroyed after it is created';
+	nok $program.contains('notcurses_version'),
+		'a core-only version query cannot stand in for either proof';
+	nok ($program.contains('notcurses_init') || $program.contains('ncdirect_init')),
+		'and no terminal or Notcurses context is opened';
 
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    if !runnable-fixtures() {
-        skip 'a shell-script fixture cannot stand in for raku.exe on Windows', 2;
-    }
-    else {
-        my %r = App::Ariza::Smoke.smoke(
-            :archive(pack(fake-bundle($dir, :smoke([]), :notcurses))),
-            :work-dir($dir), :!verbose);
-        my %check = checks-by-name(%r)<notcurses-load>;
-        ok %check<ok>, 'a bundle that records notcurses gets the automatic load check';
-        ok %check<output>.contains('raku ok'),
-            'and it runs through the bundled interpreter under runtime-env';
-    }
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	if !runnable-fixtures() {
+		skip 'a shell-script fixture cannot stand in for raku.exe on Windows', 2;
+	}
+	else {
+		my %r = App::Ariza::Smoke.smoke(
+			:archive(pack(fake-bundle($dir, :smoke([]), :notcurses))),
+			:work-dir($dir), :!verbose);
+		my %check = checks-by-name(%r)<notcurses-load>;
+		ok %check<ok>, 'a bundle that records notcurses gets the automatic load check';
+		ok %check<output>.contains('raku ok'),
+			'and it runs through the bundled interpreter under runtime-env';
+	}
 };
 
 subtest 'macOS gets no SQLCipher variables, because it does not need them', {
-    plan 2;
-    my %rt = App::Ariza::Smoke.runtime-env('/b'.IO,
-        { platform => 'macos-arm64',
-          components => { sqlcipher => { path => 'rakudo/lib/libsqlcipher.0.dylib' } } });
-    nok %rt<DBIISH_SQLCIPHER_LIB>:exists,
-        'the library is inside rakudo/lib, on the interpreter\'s own rpath';
-    nok %rt<LD_LIBRARY_PATH>:exists, 'and LD_LIBRARY_PATH means nothing there';
+	plan 2;
+	my %rt = App::Ariza::Smoke.runtime-env('/b'.IO,
+		{ platform => 'macos-arm64',
+		  components => { sqlcipher => { path => 'rakudo/lib/libsqlcipher.0.dylib' } } });
+	nok %rt<DBIISH_SQLCIPHER_LIB>:exists,
+		'the library is inside rakudo/lib, on the interpreter\'s own rpath';
+	nok %rt<LD_LIBRARY_PATH>:exists, 'and LD_LIBRARY_PATH means nothing there';
 };
 
 subtest 'a good bundle passes every check', {
-    plan 8;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 8;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    if !runnable-fixtures() {
-        skip 'a shell-script fixture needs a POSIX shell to stand in for'
-           ~ ' the launcher and the interpreter', 8;
-    }
-    else {
-        temp %*ENV;
-        %*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
+	if !runnable-fixtures() {
+		skip 'a shell-script fixture needs a POSIX shell to stand in for'
+		   ~ ' the launcher and the interpreter', 8;
+	}
+	else {
+		temp %*ENV;
+		%*ENV<ARIZA_LEAK_MARKER> = 'from the developer shell';
 
-        my $archive = pack(fake-bundle($dir,
-            :smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']])));
+		my $archive = pack(fake-bundle($dir,
+			:smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']])));
 
-        my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
-        ok %r<passed>, 'the smoke passes';
+		my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
+		ok %r<passed>, 'the smoke passes';
 
-        my %by = checks-by-name(%r);
-        ok %by<unpack><ok>, 'it unpacked';
-        ok %by<launcher><ok>, 'the launcher is there and executable';
-        ok %by<precomp><ok>, 'the precompilation store shipped warm';
-        ok %by<native-audit><ok>, 'and nothing loads from outside the bundle';
+		my %by = checks-by-name(%r);
+		ok %by<unpack><ok>, 'it unpacked';
+		ok %by<launcher><ok>, 'the launcher is there and executable';
+		ok %by<precomp><ok>, 'the precompilation store shipped warm';
+		ok %by<native-audit><ok>, 'and nothing loads from outside the bundle';
 
-        ok %by{'smoke[0]'}<output>.contains('LEAK=none'),
-            'the launcher ran with none of the invoking shell\'s environment';
+		ok %by{'smoke[0]'}<output>.contains('LEAK=none'),
+			'the launcher ran with none of the invoking shell\'s environment';
 
-        # A {raku} command stands in for code running inside the app, so
-        # it gets what the launcher would have exported — otherwise it
-        # would be testing the absence of a launcher.
-        ok %by{'smoke[1]'}<output>.contains('RAKULIB=inst#'),
-            'while a direct interpreter call gets the launcher\'s environment';
+		# A {raku} command stands in for code running inside the app, so
+		# it gets what the launcher would have exported — otherwise it
+		# would be testing the absence of a launcher.
+		ok %by{'smoke[1]'}<output>.contains('RAKULIB=inst#'),
+			'while a direct interpreter call gets the launcher\'s environment';
 
-        nok %r<dir>.e, 'and a passing run cleans up after itself';
-    }
+		nok %r<dir>.e, 'and a passing run cleans up after itself';
+	}
 };
 
 subtest 'a failing bundle fails one check and keeps the evidence', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    if !runnable-fixtures() {
-        skip 'needs a POSIX shell to fake a launcher that fails', 5;
-    }
-    else {
-        my $archive = pack(fake-bundle($dir,
-            :smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']]),
-            :exec-status(3)));
+	if !runnable-fixtures() {
+		skip 'needs a POSIX shell to fake a launcher that fails', 5;
+	}
+	else {
+		my $archive = pack(fake-bundle($dir,
+			:smoke([['{exec}', '--version'], ['{raku}', '-e', 'say 1', '{tmp}']]),
+			:exec-status(3)));
 
-        my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
-        nok %r<passed>, 'the smoke fails';
+		my %r = App::Ariza::Smoke.smoke(:$archive, :work-dir($dir), :!verbose);
+		nok %r<passed>, 'the smoke fails';
 
-        my %by = checks-by-name(%r);
-        nok %by{'smoke[0]'}<ok>, 'on the command that exited non-zero';
-        ok %by{'smoke[0]'}<detail>.contains('exit 3'), 'reporting its exit code';
+		my %by = checks-by-name(%r);
+		nok %by{'smoke[0]'}<ok>, 'on the command that exited non-zero';
+		ok %by{'smoke[0]'}<detail>.contains('exit 3'), 'reporting its exit code';
 
-        # Every check runs: "the launcher failed" and "the launcher failed
-        # and the audit found something" are different bug reports.
-        ok %by{'smoke[1]'}<ok>, 'the later checks still ran';
-        ok %r<dir>.d,
-            'and the unpacked tree is kept, because the state it failed in is the point';
-    }
+		# Every check runs: "the launcher failed" and "the launcher failed
+		# and the audit found something" are different bug reports.
+		ok %by{'smoke[1]'}<ok>, 'the later checks still ran';
+		ok %r<dir>.d,
+			'and the unpacked tree is kept, because the state it failed in is the point';
+	}
 };
 
 subtest 'a bundle that is not one fails honestly', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    throws-like { App::Ariza::Smoke.smoke(:archive($dir.add('nope.tar.gz')), :!verbose) },
-        Exception, message => /'no bundle archive at'/, 'a missing archive';
+	throws-like { App::Ariza::Smoke.smoke(:archive($dir.add('nope.tar.gz')), :!verbose) },
+		Exception, message => /'no bundle archive at'/, 'a missing archive';
 
-    my $root = fake-bundle($dir, :smoke([]));
-    $root.add('ariza-manifest.json').unlink;
-    my %r = App::Ariza::Smoke.smoke(:archive(pack($root)), :work-dir($dir), :!verbose);
-    nok %r<passed>, 'an archive with no manifest fails';
-    ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
-        'on the manifest check, naming it';
+	my $root = fake-bundle($dir, :smoke([]));
+	$root.add('ariza-manifest.json').unlink;
+	my %r = App::Ariza::Smoke.smoke(:archive(pack($root)), :work-dir($dir), :!verbose);
+	nok %r<passed>, 'an archive with no manifest fails';
+	ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
+		'on the manifest check, naming it';
 
-    my %none = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('second'), :smoke([])))),
-        :work-dir($dir), :!verbose);
-    ok %none<checks>.first({ .<name> eq 'smoke-commands' && .<ok> }),
-        'while an app that declares no smoke commands is checked structurally and passes';
+	my %none = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('second'), :smoke([])))),
+		:work-dir($dir), :!verbose);
+	ok %none<checks>.first({ .<name> eq 'smoke-commands' && .<ok> }),
+		'while an app that declares no smoke commands is checked structurally and passes';
 };
 
 subtest 'the manifest has to be the right shape, not merely parseable', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    # This is what a Raku `{ .<name> => … }` block-literal serialises to:
-    # an array of one-key objects per distribution. It parses, it reads
-    # plausibly, and it lists nothing.
-    my $broken = pack(fake-bundle($dir, :smoke([]),
-        :dists([[{ name => 'App::ExampleApp' }, { version => '9.9.9' }]])));
+	# This is what a Raku `{ .<name> => … }` block-literal serialises to:
+	# an array of one-key objects per distribution. It parses, it reads
+	# plausibly, and it lists nothing.
+	my $broken = pack(fake-bundle($dir, :smoke([]),
+		:dists([[{ name => 'App::ExampleApp' }, { version => '9.9.9' }]])));
 
-    my %r = App::Ariza::Smoke.smoke(:archive($broken), :work-dir($dir), :!verbose);
-    nok %r<passed>, 'a manifest whose dists are not objects fails';
-    ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
-        'on the manifest check';
+	my %r = App::Ariza::Smoke.smoke(:archive($broken), :work-dir($dir), :!verbose);
+	nok %r<passed>, 'a manifest whose dists are not objects fails';
+	ok %r<checks>.first({ .<name> eq 'manifest' && !.<ok> }),
+		'on the manifest check';
 
-    my %good = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
-        :work-dir($dir), :!verbose);
-    ok %good<checks>.first({ .<name> eq 'manifest' && .<ok> }),
-        'while a well-formed one passes and says how many distributions it has';
+	my %good = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
+		:work-dir($dir), :!verbose);
+	ok %good<checks>.first({ .<name> eq 'manifest' && .<ok> }),
+		'while a well-formed one passes and says how many distributions it has';
 };
 
 subtest 'the compiled Windows launcher is checked when it is there', {
-    plan 7;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 7;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    # Driven from the manifest's platform rather than the host's, so
-    # this runs on the machines a Windows bundle is built on as much as
-    # on Windows itself.
-    my %with = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir, :smoke([]),
-                                  :platform<windows-x86_64>, :runner))),
-        :work-dir($dir), :!verbose);
-    my %by = checks-by-name(%with);
-    ok %by<runner><ok>, 'the executable and its sidecar are both there';
-    ok %by<runner><detail>.contains('exampleapp.ariza'),
-        'and the check names the sidecar, which is the half nobody looks for';
+	# Driven from the manifest's platform rather than the host's, so
+	# this runs on the machines a Windows bundle is built on as much as
+	# on Windows itself.
+	my %with = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir, :smoke([]),
+								  :platform<windows-x86_64>, :runner))),
+		:work-dir($dir), :!verbose);
+	my %by = checks-by-name(%with);
+	ok %by<runner><ok>, 'the executable and its sidecar are both there';
+	ok %by<runner><detail>.contains('exampleapp.ariza'),
+		'and the check names the sidecar, which is the half nobody looks for';
 
-    # An executable with no configuration to read cannot start anything,
-    # so this one is a failure rather than an absence.
-    my %broken = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('broken'), :smoke([]),
-                                  :platform<windows-x86_64>,
-                                  :runner<no-sidecar>))),
-        :work-dir($dir), :!verbose);
-    nok checks-by-name(%broken)<runner><ok>,
-        'a runner with no sidecar beside it fails';
+	# An executable with no configuration to read cannot start anything,
+	# so this one is a failure rather than an absence.
+	my %broken = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('broken'), :smoke([]),
+								  :platform<windows-x86_64>,
+								  :runner<no-sidecar>))),
+		:work-dir($dir), :!verbose);
+	nok checks-by-name(%broken)<runner><ok>,
+		'a runner with no sidecar beside it fails';
 
-    # No executable at all is the bootstrap state: a bundle built before
-    # the first runner release was pinned launches from its .cmd and is
-    # not broken.
-    my %without = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('scripts-only'), :smoke([]),
-                                  :platform<windows-x86_64>))),
-        :work-dir($dir), :!verbose);
-    my %none = checks-by-name(%without);
-    ok %none<runner><ok>, 'a bundle with no executable passes';
-    ok %none<runner><detail>.contains('bin/exampleapp.cmd'),
-        'saying what it launches from instead';
+	# No executable at all is the bootstrap state: a bundle built before
+	# the first runner release was pinned launches from its .cmd and is
+	# not broken.
+	my %without = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('scripts-only'), :smoke([]),
+								  :platform<windows-x86_64>))),
+		:work-dir($dir), :!verbose);
+	my %none = checks-by-name(%without);
+	ok %none<runner><ok>, 'a bundle with no executable passes';
+	ok %none<runner><detail>.contains('bin/exampleapp.cmd'),
+		'saying what it launches from instead';
 
-    # And a POSIX bundle is never asked about a thing it cannot have.
-    # This one is also the only case in the suite where the HOST and the
-    # bundle's platform disagree, which is an ordinary thing to be doing
-    # — the platform comes from the manifest so that an archive can be
-    # checked anywhere — and is what catches host-specific questions
-    # being asked of it. The executable bit is one: a Windows host has
-    # no such bit to read, and `.x` there throws rather than answering.
-    my %posix = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('posix'), :smoke([]),
-                                  :platform<linux-x86_64-glibc>))),
-        :work-dir($dir), :!verbose);
-    nok checks-by-name(%posix)<runner>:exists,
-        'while a POSIX bundle has no such check at all';
-    ok checks-by-name(%posix)<launcher><ok>,
-        'and its launcher check answers on any host, asking about the'
-      ~ ' executable bit only where there is one to read';
+	# And a POSIX bundle is never asked about a thing it cannot have.
+	# This one is also the only case in the suite where the HOST and the
+	# bundle's platform disagree, which is an ordinary thing to be doing
+	# — the platform comes from the manifest so that an archive can be
+	# checked anywhere — and is what catches host-specific questions
+	# being asked of it. The executable bit is one: a Windows host has
+	# no such bit to read, and `.x` there throws rather than answering.
+	my %posix = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('posix'), :smoke([]),
+								  :platform<linux-x86_64-glibc>))),
+		:work-dir($dir), :!verbose);
+	nok checks-by-name(%posix)<runner>:exists,
+		'while a POSIX bundle has no such check at all';
+	ok checks-by-name(%posix)<launcher><ok>,
+		'and its launcher check answers on any host, asking about the'
+	  ~ ' executable bit only where there is one to read';
 };
 
 subtest 'a {exec} command is run through the executable as well as the script', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    if !runnable-fixtures() {
-        skip 'the two entry points have to actually run for this to mean'
-           ~ ' anything, which needs a POSIX shell to fake them', 5;
-    }
-    else {
-        my %r = App::Ariza::Smoke.smoke(
-            :archive(pack(fake-bundle($dir,
-                :smoke([['{exec}', '--version']]),
-                :platform<windows-x86_64>, :runner))),
-            :work-dir($dir), :!verbose);
-        my %by = checks-by-name(%r);
+	if !runnable-fixtures() {
+		skip 'the two entry points have to actually run for this to mean'
+		   ~ ' anything, which needs a POSIX shell to fake them', 5;
+	}
+	else {
+		my %r = App::Ariza::Smoke.smoke(
+			:archive(pack(fake-bundle($dir,
+				:smoke([['{exec}', '--version']]),
+				:platform<windows-x86_64>, :runner))),
+			:work-dir($dir), :!verbose);
+		my %by = checks-by-name(%r);
 
-        ok %by{'smoke[0]'}<ok>, 'the .cmd launcher runs';
-        ok %by{'smoke[0]'}<output>.contains('launcher ok'), 'and it is the .cmd';
+		ok %by{'smoke[0]'}<ok>, 'the .cmd launcher runs';
+		ok %by{'smoke[0]'}<output>.contains('launcher ok'), 'and it is the .cmd';
 
-        # In addition, never instead: the script and the executable set
-        # the same environment by entirely different means, so one
-        # passing says nothing about the other.
-        ok %by{'smoke[0].exe'}<ok>, 'and so does the compiled launcher';
-        ok %by{'smoke[0].exe'}<output>.contains('runner ok'),
-            'as itself, not as the script under another name';
+		# In addition, never instead: the script and the executable set
+		# the same environment by entirely different means, so one
+		# passing says nothing about the other.
+		ok %by{'smoke[0].exe'}<ok>, 'and so does the compiled launcher';
+		ok %by{'smoke[0].exe'}<output>.contains('runner ok'),
+			'as itself, not as the script under another name';
 
-        my %scripts-only = App::Ariza::Smoke.smoke(
-            :archive(pack(fake-bundle($dir.add('scripts-only'),
-                :smoke([['{exec}', '--version']]),
-                :platform<windows-x86_64>))),
-            :work-dir($dir), :!verbose);
-        nok checks-by-name(%scripts-only){'smoke[0].exe'}:exists,
-            'a bundle without one is not asked to run it';
-    }
+		my %scripts-only = App::Ariza::Smoke.smoke(
+			:archive(pack(fake-bundle($dir.add('scripts-only'),
+				:smoke([['{exec}', '--version']]),
+				:platform<windows-x86_64>))),
+			:work-dir($dir), :!verbose);
+		nok checks-by-name(%scripts-only){'smoke[0].exe'}:exists,
+			'a bundle without one is not asked to run it';
+	}
 };
 
 subtest 'the structural checks need nothing to be runnable', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	# One bundle of each family besides this host's own. The platform
+	# comes from the manifest, so every one of these is checked from
+	# here exactly as it would be from a machine of its own kind.
+	my @others = <linux-x86_64-glibc macos-arm64 windows-x86_64>
+		.grep(* ne current-slug()).List;
+	plan 6 + 2 * @others;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    # No smoke commands, so nothing is executed: this is the shape of the
-    # check that has to work identically on every platform, including the
-    # one where a fixture cannot pretend to be an interpreter.
-    my %r = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir, :smoke([])))),
-        :work-dir($dir), :!verbose);
+	# No smoke commands, so nothing is executed: this is the shape of the
+	# check that has to work identically on every platform, including the
+	# one where a fixture cannot pretend to be an interpreter.
+	my %r = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir, :smoke([])))),
+		:work-dir($dir), :!verbose);
 
-    my %by = checks-by-name(%r);
-    ok %r<passed>, 'a structurally sound bundle passes';
-    ok %by<launcher><ok>, 'the launcher is where the manifest says';
-    ok %by<runtime><ok>, 'so is the interpreter';
-    ok %by<target><ok>, 'and the script it is meant to run';
-    ok %by<precomp><ok>, 'and the bytecode shipped with it';
+	my %by = checks-by-name(%r);
+	ok %r<passed>, 'a structurally sound bundle passes';
+	ok %by<launcher><ok>, 'the launcher is where the manifest says';
+	ok %by<runtime><ok>, 'so is the interpreter';
+	ok %by<target><ok>, 'and the script it is meant to run';
+	ok %by<precomp><ok>, 'and the bytecode shipped with it';
+	ok %by<native-audit><ok>,
+		'and the native audit, which reads files rather than asking tools'
+	  ~ ' about them' ~ (%by<native-audit><ok> ?? '' !! ": {%by<native-audit><detail>}");
+
+	# The audit used to die before reading a single file on a Linux
+	# machine without patchelf, and on any machine without readelf —
+	# every Mac — even for a bundle with no ELF in it at all. Nothing in
+	# it may need a tool the host does not happen to have.
+	for @others -> $slug {
+		my %other = App::Ariza::Smoke.smoke(
+			:archive(pack(fake-bundle($dir.add($slug), :smoke([]),
+									  :platform($slug)))),
+			:work-dir($dir), :!verbose);
+		my %audit = checks-by-name(%other)<native-audit>;
+		ok %audit<ok>, "a $slug bundle's native audit passes from this host"
+		  ~ (%audit<ok> ?? '' !! ": {%audit<detail>}");
+		ok %other<passed>, 'and so does the rest of its structure';
+	}
 };
 
 subtest 'a store that only works on the machine that built it is caught', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    # The failure this check exists for is invisible everywhere else: the
-    # store is present, the right size, and every command below it runs
-    # perfectly — on the build machine, where the paths it names still
-    # exist. Somewhere else, Rakudo throws all of it away and recompiles.
-    my %good = checks-by-name(App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
-        :work-dir($dir), :!verbose));
-    ok %good<precomp-relocatable><ok>,
-        'a dependency recorded against a repository travels with the bundle';
-    ok %good<precomp-relocatable><detail>.contains('repository-relative'),
-        'and the check says how many records it read';
+	# The failure this check exists for is invisible everywhere else: the
+	# store is present, the right size, and every command below it runs
+	# perfectly — on the build machine, where the paths it names still
+	# exist. Somewhere else, Rakudo throws all of it away and recompiles.
+	my %good = checks-by-name(App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('good'), :smoke([])))),
+		:work-dir($dir), :!verbose));
+	ok %good<precomp-relocatable><ok>,
+		'a dependency recorded against a repository travels with the bundle';
+	ok %good<precomp-relocatable><detail>.contains('repository-relative'),
+		'and the check says how many records it read';
 
-    my %bad = App::Ariza::Smoke.smoke(
-        :archive(pack(fake-bundle($dir.add('bad'), :smoke([]),
-            :dep-src('/build/agent/work/site/sources/' ~ 'A' x 40)))),
-        :work-dir($dir), :!verbose);
-    my %bad-by = checks-by-name(%bad);
-    nok %bad-by<precomp-relocatable><ok>,
-        'one recorded against a build-machine path does not';
-    ok %bad-by<precomp-relocatable><detail>.contains('/build/agent/work'),
-        'and the offending path is named, not merely counted';
-    nok %bad<passed>, 'so the smoke fails on a bundle every other check likes';
+	my %bad = App::Ariza::Smoke.smoke(
+		:archive(pack(fake-bundle($dir.add('bad'), :smoke([]),
+			:dep-src('/build/agent/work/site/sources/' ~ 'A' x 40)))),
+		:work-dir($dir), :!verbose);
+	my %bad-by = checks-by-name(%bad);
+	nok %bad-by<precomp-relocatable><ok>,
+		'one recorded against a build-machine path does not';
+	ok %bad-by<precomp-relocatable><detail>.contains('/build/agent/work'),
+		'and the offending path is named, not merely counted';
+	nok %bad<passed>, 'so the smoke fails on a bundle every other check likes';
 };

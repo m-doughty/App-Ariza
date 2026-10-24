@@ -1,0 +1,446 @@
+use v6.d;
+use Test;
+
+use App::Ariza::ELF;
+use App::Ariza::Tools;
+
+plan 12;
+
+my $FIXTURES = $?FILE.IO.parent.add('fixtures/elf');
+
+sub tmp-dir(--> IO::Path) {
+	my $dir = $*TMPDIR.add("ariza-elf-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
+}
+
+my $TMP = tmp-dir;
+END { rm-rf($TMP) if $TMP.defined }
+
+#| Bytes to a file of their own, for the parser to open.
+sub file-of(Blob:D $bytes, Str:D $name = 'lib.so' --> IO::Path) {
+	my $f = $TMP.add("{(^1_000_000).pick}-$name");
+	$f.spurt($bytes);
+	$f
+}
+
+#| A minimal ELF shared object, packed by hand: the ELF header, one
+#| C<PT_LOAD> mapping the whole file at C<0x10000>, one C<PT_DYNAMIC>, a
+#| string table at file offset C<0x200> (or C<:$str-at>) and the dynamic
+#| section at C<0x300> naming C<@needed>, C<$rpath> and C<$runpath>.
+#|
+#| Packed from parts rather than built by a toolchain because every knob
+#| below makes a file no linker would write, which is the point: each
+#| one is a way for a file to be malformed, and the parser has to say so
+#| rather than answer. The real fixtures beside this file prove it agrees
+#| with what a toolchain emits.
+#|
+#| The load segment's base address is not zero, so every C<DT_STRTAB>
+#| address has to travel through the segment table to become a file
+#| offset — which is the part of the format worth exercising.
+sub elf-bytes(
+	:@needed = ('libcrypto.so.3',),
+	Str :$rpath, Str :$runpath,
+	Int :$class = 64, Str :$endian = 'little',
+	Int :$type = 3,
+	Int :$magic = 0x46, Int :$ident-class, Int :$ident-data,
+	Int :$ident-version = 1,
+	Int :$phentsize, Int :$phoff, Int :$dynamics = 1,
+	Bool :$no-phdrs = False, Bool :$xnum = False, Bool :$xnum-shdr = True,
+	:@extra = (), Bool :$null = True,
+	Bool :$strtab = True, Bool :$strsz = True,
+	Int :$strtab-addr, Int :$strsz-value, Int :$load-memsz,
+	Int :$str-at = 0x200,
+	--> Buf
+) {
+	my constant BASE   = 0x10000;
+	my constant DYN-AT = 0x300;
+	my constant SH-AT  = 0x400;
+	my constant SIZE   = 0x480;
+
+	my $be   = $endian eq 'big';
+	my $w    = $class == 64 ?? 8 !! 4;
+	my $eh   = $class == 64 ?? 64 !! 52;
+	my $phsz = $class == 64 ?? 56 !! 32;
+	my @b    = 0 xx SIZE;
+
+	my sub put(Int $at, Int $width, Int $n) {
+		for ^$width -> $i {
+			my $byte = ($n +> (8 * $i)) +& 0xFF;
+			@b[$be ?? $at + $width - 1 - $i !! $at + $i] = $byte;
+		}
+	}
+
+	# The string table: a leading NUL, then each string with its own.
+	my @str = 0;
+	my sub add-string(Str $s --> Int) {
+		my $at = @str.elems;
+		@str.append: |$s.encode('utf8-c8').list, 0;
+		$at
+	}
+	my @dyn;
+	@dyn.push(1 => add-string($_)) for @needed;
+	@dyn.push(15 => add-string($rpath)) with $rpath;
+	@dyn.push(29 => add-string($runpath)) with $runpath;
+	@dyn.push(5 => $strtab-addr // BASE + $str-at) if $strtab;
+	@dyn.push(10 => $strsz-value // @str.elems) if $strsz;
+	@dyn.append: @extra;
+	@dyn.push(0 => 0) if $null;
+	@b[$str-at + $_] = @str[$_] for ^@str;
+
+	for @dyn.kv -> $i, $entry {
+		put(DYN-AT + 2 * $w * $i, $w, $entry.key);
+		put(DYN-AT + 2 * $w * $i + $w, $w, $entry.value);
+	}
+
+	# The ELF header.
+	@b[0 .. 3] = 0x7F, 0x45, 0x4C, $magic;
+	@b[4] = $ident-class // ($class == 64 ?? 2 !! 1);
+	@b[5] = $ident-data // ($be ?? 2 !! 1);
+	@b[6] = $ident-version;
+	# The program headers are always written where they belong, after the
+	# ELF header; :$phoff only changes where the header says they are.
+	my $phnum = $no-phdrs ?? 0 !! 1 + $dynamics;
+	my $ph-at = $eh;
+	put(16, 2, $type);
+	put(18, 2, 62);
+	put(20, 4, 1);
+	if $class == 64 {
+		put(32, 8, $no-phdrs ?? 0 !! $phoff // $ph-at);
+		put(40, 8, $xnum && $xnum-shdr ?? SH-AT !! 0);
+		put(52, 2, $eh);
+		put(54, 2, $phentsize // $phsz);
+		put(56, 2, $xnum ?? 0xFFFF !! $phnum);
+		put(58, 2, 64);
+		put(60, 2, $xnum ?? 1 !! 0);
+	}
+	else {
+		put(28, 4, $no-phdrs ?? 0 !! $phoff // $ph-at);
+		put(32, 4, $xnum && $xnum-shdr ?? SH-AT !! 0);
+		put(40, 2, $eh);
+		put(42, 2, $phentsize // $phsz);
+		put(44, 2, $xnum ?? 0xFFFF !! $phnum);
+		put(46, 2, 40);
+		put(48, 2, $xnum ?? 1 !! 0);
+	}
+
+	# Section header 0, which carries the real count under PN_XNUM.
+	put(SH-AT + ($class == 64 ?? 44 !! 28), 4, $phnum) if $xnum;
+
+	# The program headers: the load segment, then the dynamic one(s).
+	my $dyn-size = @dyn.elems * 2 * $w;
+	my @phdrs = (1, 0, BASE, SIZE, $load-memsz // SIZE),
+				|((2, DYN-AT, BASE + DYN-AT, $dyn-size, $dyn-size) xx $dynamics);
+	unless $no-phdrs {
+		for @phdrs.kv -> $i, ($kind, $offset, $vaddr, $filesz, $memsz) {
+			my $at = $ph-at + $i * $phsz;
+			put($at, 4, $kind);
+			if $class == 64 {
+				put($at + 8,  8, $offset);
+				put($at + 16, 8, $vaddr);
+				put($at + 32, 8, $filesz);
+				put($at + 40, 8, $memsz);
+			}
+			else {
+				put($at + 4,  4, $offset);
+				put($at + 8,  4, $vaddr);
+				put($at + 16, 4, $filesz);
+				put($at + 20, 4, $memsz);
+			}
+		}
+	}
+
+	buf8.new(@b)
+}
+
+#| The parser's answer for a packed file, or the message it died with.
+sub read-packed(|c) { elf-dynamic(file-of(elf-bytes(|c))) }
+
+sub dies-saying(Blob:D $bytes, $pattern, Str:D $why) {
+	throws-like { elf-dynamic(file-of($bytes)) }, Exception,
+		message => $pattern, $why;
+}
+
+#| What `readelf -d` said about a fixture when build.sh made it,
+#| reduced to the three things the parser reports.
+sub golden(Str:D $name --> Hash) {
+	my $readelf = $FIXTURES.add("$name.readelf").slurp;
+	my $rpath   = $FIXTURES.add("$name.rpath").slurp.chomp;
+	my @lines   = $readelf.lines;
+	my sub tag(Str $type --> Str) {
+		my @found = @lines.map({
+			/ '(' $type ')' .*? '[' (.*) ']' \s* $ / ?? ~$0 !! Str
+		}).grep(*.defined);
+		@found ?? @found.head !! Str
+	}
+	%(
+		dynamic => !$readelf.contains('There is no dynamic section'),
+		needed  => @lines.map({
+			/ '(NEEDED)' .*? '[' (.*) ']' \s* $ / ?? ~$0 !! Str
+		}).grep(*.defined).List,
+		rpath   => tag('RPATH'),
+		runpath => tag('RUNPATH'),
+		patchelf => ($rpath eq 'no dynamic section' ?? Str !! $rpath),
+	)
+}
+
+my @FIXTURES = $FIXTURES.dir.grep(*.extension eq 'elf')
+	.map(*.basename.subst(/ '.elf' $ /, '')).sort.List;
+
+subtest 'every fixture reads the way readelf and patchelf read it', {
+	plan 1 + 5 * @FIXTURES;
+	ok @FIXTURES >= 11, "the fixtures are there ({+@FIXTURES} of them)";
+
+	for @FIXTURES -> $name {
+		my %want = golden($name);
+		my %got  = elf-dynamic($FIXTURES.add("$name.elf"));
+		is %got<dynamic>, %want<dynamic>, "$name: dynamic section or not";
+		is-deeply %got<needed>.List, %want<needed>,
+			"$name: the DT_NEEDED sonames, in file order";
+		is %got<rpath>, %want<rpath>, "$name: DT_RPATH";
+		is %got<runpath>, %want<runpath>, "$name: DT_RUNPATH";
+		# patchelf refuses a file with no dynamic section; the parser
+		# answers it, with nothing to search.
+		is elf-loader-rpath(%got), %want<patchelf> // '',
+			"$name: the search path is what patchelf --print-rpath printed";
+	}
+};
+
+subtest 'both classes, both byte orders, from real toolchains', {
+	plan 8;
+	my %want =
+		'x86_64-runpath' => (64, 'little'),
+		'i686-runpath'   => (32, 'little'),
+		's390x-runpath'  => (64, 'big'),
+		'powerpc-rpath'  => (32, 'big');
+	for %want.sort -> $p {
+		my %d = elf-dynamic($FIXTURES.add("{$p.key}.elf"));
+		is %d<class>, $p.value[0], "{$p.key} is ELF{$p.value[0]}";
+		is %d<endian>, $p.value[1], "and {$p.value[1]}-endian";
+	}
+};
+
+subtest 'the shapes a bundle actually meets', {
+	plan 9;
+
+	# What a distribution ships, and what ariza's staging pass turns it
+	# into: the same two NEEDED entries, before and after patchelf moved
+	# the string table into a segment of its own.
+	my %before = elf-dynamic($FIXTURES.add('x86_64-unpatched.elf'));
+	my %after  = elf-dynamic($FIXTURES.add('x86_64-patchelf.elf'));
+	is-deeply %before<needed>, ('libcrypto.so.3', 'libc.so.6'),
+		'a distribution library names its OpenSSL by bare soname';
+	is elf-loader-rpath(%before), '',
+		'and tells the loader nothing about where to look';
+	is-deeply %after<needed>, %before<needed>,
+		'patchelf --set-rpath leaves the NEEDED list alone';
+	is elf-loader-rpath(%after), '$ORIGIN',
+		'and the RUNPATH it adds is read out of the segment it added';
+
+	is elf-loader-rpath(elf-dynamic($FIXTURES.add('x86_64-rpath.elf'))),
+		'/opt/build/lib:$ORIGIN',
+		'an old-style RPATH is the search path when there is no RUNPATH';
+
+	my %gcc = elf-dynamic($FIXTURES.add('gcc-runpath.elf'));
+	is-deeply %gcc<needed>, ('libcrypto.so.3', 'libc.so.6'),
+		'GNU ld\'s layout, linked against the real C library, reads the same';
+
+	my %static = elf-dynamic($FIXTURES.add('x86_64-static.elf'));
+	nok %static<dynamic>, 'a static executable has no dynamic section';
+	is-deeply %static<needed>.List, (), 'and so asks for nothing';
+
+	nok elf-dynamic($FIXTURES.add('x86_64-object.elf'))<dynamic>,
+		'nor does an object file, which has no program headers at all';
+};
+
+subtest 'the packed fixture reads back exactly what went in', {
+	plan 12;
+	for (64, 'little'), (64, 'big'), (32, 'little'), (32, 'big') -> ($class, $endian) {
+		my %d = read-packed(:$class, :$endian,
+			:needed<libcrypto.so.3 libssl.so.3 libc.so.6>,
+			:runpath('$ORIGIN:$ORIGIN/../lib'));
+		is "{%d<class>}/{%d<endian>}", "$class/$endian",
+			"ELF$class {$endian}-endian";
+		is-deeply %d<needed>, <libcrypto.so.3 libssl.so.3 libc.so.6>,
+			'  its NEEDED list';
+		is %d<runpath>, '$ORIGIN:$ORIGIN/../lib', '  its RUNPATH';
+	}
+};
+
+subtest 'the loader\'s precedence, which is patchelf\'s', {
+	plan 7;
+
+	# Older GNU linkers wrote both tags for --enable-new-dtags, and a
+	# file can carry two different values. The loader ignores DT_RPATH
+	# outright when there is a DT_RUNPATH.
+	my %both = read-packed(:rpath</opt/build/lib>, :runpath('$ORIGIN'));
+	is %both<rpath>, '/opt/build/lib', 'both tags are reported';
+	is %both<runpath>, '$ORIGIN', 'as they are';
+	is elf-loader-rpath(%both), '$ORIGIN', 'and RUNPATH is the one searched';
+
+	# Present-but-empty is not absent: an empty RUNPATH still switches
+	# DT_RPATH off.
+	my %empty = read-packed(:rpath</opt/build/lib>, :runpath(''));
+	is %empty<runpath>, '', 'an empty RUNPATH is the empty string, not undefined';
+	is elf-loader-rpath(%empty), '', 'and it still wins';
+
+	is elf-loader-rpath({ rpath => '/x', runpath => Str }), '/x',
+		'DT_RPATH alone is searched';
+	is elf-loader-rpath({ rpath => Str, runpath => Str }), '',
+		'and neither is the empty string, which is what patchelf prints';
+};
+
+subtest 'odd but legal', {
+	plan 8;
+	nok read-packed(:dynamics(0))<dynamic>,
+		'no PT_DYNAMIC is a static executable, not a malformation';
+	nok read-packed(:no-phdrs, :type(1))<dynamic>,
+		'and no program headers is an object file';
+	is-deeply read-packed(:needed(()))<needed>.List, (),
+		'a dynamic section naming nothing names nothing';
+	is-deeply read-packed(:needed(()), :!strtab)<needed>.List, (),
+		'and needs no string table to say so';
+	is-deeply read-packed(:!strsz)<needed>, ('libcrypto.so.3',),
+		'no DT_STRSZ bounds the string table by its segment instead';
+	is-deeply read-packed(:xnum)<needed>, ('libcrypto.so.3',),
+		'PN_XNUM puts the program-header count in section header 0';
+
+	# Paths are bytes. utf8-c8 brings back exactly the bytes in the file,
+	# valid UTF-8 or not, so an rpath is never quietly rewritten.
+	is read-packed(:runpath('$ORIGIN/../lib/über'))<runpath>,
+		'$ORIGIN/../lib/über', 'a UTF-8 rpath reads back as itself';
+	my $raw = buf8.new(0x2F, 0x6F, 0x70, 0x74, 0xFF, 0x2F);
+	is-deeply read-packed(:rpath($raw.decode('utf8-c8')))<rpath>
+			.encode('utf8-c8').list,
+		$raw.list, 'and one that is not UTF-8 survives byte for byte';
+};
+
+subtest 'a file that is not an ELF, or is cut short, is named and refused', {
+	plan 9;
+	my $real = $FIXTURES.add('x86_64-runpath.elf').slurp(:bin);
+	my $dyn-at = :16(($FIXTURES.add('x86_64-runpath.readelf').slurp
+		~~ / 'Dynamic section at offset 0x' (<xdigit>+) /)[0].Str);
+	my $phoff = $real.read-uint64(32, LittleEndian);
+	my $phnum = $real.read-uint16(56, LittleEndian);
+
+	dies-saying(Blob.new, /'reading the ELF identification needs 16 bytes'
+		.* '0 bytes long'/, 'an empty file');
+	dies-saying($real.subbuf(0, 10), /'the ELF identification'/,
+		'a file cut inside the identification bytes');
+	dies-saying($real.subbuf(0, 40),
+		/'reading the ELF64 header needs 64 bytes at offset 0'/,
+		'one cut inside the ELF header');
+	dies-saying($real.subbuf(0, $phoff + 10),
+		/"reading its $phnum program headers needs"/,
+		'one cut inside the program headers');
+	dies-saying($real.subbuf(0, $dyn-at + 8),
+		/"reading its dynamic section needs" .* "offset $dyn-at"/,
+		'one cut inside the dynamic section');
+
+	# A string table after the dynamic section, so the cut falls in it.
+	my $packed = elf-bytes(:str-at(0x420));
+	dies-saying($packed.subbuf(0, 0x424),
+		/'reading its string table needs 16 bytes at offset 1056'/,
+		'one cut inside the string table');
+
+	my $i686 = $FIXTURES.add('i686-runpath.elf').slurp(:bin);
+	dies-saying($i686.subbuf(0, 30), /'reading the ELF32 header needs 52 bytes'/,
+		'a 32-bit file is held to its own header size');
+
+	dies-saying("not an ELF at all, just text".encode,
+		/'does not begin with the ELF magic number'/, 'text is not an ELF');
+	throws-like { elf-dynamic($TMP.add('absent.so')) }, Exception,
+		message => /'absent.so' .* 'it is not a file'/,
+		'and a file that is not there is named, not guessed at';
+};
+
+subtest 'malformed headers', {
+	plan 8;
+	dies-saying(elf-bytes(:magic(0x47)), /'ELF magic number'/,
+		'one wrong magic byte');
+	dies-saying(elf-bytes(:ident-class(3)),
+		/'EI_CLASS byte is 3' .* 'ELFCLASS32'/, 'a class the format does not define');
+	dies-saying(elf-bytes(:ident-data(0)),
+		/'EI_DATA byte is 0' .* 'ELFDATA2MSB'/, 'a byte order it does not define');
+	dies-saying(elf-bytes(:ident-version(2)),
+		/'EI_VERSION byte is 2'/, 'a version that does not exist');
+	dies-saying(elf-bytes(:phentsize(40)),
+		/'program headers are 40 bytes each, where ELF64 says 56'/,
+		'program headers of the wrong size');
+	dies-saying(elf-bytes(:class(32), :phentsize(56)),
+		/'where ELF32 says 32'/, 'held to the size their own class defines');
+	dies-saying(elf-bytes(:phoff(16)),
+		/'program headers are at offset 16, inside the 64-byte ELF header'/,
+		'program headers on top of the ELF header');
+	dies-saying(elf-bytes(:no-phdrs, :type(3)),
+		/'shared object with no program headers'/,
+		'a shared object no loader could map');
+};
+
+subtest 'malformed program headers and dynamic sections', {
+	plan 6;
+	dies-saying(elf-bytes(:dynamics(2)),
+		/'2 PT_DYNAMIC program headers' .* 'exactly one'/,
+		'two dynamic sections');
+	dies-saying(elf-bytes(:!null),
+		/'without the DT_NULL entry that ends it'/,
+		'a dynamic section that never ends');
+	dies-saying(elf-bytes(:runpath('$ORIGIN'), :extra((29 => 0),)),
+		/'2 DT_RUNPATH entries'/, 'two RUNPATHs');
+	dies-saying(elf-bytes(:rpath</a>, :extra((15 => 0),)),
+		/'2 DT_RPATH entries'/, 'two RPATHs');
+	dies-saying(elf-bytes(:extra((5 => 0x10200),)),
+		/'2 DT_STRTAB entries'/, 'two string tables');
+	dies-saying(elf-bytes(:xnum, :!xnum-shdr),
+		/'PN_XNUM' .* 'no section headers'/,
+		'PN_XNUM with no section header 0 to hold the count');
+};
+
+subtest 'malformed string tables', {
+	plan 7;
+	dies-saying(elf-bytes(:!strtab),
+		/'no DT_STRTAB to spell them with'/, 'names with nothing to spell them');
+	dies-saying(elf-bytes(:strtab-addr(0x900000)),
+		/'0x900000, which falls in none of its 1 loadable segment'/,
+		'a string table at an address nothing maps');
+	dies-saying(elf-bytes(:strtab-addr(0x10500), :load-memsz(0x1000)),
+		/'0x10500, in the part of a segment that has no bytes in the file'/,
+		'one in address space with no bytes behind it');
+	dies-saying(elf-bytes(:strsz-value(0x1000)),
+		/'DT_STRSZ says the string table is 4096 bytes'/,
+		'a string table longer than its segment');
+	dies-saying(elf-bytes(:extra((1 => 999),)),
+		/'DT_NEEDED string is at offset 999, past the end'/,
+		'a name past the end of the table');
+	# 15 bytes: the leading NUL and "libcrypto.so.3", its own NUL cut off.
+	dies-saying(elf-bytes(:strsz-value(15)),
+		/'DT_NEEDED string at offset 1 runs to the end' .* 'terminating NUL'/,
+		'a name the table ends in the middle of');
+	dies-saying(elf-bytes(:extra((1 => 0),)),
+		/'DT_NEEDED entry names the empty string'/,
+		'a NEEDED that names nothing');
+};
+
+subtest 'every death names the file it was reading', {
+	plan 2;
+	my $f = file-of(elf-bytes(:!null), 'libnamed.so.1');
+	throws-like { elf-dynamic($f) }, Exception,
+		message => /^ 'ariza: cannot read the dynamic section of ' .* 'libnamed.so.1: '/,
+		'the absolute path, then what was wrong';
+	lives-ok { elf-dynamic($FIXTURES.add('x86_64-runpath.elf').absolute) },
+		'and a path given as a string is as good as an IO::Path';
+};
+
+subtest 'nothing is run to read a file', {
+	plan 2;
+	# The reason this module exists: readelf comes with binutils and
+	# patchelf with nothing, and the audit has to work on machines that
+	# have neither. With PATH emptied, no tool could be found even if
+	# the parser went looking for one.
+	temp %*ENV;
+	%*ENV<PATH> = $TMP.add('no-such-dir').absolute;
+	my %d = elf-dynamic($FIXTURES.add('x86_64-patchelf.elf'));
+	is-deeply %d<needed>, ('libcrypto.so.3', 'libc.so.6'),
+		'the NEEDED list, with no PATH to find a tool on';
+	is elf-loader-rpath(%d), '$ORIGIN', 'and the search path';
+};

@@ -1,0 +1,11 @@
+
+Dynamic section at offset 0x258 contains 8 entries:
+  Tag        Type                         Name/Value
+ 0x000000000000000f (RPATH)              Library rpath: [/opt/build/lib:$ORIGIN]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
+ 0x0000000000000006 (SYMTAB)             0x1c8
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000005 (STRTAB)             0x218
+ 0x000000000000000a (STRSZ)              53 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x1f8
+ 0x0000000000000000 (NULL)               0x0

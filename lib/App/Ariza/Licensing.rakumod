@@ -57,12 +57,12 @@ my constant MD-SUMMARY-HEADER = '| Component | Version | Licence (SPDX) | Source
 #|   spdx-ids('GPL-3.0-or-later WITH GCC-exception-3.1')
 #|                                     # (GPL-3.0 GCC-exception-3.1)
 our sub spdx-ids(Str:D $expr --> List) is export {
-    $expr.subst(/ <[()]> /, ' ', :g).words
-        .grep({ $_ ne 'AND' && $_ ne 'OR' && $_ ne 'WITH' })
-        .map({ .subst(/ '+' $ /, '')
-                .subst(/ '-or-later' $ /, '')
-                .subst(/ '-only' $ /, '') })
-        .grep(*.chars).unique.List
+	$expr.subst(/ <[()]> /, ' ', :g).words
+		.grep({ $_ ne 'AND' && $_ ne 'OR' && $_ ne 'WITH' })
+		.map({ .subst(/ '+' $ /, '')
+				.subst(/ '-or-later' $ /, '')
+				.subst(/ '-only' $ /, '') })
+		.grep(*.chars).unique.List
 }
 
 #| The licence text file an identifier is looked up as. The whole
@@ -84,7 +84,7 @@ our constant NOASSERTION = 'NOASSERTION';
 #| Anything else containing the word falls through to the ordinary
 #| identifier path, where it fails for having no licence text.
 our sub spdx-not-asserted(Str:D $expr --> Bool) is export {
-    $expr.trim eq NOASSERTION
+	$expr.trim eq NOASSERTION
 }
 
 #| The sentence a C<NOASSERTION> row carries, over whatever the app
@@ -92,15 +92,15 @@ our sub spdx-not-asserted(Str:D $expr --> Bool) is export {
 #| bundle needs to be told the same thing every time: this is not a
 #| licence, and here is where to go and look.
 my sub noassertion-note(Str $url, Str $notes --> Str) {
-    my $said = "Licensing not asserted. The application that built this"
-             ~ " bundle has declared NOASSERTION for this component rather"
-             ~ " than a licence: it could not determine one. Consult"
-             ~ ($url.defined && $url.chars
-                    ?? " the component's own repository, <$url>,"
-                    !! " the component's own repository and source"
-                     ~ " distribution")
-             ~ " before redistributing this bundle.";
-    ($notes.defined && $notes.chars) ?? "$notes\n\n$said" !! $said
+	my $said = "Licensing not asserted. The application that built this"
+			 ~ " bundle has declared NOASSERTION for this component rather"
+			 ~ " than a licence: it could not determine one. Consult"
+			 ~ ($url.defined && $url.chars
+					?? " the component's own repository, <$url>,"
+					!! " the component's own repository and source"
+					 ~ " distribution")
+			 ~ " before redistributing this bundle.";
+	($notes.defined && $notes.chars) ?? "$notes\n\n$said" !! $said
 }
 
 #| The attribution line for a row whose source is Raku metadata rather
@@ -113,11 +113,11 @@ my sub noassertion-note(Str $url, Str $notes --> Str) {
 #| through untouched, which is what a pack manifest and an app's own
 #| C<copyright> key supply.
 my sub attribution(Str:D $text --> Str) {
-    return '' unless $text.trim.chars;
-    return $text if $text.starts-with('Copyright')
-                 || $text.starts-with('(c)') || $text.starts-with('©')
-                 || $text.starts-with('Public domain');
-    "Authors: $text"
+	return '' unless $text.trim.chars;
+	return $text if $text.starts-with('Copyright')
+				 || $text.starts-with('(c)') || $text.starts-with('©')
+				 || $text.starts-with('Public domain');
+	"Authors: $text"
 }
 
 #| The name a data file should be called by in a message or a row.
@@ -128,10 +128,10 @@ my sub attribution(Str:D $text --> Str) {
 #| would cite that in every row it contributed. The logical name is the
 #| one a reader can look up; a path the caller supplied is its own name.
 my sub data-label(IO::Path $path --> Str) {
-    my $shipped = try { resource(RUNTIME-RESOURCE) };
-    ($shipped.defined && $shipped.absolute eq $path.absolute)
-        ?? RUNTIME-RESOURCE
-        !! $path.basename
+	my $shipped = try { resource(RUNTIME-RESOURCE) };
+	($shipped.defined && $shipped.absolute eq $path.absolute)
+		?? RUNTIME-RESOURCE
+		!! $path.basename
 }
 
 #| Whether a string could be an SPDX identifier at all. Not a check that
@@ -139,7 +139,7 @@ my sub data-label(IO::Path $path --> Str) {
 #| there should not be — only that C<"Same as Perl 6"> is not being
 #| treated as three of them.
 my sub spdx-shaped(Str:D $id --> Bool) {
-    so $id ~~ / ^ <[A..Za..z0..9]> <[A..Za..z0..9 . + -]>* $ /
+	so $id ~~ / ^ <[A..Za..z0..9]> <[A..Za..z0..9 . + -]>* $ /
 }
 
 #| One row of the merged inventory. Every collector produces these and
@@ -147,29 +147,29 @@ my sub spdx-shaped(Str:D $id --> Bool) {
 #| distribution's META6 and an app's C<ariza.toml> contribute to one
 #| document without any of them knowing about the others.
 my sub make-row(
-    Str:D :$id!,
-    Str:D :$name!,
-    Str:D :$kind!,
-    Str:D :$provenance!,
-    Str :$version = '',
-    Str :$spdx = '',
-    Str :$conveyed = '',
-    Str :$copyright = '',
-    Str :$url = '',
-    Str :$source = '',
-    Str :$notes = '',
-    :@license-files = (),
-    :@files = (),
-    --> Hash
+	Str:D :$id!,
+	Str:D :$name!,
+	Str:D :$kind!,
+	Str:D :$provenance!,
+	Str :$version = '',
+	Str :$spdx = '',
+	Str :$conveyed = '',
+	Str :$copyright = '',
+	Str :$url = '',
+	Str :$source = '',
+	Str :$notes = '',
+	:@license-files = (),
+	:@files = (),
+	--> Hash
 ) {
-    die "ariza: '$kind' is not a licensing row kind (known: {@KINDS.join(', ')})"
-        unless @KINDS.first($kind);
-    %(
-        :$id, :$name, :$kind, :$provenance, :$version, :$spdx, :$conveyed,
-        :$copyright, :$url, :$source, :$notes,
-        license-files => @license-files.map(*.Str).unique.sort.List,
-        files         => @files.map(*.Str).List,
-    )
+	die "ariza: '$kind' is not a licensing row kind (known: {@KINDS.join(', ')})"
+		unless @KINDS.first($kind);
+	%(
+		:$id, :$name, :$kind, :$provenance, :$version, :$spdx, :$conveyed,
+		:$copyright, :$url, :$source, :$notes,
+		license-files => @license-files.map(*.Str).unique.sort.List,
+		files         => @files.map(*.Str).List,
+	)
 }
 
 my sub kind-rank(%row --> Int) { @KINDS.first(%row<kind>, :k) // +@KINDS }
@@ -179,16 +179,16 @@ my sub kind-rank(%row --> Int) { @KINDS.first(%row<kind>, :k) // +@KINDS }
 #| ids are a hard error — two rows claiming the same identity means one
 #| of them is describing something else.
 method merge(@rows --> List) {
-    my %seen;
-    for @rows -> %r {
-        die "ariza: two licensing rows share the id '{%r<id>}'"
-          ~ " ({%seen{%r<id>}} and {%r<provenance>})"
-            if %seen{%r<id>}:exists;
-        %seen{%r<id>} = %r<provenance>;
-    }
-    @rows.sort({ (kind-rank($^a) <=> kind-rank($^b))
-              || ($^a<name>.fc cmp $^b<name>.fc)
-              || ($^a<id> cmp $^b<id>) }).List
+	my %seen;
+	for @rows -> %r {
+		die "ariza: two licensing rows share the id '{%r<id>}'"
+		  ~ " ({%seen{%r<id>}} and {%r<provenance>})"
+			if %seen{%r<id>}:exists;
+		%seen{%r<id>} = %r<provenance>;
+	}
+	@rows.sort({ (kind-rank($^a) <=> kind-rank($^b))
+			  || ($^a<name>.fc cmp $^b<name>.fc)
+			  || ($^a<id> cmp $^b<id>) }).List
 }
 
 # ---------------------------------------------------------------- #
@@ -200,43 +200,43 @@ method merge(@rows --> List) {
 #| substitution applied. Every field a row needs must be there: a data
 #| file is only better than code if it is checked as strictly.
 method runtime-components(IO() :$path = resource(RUNTIME-RESOURCE) --> List) {
-    my $file = data-label($path);
-    my $data = do {
-        CATCH { default { die "ariza: malformed $file: {.message}" } }
-        from-json($path.slurp);
-    }
+	my $file = data-label($path);
+	my $data = do {
+		CATCH { default { die "ariza: malformed $file: {.message}" } }
+		from-json($path.slurp);
+	}
 
-    die "ariza: $file is not a JSON object"
-        unless $data.defined && $data ~~ Associative;
-    die "ariza: $file has schema-version {$data<schema-version> // 'none'},"
-      ~ " and this ariza reads version 1"
-        unless ($data<schema-version> // 0) == 1;
-    die "ariza: $file has no components list"
-        unless $data<components>.defined && $data<components> ~~ Positional;
+	die "ariza: $file is not a JSON object"
+		unless $data.defined && $data ~~ Associative;
+	die "ariza: $file has schema-version {$data<schema-version> // 'none'},"
+	  ~ " and this ariza reads version 1"
+		unless ($data<schema-version> // 0) == 1;
+	die "ariza: $file has no components list"
+		unless $data<components>.defined && $data<components> ~~ Positional;
 
-    my @out;
-    for $data<components>.list.kv -> $i, $c {
-        die "ariza: $file component $i is not an object"
-            unless $c.defined && $c ~~ Associative;
-        for <id name version kind spdx-license copyright project-url source> -> $key {
-            die "ariza: $file component {$c<id> // $i} has no '$key'"
-                unless $c{$key}.defined && $c{$key} ~~ Str && $c{$key}.chars;
-        }
-        die "ariza: $file component {$c<id>} has no license-files"
-            unless $c<license-files>.defined && $c<license-files> ~~ Positional
-                && $c<license-files>.list.elems;
-        die "ariza: $file component {$c<id>} has kind"
-          ~ " '{$c<kind>}' (known: {@KINDS.join(', ')})"
-            unless @KINDS.first($c<kind>);
-        with $c<condition> {
-            die "ariza: $file component {$c<id>} is conditional on"
-              ~ " '$_', which ariza cannot decide"
-              ~ " (known: {@CONDITIONS.join(', ')})"
-                unless @CONDITIONS.first($_);
-        }
-        @out.push($c);
-    }
-    @out.List
+	my @out;
+	for $data<components>.list.kv -> $i, $c {
+		die "ariza: $file component $i is not an object"
+			unless $c.defined && $c ~~ Associative;
+		for <id name version kind spdx-license copyright project-url source> -> $key {
+			die "ariza: $file component {$c<id> // $i} has no '$key'"
+				unless $c{$key}.defined && $c{$key} ~~ Str && $c{$key}.chars;
+		}
+		die "ariza: $file component {$c<id>} has no license-files"
+			unless $c<license-files>.defined && $c<license-files> ~~ Positional
+				&& $c<license-files>.list.elems;
+		die "ariza: $file component {$c<id>} has kind"
+		  ~ " '{$c<kind>}' (known: {@KINDS.join(', ')})"
+			unless @KINDS.first($c<kind>);
+		with $c<condition> {
+			die "ariza: $file component {$c<id>} is conditional on"
+			  ~ " '$_', which ariza cannot decide"
+			  ~ " (known: {@CONDITIONS.join(', ')})"
+				unless @CONDITIONS.first($_);
+		}
+		@out.push($c);
+	}
+	@out.List
 }
 
 #| Substitute the C<{placeholder}> values a build knows into a data-file
@@ -244,13 +244,13 @@ method runtime-components(IO() :$path = resource(RUNTIME-RESOURCE) --> List) {
 #| empty string, exactly as it is in C<bundle.smoke>: a licence row with
 #| a hole in it does not fail, it publishes something wrong.
 my sub expand(Str:D $text, %placeholders, Str:D $where --> Str) {
-    my $out = $text;
-    $out = $out.subst("\{$_\}", ~(%placeholders{$_} // ''), :g)
-        for %placeholders.keys;
-    die "ariza: $where has an unknown placeholder in \"$out\""
-      ~ " (known: {%placeholders.keys.sort.map({ "\{$_\}" }).join(', ')})"
-        if $out ~~ / '{' <[a..z-]>+ '}' /;
-    $out
+	my $out = $text;
+	$out = $out.subst("\{$_\}", ~(%placeholders{$_} // ''), :g)
+		for %placeholders.keys;
+	die "ariza: $where has an unknown placeholder in \"$out\""
+	  ~ " (known: {%placeholders.keys.sort.map({ "\{$_\}" }).join(', ')})"
+		if $out ~~ / '{' <[a..z-]>+ '}' /;
+	$out
 }
 
 #| The rows for everything ariza puts in a bundle itself: the vendored
@@ -263,50 +263,50 @@ my sub expand(Str:D $text, %placeholders, Str:D $where --> Str) {
 #| cover, keyed by component id, which is how the SQLCipher row can name
 #| what was actually staged without the data file pretending to know.
 method runtime-rows(
-    :%placeholders = %(),
-    :@conditions = (),
-    :%files = %(),
-    IO() :$path = resource(RUNTIME-RESOURCE),
-    --> List
+	:%placeholders = %(),
+	:@conditions = (),
+	:%files = %(),
+	IO() :$path = resource(RUNTIME-RESOURCE),
+	--> List
 ) {
-    my $file = data-label($path);
-    my @rows;
-    for self.runtime-components(:$path) -> $c {
-        with $c<condition> {
-            next unless @conditions.first($_);
-        }
-        my $where = "$file component {$c<id>}";
-        @rows.push(make-row(
-            id         => $c<id>,
-            name       => expand($c<name>, %placeholders, $where),
-            kind       => $c<kind>,
-            version    => expand($c<version>, %placeholders, $where),
-            spdx       => $c<spdx-license>,
-            conveyed   => ($c<conveyed-under> // ''),
-            copyright  => $c<copyright>,
-            url        => $c<project-url>,
-            source     => expand($c<source>, %placeholders, $where),
-            notes      => expand(($c<notes> // ''), %placeholders, $where),
-            license-files => $c<license-files>.list,
-            files      => (%files{$c<id>} // ()).list,
-            provenance => "ariza runtime data ($file)",
-        ));
-    }
-    @rows.List
+	my $file = data-label($path);
+	my @rows;
+	for self.runtime-components(:$path) -> $c {
+		with $c<condition> {
+			next unless @conditions.first($_);
+		}
+		my $where = "$file component {$c<id>}";
+		@rows.push(make-row(
+			id         => $c<id>,
+			name       => expand($c<name>, %placeholders, $where),
+			kind       => $c<kind>,
+			version    => expand($c<version>, %placeholders, $where),
+			spdx       => $c<spdx-license>,
+			conveyed   => ($c<conveyed-under> // ''),
+			copyright  => $c<copyright>,
+			url        => $c<project-url>,
+			source     => expand($c<source>, %placeholders, $where),
+			notes      => expand(($c<notes> // ''), %placeholders, $where),
+			license-files => $c<license-files>.list,
+			files      => (%files{$c<id>} // ()).list,
+			provenance => "ariza runtime data ($file)",
+		));
+	}
+	@rows.List
 }
 
 #| The C<native/> subdirectory names the runtime data claims, so the
 #| pack scan does not report a directory ariza staged itself as one
 #| nobody attributed.
 method runtime-claims(IO() :$path = resource(RUNTIME-RESOURCE), :@conditions = () --> List) {
-    my @claims;
-    for self.runtime-components(:$path) -> $c {
-        with $c<condition> {
-            next unless @conditions.first($_);
-        }
-        @claims.append(($c<claims> // ()).list.grep(Str));
-    }
-    @claims.unique.List
+	my @claims;
+	for self.runtime-components(:$path) -> $c {
+		with $c<condition> {
+			next unless @conditions.first($_);
+		}
+		@claims.append(($c<claims> // ()).list.grep(Str));
+	}
+	@claims.unique.List
 }
 
 # ---------------------------------------------------------------- #
@@ -318,46 +318,46 @@ method runtime-claims(IO() :$path = resource(RUNTIME-RESOURCE), :@conditions = (
 #| C<THIRD-PARTY.md> or a C<LICENSES/>. A kit is not descended into: its
 #| own C<LICENSES/> is part of it, not a second kit.
 method find-kits(IO() $root, Int :$depth = KIT-DEPTH --> List) {
-    return () unless $root.d;
-    my @found;
-    my @queue = ($root => 0).List;
-    while @queue {
-        my $entry = @queue.shift;
-        my ($dir, $level) = $entry.key, $entry.value;
-        if self.kit-dir($dir) {
-            @found.push($dir);
-            next;
-        }
-        next if $level >= $depth;
-        @queue.append($dir.dir.grep(*.d).sort(*.basename).map({ $_ => $level + 1 }));
-    }
-    @found.List
+	return () unless $root.d;
+	my @found;
+	my @queue = ($root => 0).List;
+	while @queue {
+		my $entry = @queue.shift;
+		my ($dir, $level) = $entry.key, $entry.value;
+		if self.kit-dir($dir) {
+			@found.push($dir);
+			next;
+		}
+		next if $level >= $depth;
+		@queue.append($dir.dir.grep(*.d).sort(*.basename).map({ $_ => $level + 1 }));
+	}
+	@found.List
 }
 
 #| Whether a directory is a licensing kit.
 method kit-dir(IO() $dir --> Bool) {
-    return False unless $dir.d;
-    so $dir.add(KIT-MANIFEST).f
-    || $dir.add(KIT-DOCUMENT).f
-    || $dir.add(DIRECTORY).d
+	return False unless $dir.d;
+	so $dir.add(KIT-MANIFEST).f
+	|| $dir.add(KIT-DOCUMENT).f
+	|| $dir.add(DIRECTORY).d
 }
 
 #| A source object from a pack manifest, as the one sentence a reader
 #| wants: where the bytes came from.
 my sub kit-source($source --> Str) {
-    return '' unless $source.defined && $source ~~ Associative;
-    given ($source<kind> // '') {
-        when 'tarball' {
-            "{$source<url> // ''}"
-              ~ ($source<sha256> ?? " (sha256 {$source<sha256>})" !! '')
-        }
-        when 'git'     { "{$source<url> // ''} at commit {$source<ref> // ''}" }
-        when 'in-tree' { "{$source<url> // ''}" }
-        when 'package-manager' {
-            'supplied by the package manager of the machine that built the pack'
-        }
-        default { ~($source<url> // $source<kind> // '') }
-    }
+	return '' unless $source.defined && $source ~~ Associative;
+	given ($source<kind> // '') {
+		when 'tarball' {
+			"{$source<url> // ''}"
+			  ~ ($source<sha256> ?? " (sha256 {$source<sha256>})" !! '')
+		}
+		when 'git'     { "{$source<url> // ''} at commit {$source<ref> // ''}" }
+		when 'in-tree' { "{$source<url> // ''}" }
+		when 'package-manager' {
+			'supplied by the package manager of the machine that built the pack'
+		}
+		default { ~($source<url> // $source<kind> // '') }
+	}
 }
 
 #| The components in a pack's own C<third-party.json>, as rows.
@@ -368,59 +368,59 @@ my sub kit-source($source --> Str) {
 #| all is kept, because a manifest that does not talk about platforms is
 #| talking about all of them.
 method manifest-rows(
-    IO() $manifest,
-    Str:D :$family!,
-    Str:D :$pack!,
-    Str:D :$provenance!,
-    --> List
+	IO() $manifest,
+	Str:D :$family!,
+	Str:D :$pack!,
+	Str:D :$provenance!,
+	--> List
 ) {
-    my $data = do {
-        CATCH {
-            default {
-                die "ariza: {$manifest.absolute} is a native pack's licensing"
-                  ~ " manifest and it does not parse: {.message}";
-            }
-        }
-        from-json($manifest.slurp);
-    }
+	my $data = do {
+		CATCH {
+			default {
+				die "ariza: {$manifest.absolute} is a native pack's licensing"
+				  ~ " manifest and it does not parse: {.message}";
+			}
+		}
+		from-json($manifest.slurp);
+	}
 
-    die "ariza: {$manifest.absolute} has no components list"
-        unless $data.defined && $data ~~ Associative
-            && $data<components>.defined && $data<components> ~~ Positional;
+	die "ariza: {$manifest.absolute} has no components list"
+		unless $data.defined && $data ~~ Associative
+			&& $data<components>.defined && $data<components> ~~ Positional;
 
-    my @rows;
-    for $data<components>.list -> $c {
-        next unless $c.defined && $c ~~ Associative;
-        my $id = ($c<id> // $c<name> // '').Str;
-        die "ariza: a component in {$manifest.absolute} has neither an id nor a name"
-            unless $id.chars;
+	my @rows;
+	for $data<components>.list -> $c {
+		next unless $c.defined && $c ~~ Associative;
+		my $id = ($c<id> // $c<name> // '').Str;
+		die "ariza: a component in {$manifest.absolute} has neither an id nor a name"
+			unless $id.chars;
 
-        my @patterns;
-        with $c<binaries> {
-            next unless $_ ~~ Associative;
-            if $_{$family}:exists {
-                @patterns = ($_{$family}<patterns> // ()).list.grep(Str);
-                next unless @patterns;
-            }
-        }
+		my @patterns;
+		with $c<binaries> {
+			next unless $_ ~~ Associative;
+			if $_{$family}:exists {
+				@patterns = ($_{$family}<patterns> // ()).list.grep(Str);
+				next unless @patterns;
+			}
+		}
 
-        @rows.push(make-row(
-            id         => "$pack/$id",
-            name       => ($c<name> // $id).Str,
-            kind       => 'native',
-            version    => ($c<version> // '').Str,
-            spdx       => ($c<spdx-license> // '').Str,
-            conveyed   => ($c<conveyed-under> // '').Str,
-            copyright  => ($c<copyright> // '').Str,
-            url        => ($c<project-url> // '').Str,
-            source     => kit-source($c<source>),
-            notes      => ($c<notes> // '').Str,
-            license-files => ($c<license-files> // ()).list.grep(Str),
-            files      => @patterns,
-            :$provenance,
-        ));
-    }
-    @rows.List
+		@rows.push(make-row(
+			id         => "$pack/$id",
+			name       => ($c<name> // $id).Str,
+			kind       => 'native',
+			version    => ($c<version> // '').Str,
+			spdx       => ($c<spdx-license> // '').Str,
+			conveyed   => ($c<conveyed-under> // '').Str,
+			copyright  => ($c<copyright> // '').Str,
+			url        => ($c<project-url> // '').Str,
+			source     => kit-source($c<source>),
+			notes      => ($c<notes> // '').Str,
+			license-files => ($c<license-files> // ()).list.grep(Str),
+			files      => @patterns,
+			:$provenance,
+		));
+	}
+	@rows.List
 }
 
 #| The components a generated C<THIRD-PARTY.md> describes, read off the
@@ -433,68 +433,68 @@ method manifest-rows(
 #| safety story — a document this cannot read produces nothing rather
 #| than rows assembled out of the wrong columns.
 method md-components(Str:D $md --> List) {
-    my @lines = $md.lines;
-    my $at = @lines.first({ .trim eq MD-SUMMARY-HEADER }, :k);
-    return () without $at;
+	my @lines = $md.lines;
+	my $at = @lines.first({ .trim eq MD-SUMMARY-HEADER }, :k);
+	return () without $at;
 
-    my @summary;
-    for @lines[$at + 1 .. *] -> $line {
-        my $text = $line.trim;
-        last unless $text.starts-with('|');
-        # The `|---|---|---|---|` rule under the header.
-        next if $text.subst(/ <[|\-: \s]> /, '', :g) eq '';
-        my @cells = $text.split('|').map(*.trim);
-        # A `| a | b | c | d |` row splits to six, the first and last
-        # empty; anything else is not this table's shape.
-        next unless @cells == 6;
-        @summary.push(%(
-            name    => @cells[1],
-            version => @cells[2],
-            spdx    => @cells[3].subst('`', '', :g),
-            source  => @cells[4],
-        ));
-    }
-    return () unless @summary;
+	my @summary;
+	for @lines[$at + 1 .. *] -> $line {
+		my $text = $line.trim;
+		last unless $text.starts-with('|');
+		# The `|---|---|---|---|` rule under the header.
+		next if $text.subst(/ <[|\-: \s]> /, '', :g) eq '';
+		my @cells = $text.split('|').map(*.trim);
+		# A `| a | b | c | d |` row splits to six, the first and last
+		# empty; anything else is not this table's shape.
+		next unless @cells == 6;
+		@summary.push(%(
+			name    => @cells[1],
+			version => @cells[2],
+			spdx    => @cells[3].subst('`', '', :g),
+			source  => @cells[4],
+		));
+	}
+	return () unless @summary;
 
-    # The Details section: one `### <name> — <version>` heading per
-    # component, then bullets. Only two of them are read, and both are
-    # matched on a label rather than on position.
-    my %copyright;
-    my %texts;
-    my $heading = '';
-    for @lines -> $line {
-        my $text = $line.trim;
-        if $text.starts-with('### ') {
-            $heading = $text.substr(4).trim;
-            next;
-        }
-        next unless $heading.chars && $text.starts-with('* ');
-        my $bullet = $text.substr(2).trim;
-        if $bullet.starts-with('Licence text:') || $bullet.starts-with('License text:') {
-            %texts{$heading} = ($bullet ~~ m:g/ '`' 'LICENSES/' (<-[`]>+) '`' /)
-                .map({ ~.[0] }).List;
-        }
-        elsif $bullet.starts-with('Copyright') || $bullet.starts-with('Public domain') {
-            %copyright{$heading} //= $bullet;
-        }
-    }
+	# The Details section: one `### <name> — <version>` heading per
+	# component, then bullets. Only two of them are read, and both are
+	# matched on a label rather than on position.
+	my %copyright;
+	my %texts;
+	my $heading = '';
+	for @lines -> $line {
+		my $text = $line.trim;
+		if $text.starts-with('### ') {
+			$heading = $text.substr(4).trim;
+			next;
+		}
+		next unless $heading.chars && $text.starts-with('* ');
+		my $bullet = $text.substr(2).trim;
+		if $bullet.starts-with('Licence text:') || $bullet.starts-with('License text:') {
+			%texts{$heading} = ($bullet ~~ m:g/ '`' 'LICENSES/' (<-[`]>+) '`' /)
+				.map({ ~.[0] }).List;
+		}
+		elsif $bullet.starts-with('Copyright') || $bullet.starts-with('Public domain') {
+			%copyright{$heading} //= $bullet;
+		}
+	}
 
-    # Headings are matched on `<name> ` or `<name>` exactly, and the
-    # candidates are sorted before one is taken: a bare `.starts-with`
-    # over unsorted hash keys would let a component called `notcurses`
-    # pick up `notcurses-core`'s copyright, and would pick a different
-    # one on the next run.
-    my sub heading-for(%where, Str:D $name --> Str) {
-        %where.keys.sort.first({ $_ eq $name || .starts-with("$name ") }) // Str
-    }
+	# Headings are matched on `<name> ` or `<name>` exactly, and the
+	# candidates are sorted before one is taken: a bare `.starts-with`
+	# over unsorted hash keys would let a component called `notcurses`
+	# pick up `notcurses-core`'s copyright, and would pick a different
+	# one on the next run.
+	my sub heading-for(%where, Str:D $name --> Str) {
+		%where.keys.sort.first({ $_ eq $name || .starts-with("$name ") }) // Str
+	}
 
-    for @summary -> %c {
-        my $key = heading-for(%copyright, %c<name>);
-        %c<copyright> = ($key.defined ?? %copyright{$key} !! '');
-        my $tkey = heading-for(%texts, %c<name>);
-        %c<license-files> = ($tkey.defined ?? %texts{$tkey} !! ());
-    }
-    @summary.List
+	for @summary -> %c {
+		my $key = heading-for(%copyright, %c<name>);
+		%c<copyright> = ($key.defined ?? %copyright{$key} !! '');
+		my $tkey = heading-for(%texts, %c<name>);
+		%c<license-files> = ($tkey.defined ?? %texts{$tkey} !! ());
+	}
+	@summary.List
 }
 
 #| Rows for every native pack staged into the bundle, and the licence
@@ -510,92 +510,92 @@ method md-components(Str:D $md --> List) {
 #| failed build, which is what an app that will not ship an
 #| unattributed payload asks for.
 method pack-rows(
-    IO() :$bundle-dir!,
-    Str:D :$family!,
-    IO() :$native-dir = App::Ariza::Site.native-dir($bundle-dir),
-    :@claimed = (),
-    Bool :$strict = False,
-    :@warnings = [],
-    --> Hash
+	IO() :$bundle-dir!,
+	Str:D :$family!,
+	IO() :$native-dir = App::Ariza::Site.native-dir($bundle-dir),
+	:@claimed = (),
+	Bool :$strict = False,
+	:@warnings = [],
+	--> Hash
 ) {
-    my @rows;
-    my @texts;
-    return %( rows => @rows.List, texts => @texts.List ) unless $native-dir.d;
+	my @rows;
+	my @texts;
+	return %( rows => @rows.List, texts => @texts.List ) unless $native-dir.d;
 
-    for $native-dir.dir.grep(*.d).sort(*.basename) -> $pack-dir {
-        my $pack = $pack-dir.basename;
-        next if @claimed.first($pack);
+	for $native-dir.dir.grep(*.d).sort(*.basename) -> $pack-dir {
+		my $pack = $pack-dir.basename;
+		next if @claimed.first($pack);
 
-        my @kits = self.find-kits($pack-dir);
-        my @pack-rows;
+		my @kits = self.find-kits($pack-dir);
+		my @pack-rows;
 
-        for @kits -> $kit {
-            my $rel = $kit.relative($bundle-dir).subst('\\', '/', :g);
-            @texts.push($kit.add(DIRECTORY)) if $kit.add(DIRECTORY).d;
+		for @kits -> $kit {
+			my $rel = $kit.relative($bundle-dir).subst('\\', '/', :g);
+			@texts.push($kit.add(DIRECTORY)) if $kit.add(DIRECTORY).d;
 
-            my $manifest = $kit.add(KIT-MANIFEST);
-            if $manifest.f {
-                @pack-rows.append(self.manifest-rows($manifest, :$family, :$pack,
-                    :provenance("pack manifest ($rel/{KIT-MANIFEST})")));
-                next;
-            }
+			my $manifest = $kit.add(KIT-MANIFEST);
+			if $manifest.f {
+				@pack-rows.append(self.manifest-rows($manifest, :$family, :$pack,
+					:provenance("pack manifest ($rel/{KIT-MANIFEST})")));
+				next;
+			}
 
-            my $document = $kit.add(KIT-DOCUMENT);
-            next unless $document.f;
-            my @found = self.md-components($document.slurp);
-            unless @found {
-                @warnings.push("$rel/{KIT-DOCUMENT} is not in the generated"
-                             ~ " shape ariza can read, so $pack is listed as"
-                             ~ " unattributed");
-                next;
-            }
-            for @found -> %c {
-                @pack-rows.push(make-row(
-                    id      => "$pack/" ~ %c<name>.lc.subst(/ <-[a..z0..9]>+ /, '-', :g)
-                                                   .subst(/ ^ '-' | '-' $ /, '', :g),
-                    name    => %c<name>,
-                    kind    => 'native',
-                    version => %c<version>,
-                    spdx    => %c<spdx>,
-                    copyright => %c<copyright>,
-                    source  => %c<source>,
-                    license-files => %c<license-files>.list,
-                    provenance => "pack kit ($rel/{KIT-DOCUMENT})",
-                ));
-            }
-        }
+			my $document = $kit.add(KIT-DOCUMENT);
+			next unless $document.f;
+			my @found = self.md-components($document.slurp);
+			unless @found {
+				@warnings.push("$rel/{KIT-DOCUMENT} is not in the generated"
+							 ~ " shape ariza can read, so $pack is listed as"
+							 ~ " unattributed");
+				next;
+			}
+			for @found -> %c {
+				@pack-rows.push(make-row(
+					id      => "$pack/" ~ %c<name>.lc.subst(/ <-[a..z0..9]>+ /, '-', :g)
+												   .subst(/ ^ '-' | '-' $ /, '', :g),
+					name    => %c<name>,
+					kind    => 'native',
+					version => %c<version>,
+					spdx    => %c<spdx>,
+					copyright => %c<copyright>,
+					source  => %c<source>,
+					license-files => %c<license-files>.list,
+					provenance => "pack kit ($rel/{KIT-DOCUMENT})",
+				));
+			}
+		}
 
-        unless @pack-rows {
-            my $rel = $pack-dir.relative($bundle-dir).subst('\\', '/', :g);
-            my $why = "$pack ships no licensing manifest ariza can read,"
-                    ~ " so what is in $rel is redistributed unattributed";
-            die "ariza: $why.\n"
-              ~ "    licensing.strict is on. Either the pack grows a"
-              ~ " {KIT-MANIFEST} (or a generated {KIT-DOCUMENT}), or the app"
-              ~ " declares it with a [[licensing.third-party]] row in"
-              ~ " ariza.toml."
-                if $strict;
-            @warnings.push($why);
-            @pack-rows.push(make-row(
-                id      => "native/$pack",
-                name    => $pack,
-                kind    => 'native',
-                version => '',
-                notes   => "Licensing unknown: this pack ships no"
-                         ~ " {KIT-MANIFEST} and no {KIT-DOCUMENT}, so ariza"
-                         ~ " has nothing to attribute its contents from."
-                         ~ " Declare it with a [[licensing.third-party]] row"
-                         ~ " in the app's ariza.toml, or ask the pack to ship"
-                         ~ " a licensing kit.",
-                files   => ($rel,),
-                provenance => "bundle scan ($rel)",
-            ));
-        }
+		unless @pack-rows {
+			my $rel = $pack-dir.relative($bundle-dir).subst('\\', '/', :g);
+			my $why = "$pack ships no licensing manifest ariza can read,"
+					~ " so what is in $rel is redistributed unattributed";
+			die "ariza: $why.\n"
+			  ~ "    licensing.strict is on. Either the pack grows a"
+			  ~ " {KIT-MANIFEST} (or a generated {KIT-DOCUMENT}), or the app"
+			  ~ " declares it with a [[licensing.third-party]] row in"
+			  ~ " ariza.toml."
+				if $strict;
+			@warnings.push($why);
+			@pack-rows.push(make-row(
+				id      => "native/$pack",
+				name    => $pack,
+				kind    => 'native',
+				version => '',
+				notes   => "Licensing unknown: this pack ships no"
+						 ~ " {KIT-MANIFEST} and no {KIT-DOCUMENT}, so ariza"
+						 ~ " has nothing to attribute its contents from."
+						 ~ " Declare it with a [[licensing.third-party]] row"
+						 ~ " in the app's ariza.toml, or ask the pack to ship"
+						 ~ " a licensing kit.",
+				files   => ($rel,),
+				provenance => "bundle scan ($rel)",
+			));
+		}
 
-        @rows.append(@pack-rows);
-    }
+		@rows.append(@pack-rows);
+	}
 
-    %( rows => @rows.List, texts => @texts.List )
+	%( rows => @rows.List, texts => @texts.List )
 }
 
 # ---------------------------------------------------------------- #
@@ -613,113 +613,113 @@ method pack-rows(
 #| distribution which does not can say so once in its own C<ariza.toml>
 #| rather than have every bundle quietly under-report.
 method site-rows(
-    IO() :$bundle-dir!,
-    Str :$app-name,
-    :@overrides = (),
-    :%texts!,
-    --> List
+	IO() :$bundle-dir!,
+	Str :$app-name,
+	:@overrides = (),
+	:%texts!,
+	--> List
 ) {
-    my %by-name;
-    for @overrides -> %o {
-        %by-name{%o<name>} = %o;
-    }
+	my %by-name;
+	for @overrides -> %o {
+		%by-name{%o<name>} = %o;
+	}
 
-    # The app's closure first, then the runtime's own repository, so a
-    # distribution that appears in both is attributed to the bundle that
-    # installed it. Provenance names the directory the row was read
-    # from, so a reader can go and look.
-    my @repos =
-        %( dir => App::Ariza::Site.site-dir($bundle-dir),
-           provenance => 'site META ('
-                       ~ App::Ariza::Site.site-rel($bundle-dir) ~ '/dist)' ),
-        %( dir => $bundle-dir.add('rakudo').add('share').add('perl6').add('site'),
-           provenance => 'site META (rakudo/share/perl6/site/dist)' ),
-    ;
+	# The app's closure first, then the runtime's own repository, so a
+	# distribution that appears in both is attributed to the bundle that
+	# installed it. Provenance names the directory the row was read
+	# from, so a reader can go and look.
+	my @repos =
+		%( dir => App::Ariza::Site.site-dir($bundle-dir),
+		   provenance => 'site META ('
+					   ~ App::Ariza::Site.site-rel($bundle-dir) ~ '/dist)' ),
+		%( dir => $bundle-dir.add('rakudo').add('share').add('perl6').add('site'),
+		   provenance => 'site META (rakudo/share/perl6/site/dist)' ),
+	;
 
-    my @rows;
-    my @problems;
-    my %seen;
-    for @repos -> %repo {
-        for App::Ariza::Site.dists-in(%repo<dir>).list -> %d {
-            my $name = ~%d<name>;
-            next if $app-name.defined && $name eq $app-name;
-            next if %seen{$name}++;
+	my @rows;
+	my @problems;
+	my %seen;
+	for @repos -> %repo {
+		for App::Ariza::Site.dists-in(%repo<dir>).list -> %d {
+			my $name = ~%d<name>;
+			next if $app-name.defined && $name eq $app-name;
+			next if %seen{$name}++;
 
-            my %o = %by-name{$name} // %();
-            my $declared = (%o<spdx-license> // '').trim;
-            my $spdx = ($declared.chars ?? $declared !! (%d<license> // '').trim);
+			my %o = %by-name{$name} // %();
+			my $declared = (%o<spdx-license> // '').trim;
+			my $spdx = ($declared.chars ?? $declared !! (%d<license> // '').trim);
 
-            unless $spdx.chars {
-                @problems.push("$name declares no licence at all");
-                next;
-            }
+			unless $spdx.chars {
+				@problems.push("$name declares no licence at all");
+				next;
+			}
 
-            # NOASSERTION is only ever a DECLARATION, and only an app can
-            # make it. A distribution whose own metadata says it is not
-            # asserting anything has told ariza nothing an app has looked
-            # at, so it fails like any other missing licence — and the fix
-            # is for somebody to look, and then to say so on the record.
-            my $not-asserted = spdx-not-asserted($declared);
-            if !$not-asserted && spdx-not-asserted($spdx) {
-                @problems.push("$name declares NOASSERTION in its own"
-                             ~ " metadata, which is not a licence ariza will"
-                             ~ " pass on unread");
-                next;
-            }
+			# NOASSERTION is only ever a DECLARATION, and only an app can
+			# make it. A distribution whose own metadata says it is not
+			# asserting anything has told ariza nothing an app has looked
+			# at, so it fails like any other missing licence — and the fix
+			# is for somebody to look, and then to say so on the record.
+			my $not-asserted = spdx-not-asserted($declared);
+			if !$not-asserted && spdx-not-asserted($spdx) {
+				@problems.push("$name declares NOASSERTION in its own"
+							 ~ " metadata, which is not a licence ariza will"
+							 ~ " pass on unread");
+				next;
+			}
 
-            my @files = (%o<license-files> // ()).list.map(*.IO.basename);
-            if !@files && !$not-asserted {
-                my @ids = spdx-ids($spdx);
-                my @bad = @ids.grep({ !spdx-shaped($_)
-                                   || !%texts{spdx-text-name($_)}.defined });
-                if @bad {
-                    @problems.push("$name declares \"$spdx\", and ariza has no"
-                                 ~ " licence text for {@bad.join(', ')}");
-                    next;
-                }
-                @files = @ids.map({ spdx-text-name($_) });
-            }
+			my @files = (%o<license-files> // ()).list.map(*.IO.basename);
+			if !@files && !$not-asserted {
+				my @ids = spdx-ids($spdx);
+				my @bad = @ids.grep({ !spdx-shaped($_)
+								   || !%texts{spdx-text-name($_)}.defined });
+				if @bad {
+					@problems.push("$name declares \"$spdx\", and ariza has no"
+								 ~ " licence text for {@bad.join(', ')}");
+					next;
+				}
+				@files = @ids.map({ spdx-text-name($_) });
+			}
 
-            @rows.push(make-row(
-                id         => "dist/$name",
-                name       => $name,
-                kind       => 'module',
-                version    => ~(%o<version> // %d<version> // ''),
-                spdx       => $spdx,
-                copyright  => attribution(~(%o<copyright>
-                                // (%d<authors> // ()).list.join('; '))),
-                url        => ~(%o<project-url> // ''),
-                source     => 'installed into the bundle by zef'
-                            ~ (%d<auth>.defined ?? " (auth {%d<auth>})" !! ''),
-                notes      => ($not-asserted
-                    ?? noassertion-note(~(%o<project-url> // ''), ~(%o<notes> // ''))
-                    !! ~(%o<notes> // '')),
-                license-files => @files,
-                provenance => (%o
-                    ?? "app config ([[licensing.dists]]), over {%repo<provenance>}"
-                    !! %repo<provenance>),
-            ));
-        }
-    }
+			@rows.push(make-row(
+				id         => "dist/$name",
+				name       => $name,
+				kind       => 'module',
+				version    => ~(%o<version> // %d<version> // ''),
+				spdx       => $spdx,
+				copyright  => attribution(~(%o<copyright>
+								// (%d<authors> // ()).list.join('; '))),
+				url        => ~(%o<project-url> // ''),
+				source     => 'installed into the bundle by zef'
+							~ (%d<auth>.defined ?? " (auth {%d<auth>})" !! ''),
+				notes      => ($not-asserted
+					?? noassertion-note(~(%o<project-url> // ''), ~(%o<notes> // ''))
+					!! ~(%o<notes> // '')),
+				license-files => @files,
+				provenance => (%o
+					?? "app config ([[licensing.dists]]), over {%repo<provenance>}"
+					!! %repo<provenance>),
+			));
+		}
+	}
 
-    # Every offender at once, not the first one: an app whose closure has
-    # three distributions with nothing to say about their licences should
-    # learn that in one build, not in three.
-    die "ariza: {+@problems} distribution(s) in the bundle cannot be"
-      ~ " attributed, and ariza will not ship a component it cannot"
-      ~ " attribute:\n"
-      ~ @problems.map({ "    $_" }).join("\n") ~ "\n"
-      ~ "  Fix the distribution's own META6.json \"license\" field where"
-      ~ " you can, or declare each one in the app's ariza.toml:\n"
-      ~ "      [[licensing.dists]]\n"
-      ~ "      name = \"Some::Module\"\n"
-      ~ "      spdx-license = \"Artistic-2.0\"\n"
-      ~ "  adding license-files = [\"path/in/your/repo.txt\"] for a licence"
-      ~ " ariza ships no text for, or spdx-license = \"{NOASSERTION}\" once"
-      ~ " you have looked and there is genuinely no answer."
-        if @problems;
+	# Every offender at once, not the first one: an app whose closure has
+	# three distributions with nothing to say about their licences should
+	# learn that in one build, not in three.
+	die "ariza: {+@problems} distribution(s) in the bundle cannot be"
+	  ~ " attributed, and ariza will not ship a component it cannot"
+	  ~ " attribute:\n"
+	  ~ @problems.map({ "    $_" }).join("\n") ~ "\n"
+	  ~ "  Fix the distribution's own META6.json \"license\" field where"
+	  ~ " you can, or declare each one in the app's ariza.toml:\n"
+	  ~ "      [[licensing.dists]]\n"
+	  ~ "      name = \"Some::Module\"\n"
+	  ~ "      spdx-license = \"Artistic-2.0\"\n"
+	  ~ "  adding license-files = [\"path/in/your/repo.txt\"] for a licence"
+	  ~ " ariza ships no text for, or spdx-license = \"{NOASSERTION}\" once"
+	  ~ " you have looked and there is genuinely no answer."
+		if @problems;
 
-    @rows.List
+	@rows.List
 }
 
 # ---------------------------------------------------------------- #
@@ -736,130 +736,130 @@ method site-rows(
 #| the notice its author actually wrote, and the shipped text for its
 #| SPDX identifier otherwise.
 method app-rows(
-    App::Ariza::Config:D :$config!,
-    IO() :$app-dir!,
-    Str:D :$app-version!,
-    :%texts!,
-    Str :$license-file,
-    --> List
+	App::Ariza::Config:D :$config!,
+	IO() :$app-dir!,
+	Str:D :$app-version!,
+	:%texts!,
+	Str :$license-file,
+	--> List
 ) {
-    my %meta = self.app-meta($app-dir);
-    my %own  = $config.licensing-app;
+	my %meta = self.app-meta($app-dir);
+	my %own  = $config.licensing-app;
 
-    my $spdx = ~(%own<spdx-license> // %meta<license> // '').trim;
-    die "ariza: {$config.app-name} declares no licence: its META6.json has"
-      ~ " no \"license\" field and ariza.toml has no"
-      ~ " [licensing.app] spdx-license.\n"
-      ~ "    A bundle says what it redistributes, and that starts with the"
-      ~ " application itself."
-        unless $spdx.chars;
+	my $spdx = ~(%own<spdx-license> // %meta<license> // '').trim;
+	die "ariza: {$config.app-name} declares no licence: its META6.json has"
+	  ~ " no \"license\" field and ariza.toml has no"
+	  ~ " [licensing.app] spdx-license.\n"
+	  ~ "    A bundle says what it redistributes, and that starts with the"
+	  ~ " application itself."
+		unless $spdx.chars;
 
-    # An application may not decline to say. NOASSERTION means "somebody
-    # looked at a third party's work and could not find out"; there is
-    # nobody to look for the licence of the thing being built here.
-    die "ariza: {$config.app-name} declares {NOASSERTION} as its own"
-      ~ " licence.\n"
-      ~ "    {NOASSERTION} is for a component whose licensing an app could"
-      ~ " not determine. An application knows its own: put an SPDX"
-      ~ " identifier in its META6.json \"license\" field, or in"
-      ~ " [licensing.app] spdx-license."
-        if spdx-not-asserted($spdx);
+	# An application may not decline to say. NOASSERTION means "somebody
+	# looked at a third party's work and could not find out"; there is
+	# nobody to look for the licence of the thing being built here.
+	die "ariza: {$config.app-name} declares {NOASSERTION} as its own"
+	  ~ " licence.\n"
+	  ~ "    {NOASSERTION} is for a component whose licensing an app could"
+	  ~ " not determine. An application knows its own: put an SPDX"
+	  ~ " identifier in its META6.json \"license\" field, or in"
+	  ~ " [licensing.app] spdx-license."
+		if spdx-not-asserted($spdx);
 
-    my @files = (%own<license-files> // ()).list.map(*.IO.basename);
-    @files = ($license-file,) if !@files && $license-file.defined;
-    unless @files {
-        my @ids = spdx-ids($spdx);
-        my @bad = @ids.grep({ !spdx-shaped($_)
-                           || !%texts{spdx-text-name($_)}.defined });
-        die "ariza: {$config.app-name} declares the licence \"$spdx\", which"
-          ~ " ariza has no licence text for ({@bad.join(', ')}), and its"
-          ~ " repository has no LICENSE file to copy instead.\n"
-          ~ "    Add one, or name a file with [licensing.app] license-files"
-          ~ " in ariza.toml."
-            if @bad;
-        @files = @ids.map({ spdx-text-name($_) });
-    }
+	my @files = (%own<license-files> // ()).list.map(*.IO.basename);
+	@files = ($license-file,) if !@files && $license-file.defined;
+	unless @files {
+		my @ids = spdx-ids($spdx);
+		my @bad = @ids.grep({ !spdx-shaped($_)
+						   || !%texts{spdx-text-name($_)}.defined });
+		die "ariza: {$config.app-name} declares the licence \"$spdx\", which"
+		  ~ " ariza has no licence text for ({@bad.join(', ')}), and its"
+		  ~ " repository has no LICENSE file to copy instead.\n"
+		  ~ "    Add one, or name a file with [licensing.app] license-files"
+		  ~ " in ariza.toml."
+			if @bad;
+		@files = @ids.map({ spdx-text-name($_) });
+	}
 
-    # `.push`, not `my @rows = make-row(...)`: assigning a single Hash to
-    # an Array flattens it into its Pairs, and the row disappears.
-    my @rows;
-    @rows.push(make-row(
-        id        => 'app',
-        name      => ~(%own<name> // $config.app-name),
-        kind      => 'application',
-        version   => ~(%own<version> // $app-version),
-        spdx      => $spdx,
-        conveyed  => ~(%own<conveyed-under> // ''),
-        copyright => attribution(
-                        ~(%own<copyright> // (%meta<authors> // ()).list.join('; '))),
-        url       => ~(%own<project-url> // %meta<source-url> // ''),
-        source    => ~(%own<source> // 'this bundle is a build of it'),
-        notes     => ~(%own<notes> // ''),
-        license-files => @files,
-        provenance => (%own
-            ?? 'app config ([licensing.app]), over the app META6'
-            !! 'app META6'),
-    ));
+	# `.push`, not `my @rows = make-row(...)`: assigning a single Hash to
+	# an Array flattens it into its Pairs, and the row disappears.
+	my @rows;
+	@rows.push(make-row(
+		id        => 'app',
+		name      => ~(%own<name> // $config.app-name),
+		kind      => 'application',
+		version   => ~(%own<version> // $app-version),
+		spdx      => $spdx,
+		conveyed  => ~(%own<conveyed-under> // ''),
+		copyright => attribution(
+						~(%own<copyright> // (%meta<authors> // ()).list.join('; '))),
+		url       => ~(%own<project-url> // %meta<source-url> // ''),
+		source    => ~(%own<source> // 'this bundle is a build of it'),
+		notes     => ~(%own<notes> // ''),
+		license-files => @files,
+		provenance => (%own
+			?? 'app config ([licensing.app]), over the app META6'
+			!! 'app META6'),
+	));
 
-    for $config.licensing-third-party.list.kv -> $i, %t {
-        my $declared = ~%t<spdx-license>;
-        my $not-asserted = spdx-not-asserted($declared);
-        my @own-files = (%t<license-files> // ()).list.map(*.IO.basename);
-        # No text is looked up for a declaration that there is no licence:
-        # there is nothing to look up. A row that names a file anyway
-        # keeps it — a NOTICE somebody found is worth carrying even when
-        # the licence itself could not be established.
-        if !@own-files && !$not-asserted {
-            my @ids = spdx-ids($declared);
-            my @bad = @ids.grep({ !spdx-shaped($_)
-                               || !%texts{spdx-text-name($_)}.defined });
-            die "ariza: the [[licensing.third-party]] row for {%t<name>}"
-              ~ " declares \"{%t<spdx-license>}\", which ariza has no licence"
-              ~ " text for ({@bad.join(', ')}).\n"
-              ~ "    Add license-files to that row, naming a file in the"
-              ~ " app's repository — or spdx-license = \"{NOASSERTION}\" once"
-              ~ " you have looked and there is genuinely no answer."
-                if @bad;
-            @own-files = @ids.map({ spdx-text-name($_) });
-        }
-        @rows.push(make-row(
-            id        => (%t<id> // "app-third-party/{$i + 1}").Str,
-            name      => ~%t<name>,
-            kind      => 'other',
-            version   => ~(%t<version> // ''),
-            spdx      => ~%t<spdx-license>,
-            conveyed  => ~(%t<conveyed-under> // ''),
-            copyright => ~(%t<copyright> // ''),
-            url       => ~(%t<project-url> // ''),
-            source    => ~(%t<source> // ''),
-            notes     => ($not-asserted
-                ?? noassertion-note(~(%t<project-url> // ''), ~(%t<notes> // ''))
-                !! ~(%t<notes> // '')),
-            license-files => @own-files,
-            files     => (%t<files> // ()).list,
-            provenance => 'app config ([[licensing.third-party]])',
-        ));
-    }
+	for $config.licensing-third-party.list.kv -> $i, %t {
+		my $declared = ~%t<spdx-license>;
+		my $not-asserted = spdx-not-asserted($declared);
+		my @own-files = (%t<license-files> // ()).list.map(*.IO.basename);
+		# No text is looked up for a declaration that there is no licence:
+		# there is nothing to look up. A row that names a file anyway
+		# keeps it — a NOTICE somebody found is worth carrying even when
+		# the licence itself could not be established.
+		if !@own-files && !$not-asserted {
+			my @ids = spdx-ids($declared);
+			my @bad = @ids.grep({ !spdx-shaped($_)
+							   || !%texts{spdx-text-name($_)}.defined });
+			die "ariza: the [[licensing.third-party]] row for {%t<name>}"
+			  ~ " declares \"{%t<spdx-license>}\", which ariza has no licence"
+			  ~ " text for ({@bad.join(', ')}).\n"
+			  ~ "    Add license-files to that row, naming a file in the"
+			  ~ " app's repository — or spdx-license = \"{NOASSERTION}\" once"
+			  ~ " you have looked and there is genuinely no answer."
+				if @bad;
+			@own-files = @ids.map({ spdx-text-name($_) });
+		}
+		@rows.push(make-row(
+			id        => (%t<id> // "app-third-party/{$i + 1}").Str,
+			name      => ~%t<name>,
+			kind      => 'other',
+			version   => ~(%t<version> // ''),
+			spdx      => ~%t<spdx-license>,
+			conveyed  => ~(%t<conveyed-under> // ''),
+			copyright => ~(%t<copyright> // ''),
+			url       => ~(%t<project-url> // ''),
+			source    => ~(%t<source> // ''),
+			notes     => ($not-asserted
+				?? noassertion-note(~(%t<project-url> // ''), ~(%t<notes> // ''))
+				!! ~(%t<notes> // '')),
+			license-files => @own-files,
+			files     => (%t<files> // ()).list,
+			provenance => 'app config ([[licensing.third-party]])',
+		));
+	}
 
-    @rows.List
+	@rows.List
 }
 
 #| The app checkout's C<META6.json>, or an empty hash. Read rather than
 #| required: the version is L<App::Ariza::Bundle>'s job to insist on, and
 #| by the time this runs it has.
 method app-meta(IO() $app-dir --> Hash) {
-    my $meta = $app-dir.add('META6.json');
-    return %() unless $meta.f;
-    my $data = try { from-json($meta.slurp) };
-    ($data.defined && $data ~~ Associative) ?? $data.Hash !! %()
+	my $meta = $app-dir.add('META6.json');
+	return %() unless $meta.f;
+	my $data = try { from-json($meta.slurp) };
+	($data.defined && $data ~~ Associative) ?? $data.Hash !! %()
 }
 
 #| The app repository's own licence file — C<LICENSE>, C<LICENCE>,
 #| C<LICENSE.md>, whatever it is called — or the undefined C<IO::Path>.
 method app-license-file(IO() $app-dir --> IO::Path) {
-    return IO::Path unless $app-dir.d;
-    $app-dir.dir.grep({ .f && .basename.uc.starts-with('LICEN') })
-        .sort(*.basename).head // IO::Path
+	return IO::Path unless $app-dir.d;
+	$app-dir.dir.grep({ .f && .basename.uc.starts-with('LICEN') })
+		.sort(*.basename).head // IO::Path
 }
 
 # ---------------------------------------------------------------- #
@@ -898,39 +898,39 @@ method app-license-file(IO() $app-dir --> IO::Path) {
 #| the alternative is a bundle whose C<MIT.txt> depends on which
 #| directory was walked first.
 method text-pool(:@extra-dirs = (), :@extra-files = (), :@warnings = [] --> Hash) {
-    my %pool;
-    my %from;
+	my %pool;
+	my %from;
 
-    my sub offer(Str:D $label, Str:D $name, IO::Path $file) {
-        with %pool{$name} -> $have {
-            return if $have.absolute eq $file.absolute;
-            return if $have.s == $file.s
-                   && $have.slurp(:enc<latin-1>) eq $file.slurp(:enc<latin-1>);
-            # The warning names the copy that is NOT used, which after
-            # the app and the packs is usually ariza's own template.
-            @warnings.push("two copies of $name differ: keeping"
-                         ~ " {%from{$name}} ({$have.absolute}), not $label"
-                         ~ " ({$file.absolute})");
-            return;
-        }
-        %pool{$name} = $file;
-        %from{$name} = $label;
-    }
+	my sub offer(Str:D $label, Str:D $name, IO::Path $file) {
+		with %pool{$name} -> $have {
+			return if $have.absolute eq $file.absolute;
+			return if $have.s == $file.s
+				   && $have.slurp(:enc<latin-1>) eq $file.slurp(:enc<latin-1>);
+			# The warning names the copy that is NOT used, which after
+			# the app and the packs is usually ariza's own template.
+			@warnings.push("two copies of $name differ: keeping"
+						 ~ " {%from{$name}} ({$have.absolute}), not $label"
+						 ~ " ({$file.absolute})");
+			return;
+		}
+		%pool{$name} = $file;
+		%from{$name} = $label;
+	}
 
-    for @extra-files -> $file {
-        offer("the app's own copy", $file.basename, $file);
-    }
-    for @extra-dirs -> $dir {
-        next unless $dir.d;
-        for $dir.dir.grep({ .f && .basename.ends-with('.txt') }).sort(*.basename) {
-            offer("a native pack's copy", .basename, $_);
-        }
-    }
-    for resource-list(LICENSE-PREFIX).list -> $rel {
-        offer("ariza's own text", $rel.split('/').tail, resource($rel));
-    }
+	for @extra-files -> $file {
+		offer("the app's own copy", $file.basename, $file);
+	}
+	for @extra-dirs -> $dir {
+		next unless $dir.d;
+		for $dir.dir.grep({ .f && .basename.ends-with('.txt') }).sort(*.basename) {
+			offer("a native pack's copy", .basename, $_);
+		}
+	}
+	for resource-list(LICENSE-PREFIX).list -> $rel {
+		offer("ariza's own text", $rel.split('/').tail, resource($rel));
+	}
 
-    %pool
+	%pool
 }
 
 # ---------------------------------------------------------------- #
@@ -942,54 +942,54 @@ method text-pool(:@extra-dirs = (), :@extra-files = (), :@warnings = [] --> Hash
 #| builds of the same inputs — no timestamp, no build host, no ordering
 #| that depends on how a directory happened to be read.
 method render(
-    :@rows!,
-    Str:D :$app-display!,
-    Str:D :$app-version!,
-    Str:D :$platform!,
-    --> Str
+	:@rows!,
+	Str:D :$app-display!,
+	Str:D :$app-version!,
+	Str:D :$platform!,
+	--> Str
 ) {
-    my @view = @rows.map(-> %r {
-        %(
-            id        => %r<id>,
-            name      => %r<name>,
-            kind      => %r<kind>,
-            heading   => (%r<version>.chars
-                            ?? "{%r<name>} — {%r<version>}" !! %r<name>),
-            version   => (%r<version>.chars ?? %r<version> !! '—'),
-            spdx      => (%r<spdx>.chars ?? %r<spdx> !! 'unknown'),
-            conveyed  => %r<conveyed>,
-            declined  => spdx-not-asserted(%r<spdx>),
-            copyright => %r<copyright>,
-            url       => %r<url>,
-            source    => %r<source>,
-            notes     => %r<notes>,
-            provenance => %r<provenance>,
-            texts     => %r<license-files>.map({ "`{DIRECTORY}/$_`" }).join(', '),
-            files     => %r<files>.map({ "`$_`" }).join(', '),
-        )
-    }).List;
+	my @view = @rows.map(-> %r {
+		%(
+			id        => %r<id>,
+			name      => %r<name>,
+			kind      => %r<kind>,
+			heading   => (%r<version>.chars
+							?? "{%r<name>} — {%r<version>}" !! %r<name>),
+			version   => (%r<version>.chars ?? %r<version> !! '—'),
+			spdx      => (%r<spdx>.chars ?? %r<spdx> !! 'unknown'),
+			conveyed  => %r<conveyed>,
+			declined  => spdx-not-asserted(%r<spdx>),
+			copyright => %r<copyright>,
+			url       => %r<url>,
+			source    => %r<source>,
+			notes     => %r<notes>,
+			provenance => %r<provenance>,
+			texts     => %r<license-files>.map({ "`{DIRECTORY}/$_`" }).join(', '),
+			files     => %r<files>.map({ "`$_`" }).join(', '),
+		)
+	}).List;
 
-    my $unknown = +@rows.grep({ !.<spdx>.chars });
-    my $not-asserted = +@rows.grep({ spdx-not-asserted(.<spdx>) });
-    my %ctx =
-        app_display => $app-display,
-        app_version => $app-version,
-        platform    => $platform,
-        rows        => @view,
-        row_count   => +@view,
-        row_word    => (+@view == 1 ?? 'component' !! 'components'),
-        unknown     => $unknown,
-        unknown_word => ($unknown == 1 ?? 'component' !! 'components'),
-        noassertion  => $not-asserted,
-        noassertion_word => ($not-asserted == 1 ?? 'component' !! 'components'),
-        noassertion_verb => ($not-asserted == 1 ?? 'is' !! 'are'),
-        licenses    => DIRECTORY,
-    ;
+	my $unknown = +@rows.grep({ !.<spdx>.chars });
+	my $not-asserted = +@rows.grep({ spdx-not-asserted(.<spdx>) });
+	my %ctx =
+		app_display => $app-display,
+		app_version => $app-version,
+		platform    => $platform,
+		rows        => @view,
+		row_count   => +@view,
+		row_word    => (+@view == 1 ?? 'component' !! 'components'),
+		unknown     => $unknown,
+		unknown_word => ($unknown == 1 ?? 'component' !! 'components'),
+		noassertion  => $not-asserted,
+		noassertion_word => ($not-asserted == 1 ?? 'component' !! 'components'),
+		noassertion_verb => ($not-asserted == 1 ?? 'is' !! 'are'),
+		licenses    => DIRECTORY,
+	;
 
-    my $tpl = resource(TEMPLATE).slurp;
-    my $out = Template::Jinja2.new.from-string($tpl).render(|%ctx);
-    $out ~= "\n" unless $out.ends-with("\n");
-    $out
+	my $tpl = resource(TEMPLATE).slurp;
+	my $out = Template::Jinja2.new.from-string($tpl).render(|%ctx);
+	$out ~= "\n" unless $out.ends-with("\n");
+	$out
 }
 
 #| Ingest everything, write C<THIRD-PARTY.md> and C<LICENSES/> at the
@@ -1001,120 +1001,120 @@ method render(
 #| bundle is conveyed under — which is the thing a release gate
 #| downstream can actually test.
 method write(
-    IO() :$bundle-dir!,
-    App::Ariza::Config:D :$config!,
-    IO() :$app-dir!,
-    Str:D :$app-version!,
-    Str:D :$app-display!,
-    Str:D :$platform!,
-    :%placeholders = %(),
-    :@conditions = (),
-    :%files = %(),
-    IO() :$data-path = resource(RUNTIME-RESOURCE),
-    --> Hash
+	IO() :$bundle-dir!,
+	App::Ariza::Config:D :$config!,
+	IO() :$app-dir!,
+	Str:D :$app-version!,
+	Str:D :$app-display!,
+	Str:D :$platform!,
+	:%placeholders = %(),
+	:@conditions = (),
+	:%files = %(),
+	IO() :$data-path = resource(RUNTIME-RESOURCE),
+	--> Hash
 ) {
-    my @warnings;
-    my $family = $platform.split('-').head;
+	my @warnings;
+	my $family = $platform.split('-').head;
 
-    my %packs = self.pack-rows(
-        :$bundle-dir, :$family, :@warnings,
-        :claimed(self.runtime-claims(:path($data-path), :@conditions)),
-        :strict($config.licensing-strict));
+	my %packs = self.pack-rows(
+		:$bundle-dir, :$family, :@warnings,
+		:claimed(self.runtime-claims(:path($data-path), :@conditions)),
+		:strict($config.licensing-strict));
 
-    my $app-license = self.app-license-file($app-dir);
-    my $app-license-name = "{$config.app-name.subst('::', '-', :g)}.txt";
+	my $app-license = self.app-license-file($app-dir);
+	my $app-license-name = "{$config.app-name.subst('::', '-', :g)}.txt";
 
-    my @app-files = $config.licensing-app<license-files>.defined
-        ?? $config.licensing-app<license-files>.list.map({ self!app-file($app-dir, $_) })
-        !! ();
-    for $config.licensing-third-party.list -> %t {
-        @app-files.append((%t<license-files> // ()).list.map({ self!app-file($app-dir, $_) }));
-    }
-    for $config.licensing-dists.list -> %d {
-        @app-files.append((%d<license-files> // ()).list.map({ self!app-file($app-dir, $_) }));
-    }
+	my @app-files = $config.licensing-app<license-files>.defined
+		?? $config.licensing-app<license-files>.list.map({ self!app-file($app-dir, $_) })
+		!! ();
+	for $config.licensing-third-party.list -> %t {
+		@app-files.append((%t<license-files> // ()).list.map({ self!app-file($app-dir, $_) }));
+	}
+	for $config.licensing-dists.list -> %d {
+		@app-files.append((%d<license-files> // ()).list.map({ self!app-file($app-dir, $_) }));
+	}
 
-    my %texts = self.text-pool(:extra-dirs(%packs<texts>.list),
-                               :extra-files(@app-files), :@warnings);
-    # The app's own LICENSE, under a name of its own so it can never
-    # collide with an SPDX-named text.
-    %texts{$app-license-name} = $app-license if $app-license.defined;
+	my %texts = self.text-pool(:extra-dirs(%packs<texts>.list),
+							   :extra-files(@app-files), :@warnings);
+	# The app's own LICENSE, under a name of its own so it can never
+	# collide with an SPDX-named text.
+	%texts{$app-license-name} = $app-license if $app-license.defined;
 
-    # `.append` per source, never `flat`: a row is a Hash, and flattening
-    # a list of Hashes turns every one of them into its Pairs.
-    my @rows;
-    @rows.append(self.app-rows(:$config, :$app-dir, :$app-version, :%texts,
-        :license-file($app-license.defined ?? $app-license-name !! Str)));
-    @rows.append(self.runtime-rows(:%placeholders, :@conditions, :%files,
-                                   :path($data-path)));
-    @rows.append(%packs<rows>.list);
-    @rows.append(self.site-rows(:$bundle-dir, :app-name($config.app-name),
-                                :%texts, :overrides($config.licensing-dists.list)));
+	# `.append` per source, never `flat`: a row is a Hash, and flattening
+	# a list of Hashes turns every one of them into its Pairs.
+	my @rows;
+	@rows.append(self.app-rows(:$config, :$app-dir, :$app-version, :%texts,
+		:license-file($app-license.defined ?? $app-license-name !! Str)));
+	@rows.append(self.runtime-rows(:%placeholders, :@conditions, :%files,
+								   :path($data-path)));
+	@rows.append(%packs<rows>.list);
+	@rows.append(self.site-rows(:$bundle-dir, :app-name($config.app-name),
+								:%texts, :overrides($config.licensing-dists.list)));
 
-    my @merged = self.merge(@rows);
+	my @merged = self.merge(@rows);
 
-    # Strict means every component in this bundle names a licence, and a
-    # declaration that one could not be found is not one. It is the same
-    # rule the unattributed-pack check enforces, applied to the other way
-    # a bundle can ship something nobody can name — and it is checked
-    # here, centrally, because a NOASSERTION row can arrive from either
-    # of the two places an app can write one.
-    my @declined = @merged.grep({ spdx-not-asserted(.<spdx>) });
-    die "ariza: {+@declined} component(s) are declared {NOASSERTION}, and"
-      ~ " licensing.strict is on:\n"
-      ~ @declined.map({ "    {.<name>} ({.<provenance>})" }).join("\n") ~ "\n"
-      ~ "  {NOASSERTION} is an honest answer, and strict mode is the"
-      ~ " statement that this bundle ships nothing it cannot name. Find the"
-      ~ " licence and put it in the row, or turn licensing.strict off."
-        if $config.licensing-strict && @declined;
+	# Strict means every component in this bundle names a licence, and a
+	# declaration that one could not be found is not one. It is the same
+	# rule the unattributed-pack check enforces, applied to the other way
+	# a bundle can ship something nobody can name — and it is checked
+	# here, centrally, because a NOASSERTION row can arrive from either
+	# of the two places an app can write one.
+	my @declined = @merged.grep({ spdx-not-asserted(.<spdx>) });
+	die "ariza: {+@declined} component(s) are declared {NOASSERTION}, and"
+	  ~ " licensing.strict is on:\n"
+	  ~ @declined.map({ "    {.<name>} ({.<provenance>})" }).join("\n") ~ "\n"
+	  ~ "  {NOASSERTION} is an honest answer, and strict mode is the"
+	  ~ " statement that this bundle ships nothing it cannot name. Find the"
+	  ~ " licence and put it in the row, or turn licensing.strict off."
+		if $config.licensing-strict && @declined;
 
-    my $dir = ensure-dir($bundle-dir.add(DIRECTORY));
-    my @cited = @merged.map({ .<license-files>.list }).flat.unique.sort;
-    for @cited -> $name {
-        my $src = %texts{$name}
-            // die "ariza: a licensing row cites {DIRECTORY}/$name, and no"
-                 ~ " such licence text is available.\n"
-                 ~ "    ariza ships texts for"
-                 ~ " {resource-list(LICENSE-PREFIX).map({ .subst('licenses/', '') })
-                        .join(', ')};"
-                 ~ " anything else has to come from a native pack's own"
-                 ~ " LICENSES/ or from a license-files entry in the app's"
-                 ~ " ariza.toml naming a file in its repository.";
-        copy-writable($src, $dir.add($name));
-    }
+	my $dir = ensure-dir($bundle-dir.add(DIRECTORY));
+	my @cited = @merged.map({ .<license-files>.list }).flat.unique.sort;
+	for @cited -> $name {
+		my $src = %texts{$name}
+			// die "ariza: a licensing row cites {DIRECTORY}/$name, and no"
+				 ~ " such licence text is available.\n"
+				 ~ "    ariza ships texts for"
+				 ~ " {resource-list(LICENSE-PREFIX).map({ .subst('licenses/', '') })
+						.join(', ')};"
+				 ~ " anything else has to come from a native pack's own"
+				 ~ " LICENSES/ or from a license-files entry in the app's"
+				 ~ " ariza.toml naming a file in its repository.";
+		copy-writable($src, $dir.add($name));
+	}
 
-    # Anything left in LICENSES/ from an earlier build would be a text
-    # this bundle does not cite, which is exactly as misleading as a
-    # missing one.
-    for $dir.dir.grep(*.f).sort(*.basename) -> $stale {
-        $stale.unlink unless @cited.first($stale.basename);
-    }
+	# Anything left in LICENSES/ from an earlier build would be a text
+	# this bundle does not cite, which is exactly as misleading as a
+	# missing one.
+	for $dir.dir.grep(*.f).sort(*.basename) -> $stale {
+		$stale.unlink unless @cited.first($stale.basename);
+	}
 
-    my $document = $bundle-dir.add(DOCUMENT);
-    $document.spurt(self.render(:rows(@merged), :$app-display, :$app-version,
-                                :$platform));
+	my $document = $bundle-dir.add(DOCUMENT);
+	$document.spurt(self.render(:rows(@merged), :$app-display, :$app-version,
+								:$platform));
 
-    %(
-        rows     => @merged,
-        warnings => @warnings.List,
-        document => $document,
-        dir      => $dir,
-        summary  => %(
-            rows      => +@merged,
-            unknown   => +@merged.grep({ !.<spdx>.chars }),
-            # Counted apart from `spdx-ids` on purpose: NOASSERTION is
-            # not a licence a bundle is conveyed under, so a gate reading
-            # the identifier set must not see it as one — and a gate that
-            # cares about undetermined components has a number of its own
-            # to test.
-            noassertion => +@declined,
-            'spdx-ids' => @merged.map({ .<spdx> })
-                            .grep({ .chars && !spdx-not-asserted($_) })
-                            .map({ spdx-ids($_).Slip }).unique.sort.List,
-            document  => DOCUMENT,
-            licenses  => DIRECTORY,
-        ),
-    )
+	%(
+		rows     => @merged,
+		warnings => @warnings.List,
+		document => $document,
+		dir      => $dir,
+		summary  => %(
+			rows      => +@merged,
+			unknown   => +@merged.grep({ !.<spdx>.chars }),
+			# Counted apart from `spdx-ids` on purpose: NOASSERTION is
+			# not a licence a bundle is conveyed under, so a gate reading
+			# the identifier set must not see it as one — and a gate that
+			# cares about undetermined components has a number of its own
+			# to test.
+			noassertion => +@declined,
+			'spdx-ids' => @merged.map({ .<spdx> })
+							.grep({ .chars && !spdx-not-asserted($_) })
+							.map({ spdx-ids($_).Slip }).unique.sort.List,
+			document  => DOCUMENT,
+			licenses  => DIRECTORY,
+		),
+	)
 }
 
 #| A file an app named in its C<ariza.toml>, resolved inside the app's
@@ -1122,15 +1122,15 @@ method write(
 #| repository that declares it, and an absolute path in a committed
 #| config file is a path that exists on one machine.
 method !app-file(IO::Path $app-dir, $rel --> IO::Path) {
-    my $name = ~$rel;
-    die "ariza: licensing license-files entries are paths inside the app's"
-      ~ " repository, and \"$name\" is absolute"
-        if $name.IO.is-absolute;
-    my $path = $app-dir.add($name);
-    die "ariza: ariza.toml names the licence text \"$name\", and there is no"
-      ~ " such file in {$app-dir.absolute}"
-        unless $path.f;
-    $path
+	my $name = ~$rel;
+	die "ariza: licensing license-files entries are paths inside the app's"
+	  ~ " repository, and \"$name\" is absolute"
+		if $name.IO.is-absolute;
+	my $path = $app-dir.add($name);
+	die "ariza: ariza.toml names the licence text \"$name\", and there is no"
+	  ~ " such file in {$app-dir.absolute}"
+		unless $path.f;
+	$path
 }
 
 =begin pod

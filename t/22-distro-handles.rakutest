@@ -1,0 +1,117 @@
+use v6.d;
+use Test;
+use NativeCall;
+
+use App::Ariza::Native;
+use App::Ariza::Smoke;
+use App::Ariza::Tools;
+use App::Ariza::Versions;
+
+# A build asks which platform it is on for every tool it looks for, every
+# library it aliases or re-signs, and every smoke environment it builds.
+# Rakudo 2026.09 builds $*DISTRO afresh on every read, $*KERNEL.name asks
+# $*DISTRO too, and on macOS each build leaves a pipe open -- so every one of
+# those asks kept a file descriptor until the build was over. Those answers
+# are now read once, when each module is compiled; this file counts the
+# process's open handles around a few hundred of each.
+#
+# The counts come from the kernel: the descriptor listing on Linux and macOS,
+# GetProcessHandleCount on Windows. Every comparison is between two readings
+# taken around the same work, after that work has already run once. SLACK is
+# the most the count may drift by.
+
+plan 3;
+
+# Read once, here: a counter that read $*DISTRO on every call would, on the
+# Rakudo this file is about, be counting its own leak.
+my constant IS-WIN  = $*DISTRO.is-win;
+my constant CALLS   = 300;
+# Staging copies a library and links its second name, so fewer of those.
+my constant STAGES  = 20;
+my constant SLACK   = 10;
+
+# Windows publishes no listing of a process's handles; kernel32 counts them.
+# Bound lazily by NativeCall, so declaring them costs a POSIX process nothing.
+my sub win-current-process(--> Pointer)
+	is native('kernel32') is symbol('GetCurrentProcess') { * }
+my sub win-process-handle-count(Pointer, uint32 is rw --> int32)
+	is native('kernel32') is symbol('GetProcessHandleCount') { * }
+
+# How many files, pipes, sockets and other handles this process holds open.
+# The listing's own directory handle is in every reading, so it cancels out
+# of a difference; it is read to its end (.elems) because a listing left
+# unfinished keeps its handle open after the reading is taken. Windows counts
+# thread and event handles too, so only a difference means anything.
+sub open-handle-count(--> Int:D) {
+	if IS-WIN {
+		my uint32 $count = 0;
+		die 'open-handle-count: GetProcessHandleCount failed'
+			unless win-process-handle-count(win-current-process(), $count);
+		return $count;
+	}
+	for '/proc/self/fd', '/dev/fd' -> $listing {
+		my $count = try $listing.IO.dir.elems;
+		return $count if $count.defined;
+	}
+	die 'open-handle-count: this host publishes no list of the descriptors a process holds';
+}
+
+#| How far the handle count moved across &work, which has already run once.
+sub drift(&work --> Int:D) {
+	work();
+	my Int:D $before = open-handle-count();
+	work();
+	open-handle-count() - $before;
+}
+
+subtest 'looking for a tool holds no handle open' => {
+	plan 3;
+
+	# The same seam every other caller takes, so nothing is spawned: what is
+	# under test is the platform check that picks the lookup command.
+	my @asked;
+	my &run = -> @cmd, *% { @asked.push: @cmd.head; (0, '', '') };
+
+	ok have-command('sh', :&run), 'A tool the lookup finds is there';
+	is @asked.head, (IS-WIN ?? 'where' !! 'which'), "and it was looked for with this platform's command";
+	my Int:D $moved = drift({ have-command('sh', :&run) for ^CALLS });
+	ok $moved <= SLACK, "{CALLS} lookups hold no handle open (the count moved by $moved)";
+};
+
+subtest 'building the smoke environment holds no handle open' => {
+	plan 2;
+
+	ok App::Ariza::Smoke.base-env<PATH>.defined, 'The smoke environment has a PATH';
+	my Int:D $moved = drift({ App::Ariza::Smoke.base-env for ^CALLS });
+	ok $moved <= SLACK, "{CALLS} environments hold no handle open (the count moved by $moved)";
+};
+
+subtest 'staging a library holds no handle open' => {
+	plan 3;
+
+	my $dir = $*TMPDIR.add("ariza-distro-handles-{$*PID}-{(^1_000_000).pick}");
+	ensure-dir($dir);
+	LEAVE { rm-rf($dir) }
+
+	# A file shaped enough like a shared library for staging to work on it,
+	# naming the pinned version so that staging it has nothing to say.
+	my $versions = App::Ariza::Versions.load;
+	my $lib = $dir.add('src/libsqlcipher.so.0');
+	ensure-dir($lib.parent);
+	$lib.spurt("fake payload\x[00]{$versions.sqlcipher}\x[00]trailing\x[00]");
+
+	# A fresh bundle every time, as every build has: staging links the
+	# library's second name beside it, and asks the host's kernel on the way.
+	my $n = 0;
+	my sub stage(--> Hash) {
+		App::Ariza::Native.stage-sqlcipher(:bundle-dir(ensure-dir($dir.add('bundle-' ~ $n++))),
+			:slug<linux-x86_64-glibc>, :$versions, :host-slug<linux-x86_64-glibc>,
+			:env(%( SQLCIPHER_LIB_DIR => $lib.parent.absolute )));
+	}
+
+	my %staged = stage();
+	is %staged<rel>, 'native/sqlcipher/libsqlcipher.so.0', 'The library is staged';
+	ok $dir.add('bundle-0/native/sqlcipher/libsqlcipher.so').e, 'with its second name beside it';
+	my Int:D $moved = drift({ stage() for ^STAGES });
+	ok $moved <= SLACK, "{STAGES} stagings hold no handle open (the count moved by $moved)";
+};

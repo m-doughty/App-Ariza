@@ -37,14 +37,14 @@ my constant NOTCURSES-DIR = 'Notcurses-Native';
 #| closure out of it means "what this bundle installed" and "what the
 #| runtime shipped with" stay two separate, separately reportable sets.
 method site-dir(IO() $bundle-dir --> IO::Path) {
-    $bundle-dir.add('rakudo').add('share').add('perl6').add('vendor')
+	$bundle-dir.add('rakudo').add('share').add('perl6').add('vendor')
 }
 
 #| C<site-dir> relative to the bundle root, with forward slashes: what
 #| the launcher templates and the manifest carry, since neither may
 #| contain a build-machine path.
 method site-rel(IO() $bundle-dir --> Str) {
-    self.site-dir($bundle-dir).relative($bundle-dir).subst('\\', '/', :g)
+	self.site-dir($bundle-dir).relative($bundle-dir).subst('\\', '/', :g)
 }
 
 #| The directory native payloads are staged into, and the value
@@ -65,18 +65,18 @@ method native-dir(IO() $bundle-dir --> IO::Path) { $bundle-dir.add('native') }
 #|     which suppresses Notcurses::Native's own C<TERMINFO_DIRS> setup
 #|     and leaves the bundle without terminfo.
 method child-env(IO() $bundle-dir --> Hash) {
-    App::Ariza::Tools::child-env(
-        RAKULIB   => 'inst#' ~ self.site-dir($bundle-dir).absolute,
-        PERL6LIB  => Str,
-        NOTCURSES_NATIVE_DATA_DIR => self.native-dir($bundle-dir).absolute,
-    )
+	App::Ariza::Tools::child-env(
+		RAKULIB   => 'inst#' ~ self.site-dir($bundle-dir).absolute,
+		PERL6LIB  => Str,
+		NOTCURSES_NATIVE_DATA_DIR => self.native-dir($bundle-dir).absolute,
+	)
 }
 
 #| Every distribution installed in a bundle's site repository, as
 #| C<{ name, version, auth, license, authors, provides, depends }> hashes
 #| sorted by name.
 method installed-dists(IO() $bundle-dir --> List) {
-    self.dists-in(self.site-dir($bundle-dir))
+	self.dists-in(self.site-dir($bundle-dir))
 }
 
 #| The same, for any C<CompUnit::Repository::Installation> directory —
@@ -88,22 +88,22 @@ method installed-dists(IO() $bundle-dir --> List) {
 #| deciding what an absent licence field means is
 #| L<App::Ariza::Licensing>'s business, not this module's.
 method dists-in(IO() $site-dir --> List) {
-    my $dist-dir = $site-dir.add('dist');
-    return () unless $dist-dir.d;
-    $dist-dir.dir.grep(*.f).map({
-        my $meta = try { from-json(.slurp) };
-        next without $meta;
-        %(
-            name     => $meta<name>,
-            version  => $meta<ver> // $meta<version>,
-            auth     => $meta<auth>,
-            license  => $meta<license>,
-            authors  => (($meta<authors> // ()).list.grep(Str).List
-                      || ($meta<author>.defined ?? ($meta<author>,) !! ()).List),
-            provides => ($meta<provides> // {}).keys.sort.List,
-            depends  => ($meta<depends> // ()).list.grep(Str).List,
-        )
-    }).grep({ .<name>.defined }).sort(*.<name>).List
+	my $dist-dir = $site-dir.add('dist');
+	return () unless $dist-dir.d;
+	$dist-dir.dir.grep(*.f).map({
+		my $meta = try { from-json(.slurp) };
+		next without $meta;
+		%(
+			name     => $meta<name>,
+			version  => $meta<ver> // $meta<version>,
+			auth     => $meta<auth>,
+			license  => $meta<license>,
+			authors  => (($meta<authors> // ()).list.grep(Str).List
+					  || ($meta<author>.defined ?? ($meta<author>,) !! ()).List),
+			provides => ($meta<provides> // {}).keys.sort.List,
+			depends  => ($meta<depends> // ()).list.grep(Str).List,
+		)
+	}).grep({ .<name>.defined }).sort(*.<name>).List
 }
 
 #| Install the app and its whole dependency closure into the bundle,
@@ -114,64 +114,64 @@ method dists-in(IO() $site-dir --> List) {
 #| every module against the system Rakudo's bytecode version, and the
 #| bundle would silently recompile the entire closure on first launch.
 method build-site(
-    IO() :$bundle-dir!,
-    IO() :$app-source!,
-    App::Ariza::Config:D :$config!,
-    IO() :$zef!,
-    IO() :$raku!,
-    Int  :$attempts = 2,
-    Bool :$verbose = True,
-    --> Hash
+	IO() :$bundle-dir!,
+	IO() :$app-source!,
+	App::Ariza::Config:D :$config!,
+	IO() :$zef!,
+	IO() :$raku!,
+	Int  :$attempts = 2,
+	Bool :$verbose = True,
+	--> Hash
 ) {
-    die "ariza: no application source at $app-source" unless $app-source.d;
-    die "ariza: no bundled zef at $zef" unless $zef.f;
+	die "ariza: no application source at $app-source" unless $app-source.d;
+	die "ariza: no bundled zef at $zef" unless $zef.f;
 
-    my $site   = ensure-dir(self.site-dir($bundle-dir));
-    my $native = ensure-dir(self.native-dir($bundle-dir));
-    my %env    = self.child-env($bundle-dir);
+	my $site   = ensure-dir(self.site-dir($bundle-dir));
+	my $native = ensure-dir(self.native-dir($bundle-dir));
+	my %env    = self.child-env($bundle-dir);
 
-    self!zef-install($zef, $raku, $site, $app-source, %env, $attempts, $verbose);
+	self!zef-install($zef, $raku, $site, $app-source, %env, $attempts, $verbose);
 
-    my @dists = self.installed-dists($bundle-dir);
-    my %app = @dists.first({ .<name> eq $config.app-name })
-        // die "ariza: {$config.app-name} is not in the bundle's site repository"
-             ~ " after installing $app-source"
-             ~ (@dists ?? " (installed: {@dists.map(*.<name>).join(', ')})" !! '');
+	my @dists = self.installed-dists($bundle-dir);
+	my %app = @dists.first({ .<name> eq $config.app-name })
+		// die "ariza: {$config.app-name} is not in the bundle's site repository"
+			 ~ " after installing $app-source"
+			 ~ (@dists ?? " (installed: {@dists.map(*.<name>).join(', ')})" !! '');
 
-    my @gaps = self.closure-gaps(@dists);
-    die "ariza: the bundle's dependency closure is incomplete: {@gaps.join('; ')}"
-        if @gaps;
+	my @gaps = self.closure-gaps(@dists);
+	die "ariza: the bundle's dependency closure is incomplete: {@gaps.join('; ')}"
+		if @gaps;
 
-    my $target = self.exec-target($site, :$config);
-    self!check-named-repo($raku, $site, %env);
-    my @warmed = self!warm-precomp($raku, %app<provides>, %env, $verbose);
-    self!check-precomp($site, +@warmed);
+	my $target = self.exec-target($site, :$config);
+	self!check-named-repo($raku, $site, %env);
+	my @warmed = self!warm-precomp($raku, %app<provides>, %env, $verbose);
+	self!check-precomp($site, +@warmed);
 
-    my $tag = self!notcurses-tag($native, $config);
-    my $notcurses-lib = $tag.defined
-        ?? $native.add(NOTCURSES-DIR).add($tag).add('lib')
-        !! IO::Path;
+	my $tag = self!notcurses-tag($native, $config);
+	my $notcurses-lib = $tag.defined
+		?? $native.add(NOTCURSES-DIR).add($tag).add('lib')
+		!! IO::Path;
 
-    {
-        site          => $site,
-        site-rel      => self.site-rel($bundle-dir),
-        native        => $native,
-        dists         => @dists,
-        app           => %app,
-        app-version   => %app<version>,
-        target        => $target,
-        target-rel    => $target.relative($bundle-dir).subst('\\', '/', :g),
-        notcurses-tag => $tag,
-        notcurses-lib => $notcurses-lib,
-        # Carry the exact tag-selected directory forward. On Windows it
-        # must be put on PATH before NativeCall loads libnotcurses.dll;
-        # NOTCURSES_NATIVE_DATA_DIR tells the Raku module where the top
-        # DLL is, but does not extend Win32's dependency search path.
-        notcurses-lib-rel => ($notcurses-lib.defined
-            ?? $notcurses-lib.relative($bundle-dir).subst('\\', '/', :g)
-            !! Str),
-        warmed        => @warmed.List,
-    }
+	{
+		site          => $site,
+		site-rel      => self.site-rel($bundle-dir),
+		native        => $native,
+		dists         => @dists,
+		app           => %app,
+		app-version   => %app<version>,
+		target        => $target,
+		target-rel    => $target.relative($bundle-dir).subst('\\', '/', :g),
+		notcurses-tag => $tag,
+		notcurses-lib => $notcurses-lib,
+		# Carry the exact tag-selected directory forward. On Windows it
+		# must be put on PATH before NativeCall loads libnotcurses.dll;
+		# NOTCURSES_NATIVE_DATA_DIR tells the Raku module where the top
+		# DLL is, but does not extend Win32's dependency search path.
+		notcurses-lib-rel => ($notcurses-lib.defined
+			?? $notcurses-lib.relative($bundle-dir).subst('\\', '/', :g)
+			!! Str),
+		warmed        => @warmed.List,
+	}
 }
 
 #| The command line to invoke C<zef> with, given the runtime's C<zef> and
@@ -192,32 +192,32 @@ method build-site(
 #| raku-discovery behaviour inside a relocated bundle is unverified, while
 #| the run-script stub depends on nothing but the raku it is handed.
 method zef-cmd(IO() $zef, IO() $raku, *@args --> List) {
-    $zef.extension eq 'raku'
-        ?? ($raku.absolute, $zef.absolute, |@args).List
-        !! ($zef.absolute, |@args).List
+	$zef.extension eq 'raku'
+		?? ($raku.absolute, $zef.absolute, |@args).List
+		!! ($zef.absolute, |@args).List
 }
 
 method !zef-install(IO::Path $zef, IO::Path $raku, IO::Path $site, IO::Path $app-source,
-                    %env, Int $attempts, Bool $verbose) {
-    my @cmd = self.zef-cmd($zef, $raku, 'install', '--/test',
-              '--to=inst#' ~ $site.absolute, $app-source.absolute);
+					%env, Int $attempts, Bool $verbose) {
+	my @cmd = self.zef-cmd($zef, $raku, 'install', '--/test',
+			  '--to=inst#' ~ $site.absolute, $app-source.absolute);
 
-    my $last-err = '';
-    for 1..max($attempts, 1) -> $try {
-        note "ariza: installing {$app-source.basename} into the bundle"
-           ~ ($try > 1 ?? " (attempt $try)" !! '') if $verbose;
-        my ($code, $out, $err) = try-run(@cmd, :%env);
-        return if $code == 0;
-        $last-err = ($err || $out).trim;
-        # zef's own fetch step is the one genuinely flaky part of this:
-        # a CDN hiccup aborts the whole install with "Aborting due to
-        # fetch failure". Everything zef did before that point is
-        # already installed, so re-running costs only the failed leg.
-        last unless $last-err.contains('fetch failure')
-                 || $last-err.contains('Failed to resolve');
-    }
-    die "ariza: zef could not install $app-source into $site"
-      ~ ($last-err ?? ":\n" ~ $last-err.lines.map({ "    $_" }).join("\n") !! '');
+	my $last-err = '';
+	for 1..max($attempts, 1) -> $try {
+		note "ariza: installing {$app-source.basename} into the bundle"
+		   ~ ($try > 1 ?? " (attempt $try)" !! '') if $verbose;
+		my ($code, $out, $err) = try-run(@cmd, :%env);
+		return if $code == 0;
+		$last-err = ($err || $out).trim;
+		# zef's own fetch step is the one genuinely flaky part of this:
+		# a CDN hiccup aborts the whole install with "Aborting due to
+		# fetch failure". Everything zef did before that point is
+		# already installed, so re-running costs only the failed leg.
+		last unless $last-err.contains('fetch failure')
+				 || $last-err.contains('Failed to resolve');
+	}
+	die "ariza: zef could not install $app-source into $site"
+	  ~ ($last-err ?? ":\n" ~ $last-err.lines.map({ "    $_" }).join("\n") !! '');
 }
 
 #| Every installed distribution's `depends` that does not name another
@@ -229,21 +229,21 @@ method !zef-install(IO::Path $zef, IO::Path $raku, IO::Path $site, IO::Path $app
 #| returned rather than thrown so the check is testable and so a caller
 #| can report all of them at once.
 method closure-gaps(@dists --> List) {
-    my %installed = @dists.map({ .<name> => True });
-    my @gaps;
-    for @dists -> %d {
-        for (%d<depends> // ()).list -> $dep {
-            next unless $dep ~~ Str;
-            # A dependency spec is `Name:ver<…>:auth<…>:api<…>`, and the
-            # name itself contains `::`. Strip from the first adverb
-            # rather than splitting on `:`, which turns JSON::Fast into
-            # a dependency on "JSON".
-            my $name = $dep.subst(/ ':' <[a..z]>+ '<' .* $ /, '').trim;
-            next unless $name;
-            @gaps.push("{%d<name>} needs $name") unless %installed{$name};
-        }
-    }
-    @gaps.List
+	my %installed = @dists.map({ .<name> => True });
+	my @gaps;
+	for @dists -> %d {
+		for (%d<depends> // ()).list -> $dep {
+			next unless $dep ~~ Str;
+			# A dependency spec is `Name:ver<…>:auth<…>:api<…>`, and the
+			# name itself contains `::`. Strip from the first adverb
+			# rather than splitting on `:`, which turns JSON::Fast into
+			# a dependency on "JSON".
+			my $name = $dep.subst(/ ':' <[a..z]>+ '<' .* $ /, '').trim;
+			next unless $name;
+			@gaps.push("{%d<name>} needs $name") unless %installed{$name};
+		}
+	}
+	@gaps.List
 }
 
 #| The script the launcher should hand to the bundled `raku`.
@@ -255,22 +255,22 @@ method closure-gaps(@dists --> List) {
 #| user's machine is either absent or the wrong Rakudo entirely — so the
 #| stub is what the launcher targets, run by the bundled interpreter.
 method exec-target(IO() $site, App::Ariza::Config:D :$config! --> IO::Path) {
-    my $bin = $site.add('bin');
-    die "ariza: the site repository has no bin/ directory at $bin" unless $bin.d;
+	my $bin = $site.add('bin');
+	die "ariza: the site repository has no bin/ directory at $bin" unless $bin.d;
 
-    my $stub = $bin.add($config.app-exec ~ '.raku');
-    return $stub if $stub.f;
+	my $stub = $bin.add($config.app-exec ~ '.raku');
+	return $stub if $stub.f;
 
-    my $plain = $bin.add($config.app-exec);
-    die "ariza: {$config.app-name} installed no '{$config.app-exec}' script"
-      ~ " (bin/ has: {$bin.dir.map(*.basename).sort.join(', ')})"
-        unless $plain.f;
+	my $plain = $bin.add($config.app-exec);
+	die "ariza: {$config.app-name} installed no '{$config.app-exec}' script"
+	  ~ " (bin/ has: {$bin.dir.map(*.basename).sort.join(', ')})"
+		unless $plain.f;
 
-    # No .raku stub means an older zef layout; the plain file is the
-    # Raku script itself rather than a shell wrapper. Fall back to it,
-    # but only after the stub, which is the shape every current zef
-    # produces.
-    $plain
+	# No .raku stub means an older zef layout; the plain file is the
+	# Raku script itself rather than a shell wrapper. Fall back to it,
+	# but only after the stub, which is the shape every current zef
+	# produces.
+	$plain
 }
 
 #| Precompile the app's modules into the bundle's own precomp store.
@@ -285,25 +285,25 @@ method exec-target(IO() $site, App::Ariza::Config:D :$config! --> IO::Path) {
 #| here and shipping it works: a bundle unpacked at a different path (with
 #| spaces in it) loads the same bytecode.
 method !warm-precomp(IO::Path $raku, @modules, %env, Bool $verbose --> List) {
-    return () unless @modules;
-    note "ariza: precompiling {+@modules} modules into the bundle" if $verbose;
+	return () unless @modules;
+	note "ariza: precompiling {+@modules} modules into the bundle" if $verbose;
 
-    my @todo = @modules.List;
-    my @done;
-    my @failed;
+	my @todo = @modules.List;
+	my @done;
+	my @failed;
 
-    # Each module is loaded by a child that reports progress as it goes,
-    # so a module that takes the process down with it (rather than
-    # throwing something `try` can catch) costs only itself: the parent
-    # resumes at the next one.
-    while @todo {
-        # `$*REPO.need` rather than `require ::($mod)`: it is the exact
-        # primitive `use` compiles down to, so it precompiles the same
-        # way, and it does not try to bind a symbol of that name into
-        # the current scope — which `require` does, and which fails
-        # ("No such symbol") for any module that declares no package
-        # matching its own filename.
-        my $prog = q:to/RAKU/;
+	# Each module is loaded by a child that reports progress as it goes,
+	# so a module that takes the process down with it (rather than
+	# throwing something `try` can catch) costs only itself: the parent
+	# resumes at the next one.
+	while @todo {
+		# `$*REPO.need` rather than `require ::($mod)`: it is the exact
+		# primitive `use` compiles down to, so it precompiles the same
+		# way, and it does not try to bind a symbol of that name into
+		# the current scope — which `require` does, and which fails
+		# ("No such symbol") for any module that declares no package
+		# matching its own filename.
+		my $prog = q:to/RAKU/;
             for @*ARGS -> $mod {
                 my $ok = True;
                 {
@@ -315,33 +315,33 @@ method !warm-precomp(IO::Path $raku, @modules, %env, Bool $verbose --> List) {
             }
             RAKU
 
-        my ($code, $out, $err) = try-run(
-            [$raku.absolute, '-e', $prog, |@todo], :%env);
+		my ($code, $out, $err) = try-run(
+			[$raku.absolute, '-e', $prog, |@todo], :%env);
 
-        my %seen;
-        for $out.lines -> $line {
-            if $line ~~ / ^ 'ariza-warm-' (ok|fail) ' ' (.+) $ / {
-                %seen{~$1} = True;
-                ~$0 eq 'ok' ?? @done.push(~$1) !! @failed.push(~$1);
-            }
-        }
+		my %seen;
+		for $out.lines -> $line {
+			if $line ~~ / ^ 'ariza-warm-' (ok|fail) ' ' (.+) $ / {
+				%seen{~$1} = True;
+				~$0 eq 'ok' ?? @done.push(~$1) !! @failed.push(~$1);
+			}
+		}
 
-        my @rest = @todo.grep({ !%seen{$_} });
-        if @rest == @todo {
-            # The child made no progress at all: re-running would loop.
-            die "ariza: precompiling the bundle's modules made no progress"
-              ~ " (exit $code)"
-              ~ ($err.trim ?? ":\n" ~ $err.trim.lines.map({ "    $_" }).join("\n") !! '');
-        }
-        @todo = @rest;
-    }
+		my @rest = @todo.grep({ !%seen{$_} });
+		if @rest == @todo {
+			# The child made no progress at all: re-running would loop.
+			die "ariza: precompiling the bundle's modules made no progress"
+			  ~ " (exit $code)"
+			  ~ ($err.trim ?? ":\n" ~ $err.trim.lines.map({ "    $_" }).join("\n") !! '');
+		}
+		@todo = @rest;
+	}
 
-    die "ariza: {+@failed} module(s) in the bundle do not load:"
-      ~ "\n" ~ @failed.map({ "    $_" }).join("\n")
-      ~ "\n  The dependency closure or a native library is missing from the bundle."
-        if @failed;
+	die "ariza: {+@failed} module(s) in the bundle do not load:"
+	  ~ "\n" ~ @failed.map({ "    $_" }).join("\n")
+	  ~ "\n  The dependency closure or a native library is missing from the bundle."
+		if @failed;
 
-    @done.List
+	@done.List
 }
 
 #| Ask the B<bundled> runtime what it calls the repository we are about
@@ -360,7 +360,7 @@ method !warm-precomp(IO::Path $raku, @modules, %env, Bool $verbose --> List) {
 #| depends on where I<that interpreter> thinks its own prefix is — which
 #| is the thing that has to agree, and which only it can say.
 method !check-named-repo(IO::Path $raku, IO::Path $site, %env) {
-    my $prog = q:to/RAKU/;
+	my $prog = q:to/RAKU/;
         my $want = @*ARGS[0];
         my $repo = $*REPO.repo-chain.first({
             $_ ~~ CompUnit::Repository::Installation
@@ -372,26 +372,26 @@ method !check-named-repo(IO::Path $raku, IO::Path $site, %env) {
             !! '<not-in-chain>');
         RAKU
 
-    my ($code, $out, $err) = try-run(
-        [$raku.absolute, '-e', $prog, $site.absolute], :%env);
+	my ($code, $out, $err) = try-run(
+		[$raku.absolute, '-e', $prog, $site.absolute], :%env);
 
-    my $name = ($out.lines.first(*.starts-with('ariza-repo-name ')) // '')
-        .substr('ariza-repo-name '.chars).trim;
+	my $name = ($out.lines.first(*.starts-with('ariza-repo-name ')) // '')
+		.substr('ariza-repo-name '.chars).trim;
 
-    die "ariza: could not ask the bundled runtime about $site (exit $code)"
-      ~ ($err.trim ?? ":\n" ~ $err.trim.lines.map({ "    $_" }).join("\n") !! '')
-        unless $code == 0 && $out.contains('ariza-repo-name ');
+	die "ariza: could not ask the bundled runtime about $site (exit $code)"
+	  ~ ($err.trim ?? ":\n" ~ $err.trim.lines.map({ "    $_" }).join("\n") !! '')
+		unless $code == 0 && $out.contains('ariza-repo-name ');
 
-    die "ariza: the bundled runtime does not have $site in its repository"
-      ~ " chain — the bundle's modules would not be found at all"
-        if $name eq '<not-in-chain>';
+	die "ariza: the bundled runtime does not have $site in its repository"
+	  ~ " chain — the bundle's modules would not be found at all"
+		if $name eq '<not-in-chain>';
 
-    die "ariza: the bundled runtime has no name for $site, so every"
-      ~ " precompiled module in the bundle would record its dependencies"
-      ~ " by absolute build-machine path and be thrown away on the user's"
-      ~ " first launch. The repository has to be one of the runtime's own"
-      ~ " (core/vendor/site under {$raku.parent.parent}/share/perl6)."
-        unless $name;
+	die "ariza: the bundled runtime has no name for $site, so every"
+	  ~ " precompiled module in the bundle would record its dependencies"
+	  ~ " by absolute build-machine path and be thrown away on the user's"
+	  ~ " first launch. The repository has to be one of the runtime's own"
+	  ~ " (core/vendor/site under {$raku.parent.parent}/share/perl6)."
+		unless $name;
 }
 
 #| What a precompilation store says its units depend on:
@@ -413,32 +413,32 @@ method !check-named-repo(IO::Path $raku, IO::Path $site, %env) {
 #| C<latin-1> so that a byte which is not valid UTF-8 could not throw if
 #| it ever did.
 method precomp-deps(IO() $site-dir --> Hash) {
-    my $precomp = $site-dir.add('precomp');
-    my $records = 0;
-    my @strays;
+	my $precomp = $site-dir.add('precomp');
+	my $records = 0;
+	my @strays;
 
-    for self!files-under($precomp) -> $unit {
-        # `.lock` is empty, `.repo-id` is one line, CACHEDIR.TAG is
-        # prose: none of them are units, and all of them are cheap to
-        # skip by name rather than by parsing.
-        next if $unit.extension eq 'lock' | 'repo-id';
-        next if $unit.basename eq 'CACHEDIR.TAG';
+	for self!files-under($precomp) -> $unit {
+		# `.lock` is empty, `.repo-id` is one line, CACHEDIR.TAG is
+		# prose: none of them are units, and all of them are cheap to
+		# skip by name rather than by parsing.
+		next if $unit.extension eq 'lock' | 'repo-id';
+		next if $unit.basename eq 'CACHEDIR.TAG';
 
-        my $handle = $unit.open(:r, :enc<latin-1>);
-        LEAVE $handle.close if $handle;
-        $handle.get;    # checksum
-        $handle.get;    # source-checksum
-        while (my $line = $handle.get).defined && $line.chars > 8 {
-            my @parts = $line.split("\0");
-            next unless @parts >= 2;
-            my $src = @parts[1];
-            $records++;
-            @strays.push({ unit => $unit.relative($site-dir), :$src })
-                if $src.starts-with('/') || $src ~~ / ^ <[A..Za..z]> ':' <[\\/]> /;
-        }
-    }
+		my $handle = $unit.open(:r, :enc<latin-1>);
+		LEAVE $handle.close if $handle;
+		$handle.get;    # checksum
+		$handle.get;    # source-checksum
+		while (my $line = $handle.get).defined && $line.chars > 8 {
+			my @parts = $line.split("\0");
+			next unless @parts >= 2;
+			my $src = @parts[1];
+			$records++;
+			@strays.push({ unit => $unit.relative($site-dir), :$src })
+				if $src.starts-with('/') || $src ~~ / ^ <[A..Za..z]> ':' <[\\/]> /;
+		}
+	}
 
-    %( records => $records, strays => @strays.List )
+	%( records => $records, strays => @strays.List )
 }
 
 #| A precomp store that exists but is empty means the warm-up silently
@@ -452,46 +452,46 @@ method precomp-deps(IO() $site-dir --> Hash) {
 #| that means nothing could be read, and a check that quietly stopped
 #| checking is worse than no check.
 method !check-precomp(IO::Path $site, Int $warmed) {
-    my $precomp = $site.add('precomp');
-    die "ariza: the bundle has no precompilation store at $precomp"
-        unless $precomp.d;
+	my $precomp = $site.add('precomp');
+	die "ariza: the bundle has no precompilation store at $precomp"
+		unless $precomp.d;
 
-    my @files = self!files-under($precomp);
-    my $bytes = @files.map(*.s).sum;
+	my @files = self!files-under($precomp);
+	my $bytes = @files.map(*.s).sum;
 
-    die "ariza: the bundle's precompilation store holds {+@files} files"
-      ~ " for $warmed warmed modules — the warm-up did not take"
-        if @files < $warmed;
-    die "ariza: the bundle's precompilation store is empty"
-        unless $bytes > 0;
+	die "ariza: the bundle's precompilation store holds {+@files} files"
+	  ~ " for $warmed warmed modules — the warm-up did not take"
+		if @files < $warmed;
+	die "ariza: the bundle's precompilation store is empty"
+		unless $bytes > 0;
 
-    my %deps = self.precomp-deps($site);
-    die "ariza: could not read a single dependency record out of the"
-      ~ " {+@files} files in $precomp — Rakudo's precompilation format"
-      ~ " has changed and this check no longer checks anything"
-        unless %deps<records>;
+	my %deps = self.precomp-deps($site);
+	die "ariza: could not read a single dependency record out of the"
+	  ~ " {+@files} files in $precomp — Rakudo's precompilation format"
+	  ~ " has changed and this check no longer checks anything"
+		unless %deps<records>;
 
-    my @strays = %deps<strays>.list;
-    die "ariza: {+@strays} precompiled dependencies in the bundle name a"
-      ~ " path on this machine instead of a repository, so the bundle"
-      ~ " would recompile itself on the user's first launch:\n"
-      ~ @strays.head(5).map({ "    {.<unit>} -> {.<src>}" }).join("\n")
-      ~ (@strays > 5 ?? "\n    … and {@strays - 5} more" !! '')
-        if @strays;
+	my @strays = %deps<strays>.list;
+	die "ariza: {+@strays} precompiled dependencies in the bundle name a"
+	  ~ " path on this machine instead of a repository, so the bundle"
+	  ~ " would recompile itself on the user's first launch:\n"
+	  ~ @strays.head(5).map({ "    {.<unit>} -> {.<src>}" }).join("\n")
+	  ~ (@strays > 5 ?? "\n    … and {@strays - 5} more" !! '')
+		if @strays;
 }
 
 method !files-under(IO::Path $dir --> List) {
-    return () unless $dir.d;
-    my @out;
-    my @queue = $dir;
-    while @queue {
-        my $d = @queue.shift;
-        for $d.dir -> $e {
-            next if $e.l;
-            $e.d ?? @queue.push($e) !! @out.push($e);
-        }
-    }
-    @out.List
+	return () unless $dir.d;
+	my @out;
+	my @queue = $dir;
+	while @queue {
+		my $d = @queue.shift;
+		for $d.dir -> $e {
+			next if $e.l;
+			$e.d ?? @queue.push($e) !! @out.push($e);
+		}
+	}
+	@out.List
 }
 
 #| The C<BINARY_TAG> Notcurses-Native staged under, read back off disk.
@@ -501,27 +501,27 @@ method !files-under(IO::Path $dir --> List) {
 #| distribution rebuilds its libraries. Absent is only acceptable when
 #| the app never asked for notcurses.
 method !notcurses-tag(IO::Path $native, App::Ariza::Config:D $config --> Str) {
-    my $wants = so $config.bundle-native.list.first('notcurses');
-    my $root  = $native.add(NOTCURSES-DIR);
+	my $wants = so $config.bundle-native.list.first('notcurses');
+	my $root  = $native.add(NOTCURSES-DIR);
 
-    unless $root.d {
-        die "ariza: {$config.app-name} declares native 'notcurses' but"
-          ~ " nothing was staged into $root — check that the app's"
-          ~ " dependency closure really includes Notcurses::Native"
-            if $wants;
-        return Str;
-    }
+	unless $root.d {
+		die "ariza: {$config.app-name} declares native 'notcurses' but"
+		  ~ " nothing was staged into $root — check that the app's"
+		  ~ " dependency closure really includes Notcurses::Native"
+			if $wants;
+		return Str;
+	}
 
-    my @tags = $root.dir.grep(*.d).map(*.basename).sort;
-    die "ariza: $root holds {+@tags} notcurses builds ({@tags.join(', ')});"
-      ~ " expected exactly one"
-        unless @tags == 1;
+	my @tags = $root.dir.grep(*.d).map(*.basename).sort;
+	die "ariza: $root holds {+@tags} notcurses builds ({@tags.join(', ')});"
+	  ~ " expected exactly one"
+		unless @tags == 1;
 
-    my $lib = $root.add(@tags[0]).add('lib');
-    my @libs = $lib.d ?? $lib.dir.grep({ !.d }) !! ();
-    die "ariza: the staged notcurses build at $lib is empty" unless @libs;
+	my $lib = $root.add(@tags[0]).add('lib');
+	my @libs = $lib.d ?? $lib.dir.grep({ !.d }) !! ();
+	die "ariza: the staged notcurses build at $lib is empty" unless @libs;
 
-    @tags[0]
+	@tags[0]
 }
 
 =begin pod

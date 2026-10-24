@@ -116,9 +116,9 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       # python3 reads the Rakudo release index below; tcl and
-      # openssl3-devel build SQLCipher. The image already has ldd, readelf
-      # and patchelf, which ariza needs to make the staged library
-      # self-contained and to audit the result.
+      # openssl3-devel build SQLCipher. The image already has ldd and
+      # patchelf, which ariza needs to make the staged library
+      # self-contained; the audit reads the ELF files itself.
       - name: Install build dependencies
         run: dnf install -y python3 tcl openssl3-devel
 

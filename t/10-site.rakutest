@@ -10,248 +10,248 @@ use App::Ariza::Tools;
 plan 8;
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-site-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-site-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 sub config(--> App::Ariza::Config) {
-    my $dir = tmp-dir;
-    $dir.add('ariza.toml').spurt(q:to/TOML/);
+	my $dir = tmp-dir;
+	$dir.add('ariza.toml').spurt(q:to/TOML/);
     [app]
     name = "App::ExampleApp"
     exec = "exampleapp"
     display = "Example App"
     TOML
-    my $cfg = App::Ariza::Config.load($dir);
-    rm-rf($dir);
-    $cfg;
+	my $cfg = App::Ariza::Config.load($dir);
+	rm-rf($dir);
+	$cfg;
 }
 
 #| A site repository with the `dist/` metadata a real one would have.
 sub fake-repo(IO::Path $bundle, @dists --> IO::Path) {
-    my $dist = ensure-dir(App::Ariza::Site.site-dir($bundle).add('dist'));
-    for @dists.kv -> $i, %d {
-        $dist.add("DIST{$i}").spurt(to-json(%d));
-    }
-    $bundle;
+	my $dist = ensure-dir(App::Ariza::Site.site-dir($bundle).add('dist'));
+	for @dists.kv -> $i, %d {
+		$dist.add("DIST{$i}").spurt(to-json(%d));
+	}
+	$bundle;
 }
 
 subtest 'the two directories a bundle keeps its Raku world in', {
-    plan 4;
-    my $b = '/b'.IO;
+	plan 4;
+	my $b = '/b'.IO;
 
-    # Not <bundle>/site, and this is the load-bearing detail of the whole
-    # bundle: Rakudo records a precompiled unit's dependencies relative
-    # to its repository only for the four repositories the registry has
-    # a *name* for — core, vendor and site under the running
-    # interpreter's own prefix, and home under $HOME. Anywhere else the
-    # dependencies are absolute paths on the build machine, and every
-    # module in the bundle is recompiled the first time it runs anywhere
-    # else. This path is the bundled runtime's own `vendor` prefix, so
-    # the store it holds survives being moved.
-    is App::Ariza::Site.site-dir($b).absolute,
-        '/b/rakudo/share/perl6/vendor'.IO.absolute,
-        'modules go in the bundled runtime\'s own vendor repository';
-    is App::Ariza::Site.site-rel($b), 'rakudo/share/perl6/vendor',
-        'and the launcher gets that as a relative path, with forward slashes';
-    ok App::Ariza::Site.site-dir($b).absolute
-        .starts-with($b.add('rakudo').absolute),
-        'inside the vendored runtime, which is the only reason it has a name';
-    is App::Ariza::Site.native-dir($b).absolute, '/b/native'.IO.absolute,
-        'native payloads go in native/';
+	# Not <bundle>/site, and this is the load-bearing detail of the whole
+	# bundle: Rakudo records a precompiled unit's dependencies relative
+	# to its repository only for the four repositories the registry has
+	# a *name* for — core, vendor and site under the running
+	# interpreter's own prefix, and home under $HOME. Anywhere else the
+	# dependencies are absolute paths on the build machine, and every
+	# module in the bundle is recompiled the first time it runs anywhere
+	# else. This path is the bundled runtime's own `vendor` prefix, so
+	# the store it holds survives being moved.
+	is App::Ariza::Site.site-dir($b).absolute,
+		'/b/rakudo/share/perl6/vendor'.IO.absolute,
+		'modules go in the bundled runtime\'s own vendor repository';
+	is App::Ariza::Site.site-rel($b), 'rakudo/share/perl6/vendor',
+		'and the launcher gets that as a relative path, with forward slashes';
+	ok App::Ariza::Site.site-dir($b).absolute
+		.starts-with($b.add('rakudo').absolute),
+		'inside the vendored runtime, which is the only reason it has a name';
+	is App::Ariza::Site.native-dir($b).absolute, '/b/native'.IO.absolute,
+		'native payloads go in native/';
 };
 
 subtest 'the child environment names the bundle and unsets the rest', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    temp %*ENV;
-    %*ENV<PERL6LIB> = '/somewhere/else';
-    %*ENV<RAKULIB>  = 'inst#/the/users/own/repo';
+	temp %*ENV;
+	%*ENV<PERL6LIB> = '/somewhere/else';
+	%*ENV<RAKULIB>  = 'inst#/the/users/own/repo';
 
-    my %env = App::Ariza::Site.child-env($dir);
-    is %env<RAKULIB>, 'inst#' ~ App::Ariza::Site.site-dir($dir).absolute,
-        'RAKULIB points at the bundle, overriding whatever the user had';
+	my %env = App::Ariza::Site.child-env($dir);
+	is %env<RAKULIB>, 'inst#' ~ App::Ariza::Site.site-dir($dir).absolute,
+		'RAKULIB points at the bundle, overriding whatever the user had';
 
-    # zef precompiles nothing into a repository that is not in the chain,
-    # which is why RAKULIB is set during the install and not just after.
-    ok %env<RAKULIB>.starts-with('inst#'), 'as an installation repository';
+	# zef precompiles nothing into a repository that is not in the chain,
+	# which is why RAKULIB is set during the install and not just after.
+	ok %env<RAKULIB>.starts-with('inst#'), 'as an installation repository';
 
-    nok %env<PERL6LIB>:exists,
-        'PERL6LIB is removed, not blanked — an empty one deprecates for the whole run';
+	nok %env<PERL6LIB>:exists,
+		'PERL6LIB is removed, not blanked — an empty one deprecates for the whole run';
 
-    is %env<NOTCURSES_NATIVE_DATA_DIR>, $dir.add('native').absolute,
-        'and Notcurses::Native stages into (and later loads from) the bundle';
+	is %env<NOTCURSES_NATIVE_DATA_DIR>, $dir.add('native').absolute,
+		'and Notcurses::Native stages into (and later loads from) the bundle';
 };
 
 subtest 'installed-dists reads the repository, not the app metadata', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    is-deeply App::Ariza::Site.installed-dists($dir), (),
-        'a bundle with no repository has no distributions';
+	is-deeply App::Ariza::Site.installed-dists($dir), (),
+		'a bundle with no repository has no distributions';
 
-    # A list of Hashes, bound rather than slurped: a slurpy positional
-    # flattens each Hash into its Pairs, and every "dist" arrives as a
-    # one-key hash.
-    my @fake =
-        { name => 'Selkie', ver => '0.13.0', auth => 'zef:apogee',
-          provides => { 'Selkie' => 'lib/Selkie.rakumod' },
-          depends => ['Notcurses::Native:ver<0.4.3+>'] },
-        { name => 'App::ExampleApp', version => '9.9.9', auth => 'zef:apogee',
-          provides => { 'App::ExampleApp' => 'x', 'App::ExampleApp::DB' => 'y' } },
-    ;
-    fake-repo($dir, @fake);
+	# A list of Hashes, bound rather than slurped: a slurpy positional
+	# flattens each Hash into its Pairs, and every "dist" arrives as a
+	# one-key hash.
+	my @fake =
+		{ name => 'Selkie', ver => '0.13.0', auth => 'zef:apogee',
+		  provides => { 'Selkie' => 'lib/Selkie.rakumod' },
+		  depends => ['Notcurses::Native:ver<0.4.3+>'] },
+		{ name => 'App::ExampleApp', version => '9.9.9', auth => 'zef:apogee',
+		  provides => { 'App::ExampleApp' => 'x', 'App::ExampleApp::DB' => 'y' } },
+	;
+	fake-repo($dir, @fake);
 
-    my @dists = App::Ariza::Site.installed-dists($dir);
-    is-deeply @dists.map(*.<name>).List, ('App::ExampleApp', 'Selkie'),
-        'sorted by name';
-    is @dists[0]<version>, '9.9.9',
-        'version comes from `ver` or `version`, whichever the repository wrote';
-    is-deeply @dists[0]<provides>.List, ('App::ExampleApp', 'App::ExampleApp::DB'),
-        'with the modules it provides, which is what gets precompiled';
+	my @dists = App::Ariza::Site.installed-dists($dir);
+	is-deeply @dists.map(*.<name>).List, ('App::ExampleApp', 'Selkie'),
+		'sorted by name';
+	is @dists[0]<version>, '9.9.9',
+		'version comes from `ver` or `version`, whichever the repository wrote';
+	is-deeply @dists[0]<provides>.List, ('App::ExampleApp', 'App::ExampleApp::DB'),
+		'with the modules it provides, which is what gets precompiled';
 };
 
 subtest 'closure-gaps catches a dependency satisfied from outside the bundle', {
-    plan 4;
-    my @complete =
-        { name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>:auth<zef:apogee>',
-                                                'JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>'] },
-        { name => 'Selkie', depends => [] },
-        { name => 'JSON::Fast', depends => [] },
-    ;
-    is-deeply App::Ariza::Site.closure-gaps(@complete), (),
-        'a closed closure has no gaps';
+	plan 4;
+	my @complete =
+		{ name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>:auth<zef:apogee>',
+												'JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>'] },
+		{ name => 'Selkie', depends => [] },
+		{ name => 'JSON::Fast', depends => [] },
+	;
+	is-deeply App::Ariza::Site.closure-gaps(@complete), (),
+		'a closed closure has no gaps';
 
-    # The bug this exists to catch: a name split on ":" turns a
-    # dependency on JSON::Fast into a dependency on "JSON".
-    ok !App::Ariza::Site.closure-gaps(@complete).first(/'JSON'/),
-        'and `::` in a dependency name is not mistaken for an adverb';
+	# The bug this exists to catch: a name split on ":" turns a
+	# dependency on JSON::Fast into a dependency on "JSON".
+	ok !App::Ariza::Site.closure-gaps(@complete).first(/'JSON'/),
+		'and `::` in a dependency name is not mistaken for an adverb';
 
-    my @broken =
-        { name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>'] },
-        { name => 'JSON::Fast', depends => [] },
-    ;
-    my @gaps = App::Ariza::Site.closure-gaps(@broken);
-    is +@gaps, 1, 'a missing distribution is one gap';
-    is @gaps[0], 'App::ExampleApp needs Selkie', 'naming who needs what';
+	my @broken =
+		{ name => 'App::ExampleApp', depends => ['Selkie:ver<0.11.0+>'] },
+		{ name => 'JSON::Fast', depends => [] },
+	;
+	my @gaps = App::Ariza::Site.closure-gaps(@broken);
+	is +@gaps, 1, 'a missing distribution is one gap';
+	is @gaps[0], 'App::ExampleApp needs Selkie', 'naming who needs what';
 };
 
 subtest 'exec-target prefers the .raku stub over the sh wrapper', {
-    plan 4;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $cfg = config();
-    my $bin = ensure-dir($dir.add('bin'));
+	plan 4;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $cfg = config();
+	my $bin = ensure-dir($dir.add('bin'));
 
-    throws-like { App::Ariza::Site.exec-target($dir, :config($cfg)) },
-        Exception, message => /"installed no 'exampleapp' script"/,
-        'an empty bin/ names the executable that is missing';
+	throws-like { App::Ariza::Site.exec-target($dir, :config($cfg)) },
+		Exception, message => /"installed no 'exampleapp' script"/,
+		'an empty bin/ names the executable that is missing';
 
-    # zef writes both: a `sh` wrapper that execs a bare `rakudo` off
-    # PATH (useless in a bundle) and a `.raku` stub that calls
-    # CompUnit::RepositoryRegistry.run-script (exactly right).
-    $bin.add('exampleapp').spurt("#!/usr/bin/env sh\nexec rakudo …\n");
-    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp',
-        'with only the wrapper present, that is the target';
+	# zef writes both: a `sh` wrapper that execs a bare `rakudo` off
+	# PATH (useless in a bundle) and a `.raku` stub that calls
+	# CompUnit::RepositoryRegistry.run-script (exactly right).
+	$bin.add('exampleapp').spurt("#!/usr/bin/env sh\nexec rakudo …\n");
+	is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp',
+		'with only the wrapper present, that is the target';
 
-    $bin.add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
-    is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp.raku',
-        'but the stub wins whenever it exists';
+	$bin.add('exampleapp.raku').spurt('sub MAIN(*@, *%) { }');
+	is App::Ariza::Site.exec-target($dir, :config($cfg)).basename, 'exampleapp.raku',
+		'but the stub wins whenever it exists';
 
-    ok $bin.add('exampleapp').slurp.contains('exec rakudo'),
-        'because the wrapper execs a `rakudo` off PATH, which a bundle has not got';
+	ok $bin.add('exampleapp').slurp.contains('exec rakudo'),
+		'because the wrapper execs a `rakudo` off PATH, which a bundle has not got';
 };
 
 subtest 'zef-cmd execs the POSIX wrapper but runs the Windows stub under raku', {
-    plan 3;
-    my $raku = '/b/rakudo/bin/raku'.IO;
+	plan 3;
+	my $raku = '/b/rakudo/bin/raku'.IO;
 
-    # POSIX: the shell wrapper App::Ariza::Rakudo.zef-bin returns for
-    # every non-Windows slug.
-    my $posix-zef = '/b/rakudo/share/perl6/site/bin/zef'.IO;
-    is-deeply App::Ariza::Site.zef-cmd($posix-zef, $raku, 'install', '--/test'),
-        ($posix-zef.absolute, 'install', '--/test').List,
-        'the wrapper is exec\'d directly, unchanged';
+	# POSIX: the shell wrapper App::Ariza::Rakudo.zef-bin returns for
+	# every non-Windows slug.
+	my $posix-zef = '/b/rakudo/share/perl6/site/bin/zef'.IO;
+	is-deeply App::Ariza::Site.zef-cmd($posix-zef, $raku, 'install', '--/test'),
+		($posix-zef.absolute, 'install', '--/test').List,
+		'the wrapper is exec\'d directly, unchanged';
 
-    # Windows: the zip ships no zef.bat, so zef-bin returns zef.raku
-    # instead — the run-script stub, which has to be run under raku
-    # rather than exec'd.
-    my $win-raku = '/b/rakudo/bin/raku.exe'.IO;
-    my $win-zef  = '/b/rakudo/share/perl6/site/bin/zef.raku'.IO;
-    is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku, 'install', '--/test'),
-        ($win-raku.absolute, $win-zef.absolute, 'install', '--/test').List,
-        'the run-script stub is run under raku.exe, not exec\'d';
+	# Windows: the zip ships no zef.bat, so zef-bin returns zef.raku
+	# instead — the run-script stub, which has to be run under raku
+	# rather than exec'd.
+	my $win-raku = '/b/rakudo/bin/raku.exe'.IO;
+	my $win-zef  = '/b/rakudo/share/perl6/site/bin/zef.raku'.IO;
+	is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku, 'install', '--/test'),
+		($win-raku.absolute, $win-zef.absolute, 'install', '--/test').List,
+		'the run-script stub is run under raku.exe, not exec\'d';
 
-    is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku),
-        ($win-raku.absolute, $win-zef.absolute).List,
-        'and works with no trailing arguments too';
+	is-deeply App::Ariza::Site.zef-cmd($win-zef, $win-raku),
+		($win-raku.absolute, $win-zef.absolute).List,
+		'and works with no trailing arguments too';
 };
 
 subtest 'build-site refuses inputs it cannot work with', {
-    plan 2;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
-    my $cfg = config();
+	plan 2;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+	my $cfg = config();
 
-    throws-like {
-        App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir.add('nope')),
-            :config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
-    }, Exception, message => /'no application source at'/, 'a missing app checkout';
+	throws-like {
+		App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir.add('nope')),
+			:config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
+	}, Exception, message => /'no application source at'/, 'a missing app checkout';
 
-    throws-like {
-        App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir),
-            :config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
-    }, Exception, message => /'no bundled zef at'/,
-        'and a runtime that never unpacked — before anything is downloaded';
+	throws-like {
+		App::Ariza::Site.build-site(:bundle-dir($dir), :app-source($dir),
+			:config($cfg), :zef($dir.add('zef')), :raku($dir.add('raku')))
+	}, Exception, message => /'no bundled zef at'/,
+		'and a runtime that never unpacked — before anything is downloaded';
 };
 
 subtest 'precomp-deps reads what the store says its units depend on', {
-    plan 7;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 7;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $store = ensure-dir($dir.add('precomp').add('COMPILER').add('AB'));
+	my $store = ensure-dir($dir.add('precomp').add('COMPILER').add('AB'));
 
     #| A file in Rakudo's precompilation-store shape: unit checksum,
     #| source checksum, one NUL-separated `id/src/checksum/spec` record
     #| per line, a padding line under nine characters, then bytecode --
     #| which is binary, and which nothing here may read as text.
-    sub unit(Str $name, *@srcs) {
-        $store.add($name).spurt(
-            ('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
-          ~ @srcs.map({ ('A' x 40, $_, 'D' x 40, 'spec').join("\0") }).join("\n")
-          ~ "\n_______\n" ~ Buf.new(0x00, 0xFF, 0xFE, 0x41).decode('latin-1')
-        );
-    }
+	sub unit(Str $name, *@srcs) {
+		$store.add($name).spurt(
+			('B' x 40) ~ "\n" ~ ('C' x 40) ~ "\n"
+		  ~ @srcs.map({ ('A' x 40, $_, 'D' x 40, 'spec').join("\0") }).join("\n")
+		  ~ "\n_______\n" ~ Buf.new(0x00, 0xFF, 0xFE, 0x41).decode('latin-1')
+		);
+	}
 
-    unit('AAAA', 'vendor#sources/' ~ 'E' x 40, 'core#sources/' ~ 'F' x 40);
-    $store.add('AAAA.repo-id').spurt('DEADBEEF');
-    $store.add('AAAA.lock').spurt('');
-    $store.parent.parent.add('CACHEDIR.TAG').spurt('Signature: 8a477f597d28d172789f06886806bc55');
+	unit('AAAA', 'vendor#sources/' ~ 'E' x 40, 'core#sources/' ~ 'F' x 40);
+	$store.add('AAAA.repo-id').spurt('DEADBEEF');
+	$store.add('AAAA.lock').spurt('');
+	$store.parent.parent.add('CACHEDIR.TAG').spurt('Signature: 8a477f597d28d172789f06886806bc55');
 
-    my %clean = App::Ariza::Site.precomp-deps($dir);
-    is %clean<records>, 2, 'every dependency record in every unit is read';
-    is-deeply %clean<strays>, (),
-        'and one recorded against a repository is going nowhere near a stray';
+	my %clean = App::Ariza::Site.precomp-deps($dir);
+	is %clean<records>, 2, 'every dependency record in every unit is read';
+	is-deeply %clean<strays>, (),
+		'and one recorded against a repository is going nowhere near a stray';
 
-    unit('BBBB', '/home/builder/work/site/sources/' ~ 'E' x 40);
-    my %posix = App::Ariza::Site.precomp-deps($dir);
-    is %posix<records>, 3, 'the sidecars and CACHEDIR.TAG are not units';
-    is %posix<strays>.list.map(*.<src>).List,
-        ('/home/builder/work/site/sources/' ~ 'E' x 40,),
-        'an absolute POSIX path is a unit that will be recompiled elsewhere';
-    ok %posix<strays>[0]<unit>.contains('BBBB'),
-        'reported with the unit it came out of, relative to the repository';
+	unit('BBBB', '/home/builder/work/site/sources/' ~ 'E' x 40);
+	my %posix = App::Ariza::Site.precomp-deps($dir);
+	is %posix<records>, 3, 'the sidecars and CACHEDIR.TAG are not units';
+	is %posix<strays>.list.map(*.<src>).List,
+		('/home/builder/work/site/sources/' ~ 'E' x 40,),
+		'an absolute POSIX path is a unit that will be recompiled elsewhere';
+	ok %posix<strays>[0]<unit>.contains('BBBB'),
+		'reported with the unit it came out of, relative to the repository';
 
-    unit('CCCC', 'C:\\build\\site\\sources\\' ~ 'E' x 40);
-    is App::Ariza::Site.precomp-deps($dir)<strays>.elems, 2,
-        'and so is a Windows one, drive letter and all';
+	unit('CCCC', 'C:\\build\\site\\sources\\' ~ 'E' x 40);
+	is App::Ariza::Site.precomp-deps($dir)<strays>.elems, 2,
+		'and so is a Windows one, drive letter and all';
 
-    is App::Ariza::Site.precomp-deps($dir.add('nothing-here')),
-        %( records => 0, strays => () ),
-        'a bundle with no store at all reads as no records rather than dying';
+	is App::Ariza::Site.precomp-deps($dir.add('nothing-here')),
+		%( records => 0, strays => () ),
+		'a bundle with no store at all reads as no records rather than dying';
 };

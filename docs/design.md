@@ -179,14 +179,35 @@ second copy of those is a conflict, not insurance. `libcrypto` and
 `libssl` are **not** in that category: SQLCipher without OpenSSL is
 SQLite.
 
-The audit then adds two checks that only exist on a Linux host, because
-both tools answer for the machine they are on: `patchelf --print-rpath`
-must be `$ORIGIN`-relative, and `ldd` run with the environment
-**replaced** by a bare `PATH` — the user's view, not the build's — must
-resolve every non-system dependency inside the bundle. Cross-inspecting
-an ELF from a Mac does the static half and says so, rather than
-pretending to more; which is the long way of saying the Linux bundle is
-built on Linux.
+The audit reads every ELF itself. `App::Ariza::ELF` parses the dynamic
+section out of the file's bytes — the `PT_DYNAMIC` segment, its
+`DT_NEEDED`, `DT_RPATH` and `DT_RUNPATH`, and the string table found
+through the `PT_LOAD` segment that maps it — so checking a bundle needs
+neither `readelf` (binutils, which a stock install, a slim image and
+every Mac lack) nor `patchelf` (which almost nothing installs), on any
+host. An audit that died for want of either could not run where it was
+wanted: `ariza smoke` failed on a stock Linux machine for a bundle with
+no ELF in it at all.
+
+On a Linux host the audit then adds two checks: the search path the
+loader will use (`DT_RUNPATH`, else `DT_RPATH` — exactly what
+`patchelf --print-rpath` prints) must be `$ORIGIN`-relative, and `ldd`
+run with the environment **replaced** by a bare `PATH` — the user's
+view, not the build's — must resolve every non-system dependency inside
+the bundle. Only `ldd` genuinely answers for the machine it is on. The
+rpath check is in the file and could be made anywhere; it stays
+Linux-only because off Linux the staging pass cannot set `$ORIGIN` and
+warns rather than refuses, and an audit that insisted on an rpath there
+would overrule that. Cross-inspecting an ELF from a Mac does the static
+half and says so, rather than pretending to more; which is the long way
+of saying the Linux bundle is built on Linux.
+
+Building one is where a tool is unavoidable: `patchelf` is what writes
+`$ORIGIN` into each staged library, and it is the one thing on this
+path that writes rather than reads. A Linux build carrying SQLCipher
+asks for it before anything else happens, and a missing one stops the
+build there — before the runtime is downloaded — naming the package to
+install.
 
 That claim is proved rather than asserted.
 `xxt/linux-selfcontain-proof.sh` runs the whole thing in a `manylinux`
@@ -1341,3 +1362,4 @@ Everything a bundle downloads is now traceable to something published.
 | 0.2.2 | 2026-08-14 | Windows native correctness is closure plus search: PE audit proves adjacency, launchers put the exact Notcurses lib before SQLCipher on PATH, and clean smoke invokes the full-library resolver before a TTY-free core visual operation. |
 | unreleased | 2026-08-12 | A bundle says what it redistributes, out of four sources it reads rather than a table it remembers; a Raku distribution with no licence fails the build, an unattributed native pack is a visible row and, on request, a failure. |
 | unreleased | 2026-08-12 | `NOASSERTION` is a declaration an app makes after looking, never a gap ariza fills: not from a distribution's own metadata, not about the app itself, and not at all under `licensing.strict`. |
+| unreleased | 2026-10-24 | Checking a bundle needs no tool it does not run: ELF files are read in Raku, so the audit asks a Linux machine only for its loader. `patchelf` is a build requirement alone, and is asked for before the build starts. |

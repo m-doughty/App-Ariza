@@ -1,0 +1,12 @@
+
+Dynamic section at offset 0x188 contains 9 entries:
+  Tag        Type                         Name/Value
+ 0x0000001d (RUNPATH)                    Library runpath: [$ORIGIN]
+ 0x00000001 (NEEDED)                     Shared library: [libcrypto.so.3]
+ 0x00000001 (NEEDED)                     Shared library: [libc.so.6]
+ 0x00000006 (SYMTAB)                     0x114
+ 0x0000000b (SYMENT)                     16 (bytes)
+ 0x00000005 (STRTAB)                     0x150
+ 0x0000000a (STRSZ)                      48 (bytes)
+ 0x6ffffef5 (GNU_HASH)                   0x134
+ 0x00000000 (NULL)                       0x0

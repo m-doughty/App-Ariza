@@ -7,6 +7,15 @@ use App::Ariza::Tools;
 
 unit class App::Ariza::Smoke;
 
+# Read once, when this module is compiled, rather than on every call:
+# Rakudo 2026.09 builds $*DISTRO afresh on every read -- and $*KERNEL.name
+# asks $*DISTRO for its answer -- and on macOS each build runs sw_vers and
+# leaves the pipe it read the answer from open, so every call that asked
+# kept a file descriptor for the rest of the build. Neither answer can
+# change under an installed copy: the module is compiled on the machine
+# that runs it.
+my constant IS-WINDOWS = $*DISTRO.is-win;
+
 # Deliberately awkward: a bundle that only works from a path without
 # spaces is broken for half of macOS ("My Documents", "Application
 # Support") and every Windows user. If the launcher's quoting slips,
@@ -16,7 +25,7 @@ my constant SCRATCH-PREFIX = 'ariza smoke ';
 #| A scratch directory with a space in its name, under C<:$work-dir>
 #| (C<$*TMPDIR> by default).
 method scratch-dir(IO() :$work-dir = $*TMPDIR --> IO::Path) {
-    ensure-dir($work-dir).add(SCRATCH-PREFIX ~ "{$*PID}-{(^1_000_000).pick}")
+	ensure-dir($work-dir).add(SCRATCH-PREFIX ~ "{$*PID}-{(^1_000_000).pick}")
 }
 
 #| The environment a bundle is entitled to assume, and nothing else.
@@ -29,28 +38,28 @@ method scratch-dir(IO() :$work-dir = $*TMPDIR --> IO::Path) {
 #| C<DBIISH_SQLCIPHER_LIB> pointing at Homebrew, a C<RAKULIB> with the
 #| app already installed in it.
 method base-env(--> Hash) {
-    my $path = '/usr/bin:/bin';
-    if $*DISTRO.is-win {
-        # Do not copy the runner image's PATH: it contains MSYS2, Visual
-        # Studio, vcpkg and whatever else could accidentally satisfy a
-        # missing bundled DLL. Absolute bundle entry points need only the
-        # Windows system directory. The ambient PATH is a last-resort
-        # fallback for an already-malformed Windows environment with no
-        # system-root variables at all.
-        my $system-root = %*ENV<SystemRoot> // %*ENV<windir> // '';
-        $path = $system-root.chars
-            ?? $system-root.IO.add('System32').absolute.Str
-            !! (%*ENV<PATH> // '');
-    }
-    my %env = PATH => $path;
-    %env<HOME> = ~$_ with %*ENV<HOME>;
-    %env<TERM> = ~$_ with %*ENV<TERM>;
-    # Windows processes cannot start without these; they are not
-    # "the user's environment" in any meaningful sense.
-    for <SystemRoot windir SystemDrive ComSpec PATHEXT TEMP TMP USERPROFILE> -> $k {
-        %env{$k} = ~$_ with %*ENV{$k};
-    }
-    %env
+	my $path = '/usr/bin:/bin';
+	if IS-WINDOWS {
+		# Do not copy the runner image's PATH: it contains MSYS2, Visual
+		# Studio, vcpkg and whatever else could accidentally satisfy a
+		# missing bundled DLL. Absolute bundle entry points need only the
+		# Windows system directory. The ambient PATH is a last-resort
+		# fallback for an already-malformed Windows environment with no
+		# system-root variables at all.
+		my $system-root = %*ENV<SystemRoot> // %*ENV<windir> // '';
+		$path = $system-root.chars
+			?? $system-root.IO.add('System32').absolute.Str
+			!! (%*ENV<PATH> // '');
+	}
+	my %env = PATH => $path;
+	%env<HOME> = ~$_ with %*ENV<HOME>;
+	%env<TERM> = ~$_ with %*ENV<TERM>;
+	# Windows processes cannot start without these; they are not
+	# "the user's environment" in any meaningful sense.
+	for <SystemRoot windir SystemDrive ComSpec PATHEXT TEMP TMP USERPROFILE> -> $k {
+		%env{$k} = ~$_ with %*ENV{$k};
+	}
+	%env
 }
 
 #| The module repository inside an unpacked bundle, B<as that bundle
@@ -63,60 +72,60 @@ method base-env(--> Hash) {
 #| and smoking one of those has to keep working: an archive is checked
 #| on its own terms.
 method site-dir(IO() $root, %manifest --> IO::Path) {
-    $root.add(%manifest<launcher><site> // 'site')
+	$root.add(%manifest<launcher><site> // 'site')
 }
 
 #| The exact staged notcurses library directory recorded by the bundle.
 #| Older manifests recorded only the tag, so retain that unambiguous
 #| derivation for archives built before C<components.notcurses.path>.
 method notcurses-lib-dir(IO() $root, %manifest --> IO::Path) {
-    with %manifest<components><notcurses><path> -> $rel {
-        return $root.add($rel);
-    }
-    with %manifest<components><notcurses><tag> -> $tag {
-        return $root.add('native').add('Notcurses-Native').add($tag).add('lib');
-    }
-    IO::Path
+	with %manifest<components><notcurses><path> -> $rel {
+		return $root.add($rel);
+	}
+	with %manifest<components><notcurses><tag> -> $tag {
+		return $root.add('native').add('Notcurses-Native').add($tag).add('lib');
+	}
+	IO::Path
 }
 
 #| The extra variables the launcher would have exported, for commands
 #| that run the bundled interpreter directly instead of going through it.
 method runtime-env(IO() $root, %manifest --> Hash) {
-    my %env =
-        RAKULIB => 'inst#' ~ self.site-dir($root, %manifest).absolute,
-        NOTCURSES_NATIVE_DATA_DIR => $root.add('native').absolute,
-    ;
-    my $platform = %manifest<platform> // '';
-    if $platform.starts-with('windows') {
-        # NativeCall gives LoadLibraryW an absolute libnotcurses.dll path,
-        # but ordinary dependent-DLL lookup does not thereby search that
-        # DLL's sibling directory. PATH is the live-loader contract. Keep
-        # Notcurses ahead of SQLCipher so a same-named runtime dependency
-        # is taken from the closure it was audited with.
-        my @path;
-        my $notcurses = self.notcurses-lib-dir($root, %manifest);
-        @path.push($notcurses.absolute) if $notcurses.defined;
+	my %env =
+		RAKULIB => 'inst#' ~ self.site-dir($root, %manifest).absolute,
+		NOTCURSES_NATIVE_DATA_DIR => $root.add('native').absolute,
+	;
+	my $platform = %manifest<platform> // '';
+	if $platform.starts-with('windows') {
+		# NativeCall gives LoadLibraryW an absolute libnotcurses.dll path,
+		# but ordinary dependent-DLL lookup does not thereby search that
+		# DLL's sibling directory. PATH is the live-loader contract. Keep
+		# Notcurses ahead of SQLCipher so a same-named runtime dependency
+		# is taken from the closure it was audited with.
+		my @path;
+		my $notcurses = self.notcurses-lib-dir($root, %manifest);
+		@path.push($notcurses.absolute) if $notcurses.defined;
 
-        with %manifest<components><sqlcipher><path> -> $rel {
-            my $lib = $root.add($rel);
-            %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
-            @path.push($lib.parent.absolute);
-        }
+		with %manifest<components><sqlcipher><path> -> $rel {
+			my $lib = $root.add($rel);
+			%env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
+			@path.push($lib.parent.absolute);
+		}
 
-        my $base-path = self.base-env<PATH> // '';
-        @path.push($base-path) if $base-path.chars;
-        %env<PATH> = @path.join(';');
-    }
-    else {
-        with %manifest<components><sqlcipher><path> -> $rel {
-            my $lib = $root.add($rel);
-            unless $platform.starts-with('macos') {
-                %env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
-                %env<LD_LIBRARY_PATH> = $lib.parent.absolute;
-            }
-        }
-    }
-    %env
+		my $base-path = self.base-env<PATH> // '';
+		@path.push($base-path) if $base-path.chars;
+		%env<PATH> = @path.join(';');
+	}
+	else {
+		with %manifest<components><sqlcipher><path> -> $rel {
+			my $lib = $root.add($rel);
+			unless $platform.starts-with('macos') {
+				%env<DBIISH_SQLCIPHER_LIB> = $lib.absolute;
+				%env<LD_LIBRARY_PATH> = $lib.parent.absolute;
+			}
+		}
+	}
+	%env
 }
 
 #| A terminal-free Notcurses loader and operational probe. Calling C<nc-lib>
@@ -127,7 +136,7 @@ method runtime-env(IO() $root, %manifest --> Hash) {
 #| No terminal or notcurses context is opened, and C<notcurses_version> is not
 #| enough because it would prove only a core version query.
 method notcurses-probe-program(--> Str) {
-    q:to/RAKU/;
+	q:to/RAKU/;
         use NativeCall;
         use Notcurses::Native;
 
@@ -150,398 +159,398 @@ method notcurses-probe-program(--> Str) {
 #| launcher failed I<and> the audit found a stray library" are different
 #| bug reports.
 method smoke(
-    IO() :$archive!,
-    IO() :$work-dir = $*TMPDIR,
-    Bool :$keep = False,
-    Bool :$verbose = True,
-    --> Hash
+	IO() :$archive!,
+	IO() :$work-dir = $*TMPDIR,
+	Bool :$keep = False,
+	Bool :$verbose = True,
+	--> Hash
 ) {
-    die "ariza: no bundle archive at $archive" unless $archive.f;
+	die "ariza: no bundle archive at $archive" unless $archive.f;
 
-    my $dir = self.scratch-dir(:$work-dir);
-    my @checks;
-    my $root;
-    my %manifest;
+	my $dir = self.scratch-dir(:$work-dir);
+	my @checks;
+	my $root;
+	my %manifest;
 
-    my $ok = True;
-    {
-        CATCH {
-            default {
-                # `%( )`, and the message bound first: a `{ }` literal
-                # containing a `.method` call is parsed as a Block, not a
-                # Hash, and lands in the results as an uncallable closure.
-                my $why = .message;
-                my $where = @checks ?? 'manifest' !! 'unpack';
-                @checks.push(%( name => $where, ok => False, detail => $why ));
-                $ok = False;
-            }
-        }
-        note "ariza: unpacking into $dir" if $verbose;
-        extract-archive($archive, $dir);
-        $root = sole-child($dir);
-        die "ariza: {$archive.basename} does not contain a bundle directory"
-            unless $root.d;
-        @checks.push({ name => 'unpack', ok => True,
-                       detail => "extracted to {$root.basename}" });
+	my $ok = True;
+	{
+		CATCH {
+			default {
+				# `%( )`, and the message bound first: a `{ }` literal
+				# containing a `.method` call is parsed as a Block, not a
+				# Hash, and lands in the results as an uncallable closure.
+				my $why = .message;
+				my $where = @checks ?? 'manifest' !! 'unpack';
+				@checks.push(%( name => $where, ok => False, detail => $why ));
+				$ok = False;
+			}
+		}
+		note "ariza: unpacking into $dir" if $verbose;
+		extract-archive($archive, $dir);
+		$root = sole-child($dir);
+		die "ariza: {$archive.basename} does not contain a bundle directory"
+			unless $root.d;
+		@checks.push({ name => 'unpack', ok => True,
+					   detail => "extracted to {$root.basename}" });
 
-        my $mf = $root.add('ariza-manifest.json');
-        die "ariza: no ariza-manifest.json in the bundle" unless $mf.f;
-        %manifest = from-json($mf.slurp);
+		my $mf = $root.add('ariza-manifest.json');
+		die "ariza: no ariza-manifest.json in the bundle" unless $mf.f;
+		%manifest = from-json($mf.slurp);
 
-        # The manifest is the only thing here that describes the bundle,
-        # so its shape is checked rather than assumed. `dists` in
-        # particular has to be a list of objects: a Raku `{ }` literal
-        # whose body starts with a `.method` call is a Block, and one of
-        # those quietly serialises as an array of one-key objects — a
-        # manifest that parses, reads plausibly, and lists nothing.
-        die "ariza: ariza-manifest.json has no app.name"
-            unless (%manifest<app> // {})<name>;
-        for (%manifest<dists> // ()).list -> $d {
-            die "ariza: ariza-manifest.json lists a distribution that is not"
-              ~ " an object with a name"
-                unless $d ~~ Associative && $d<name>;
-        }
+		# The manifest is the only thing here that describes the bundle,
+		# so its shape is checked rather than assumed. `dists` in
+		# particular has to be a list of objects: a Raku `{ }` literal
+		# whose body starts with a `.method` call is a Block, and one of
+		# those quietly serialises as an array of one-key objects — a
+		# manifest that parses, reads plausibly, and lists nothing.
+		die "ariza: ariza-manifest.json has no app.name"
+			unless (%manifest<app> // {})<name>;
+		for (%manifest<dists> // ()).list -> $d {
+			die "ariza: ariza-manifest.json lists a distribution that is not"
+			  ~ " an object with a name"
+				unless $d ~~ Associative && $d<name>;
+		}
 
-        @checks.push({ name => 'manifest', ok => True,
-                       detail => "{%manifest<app><name>} {%manifest<app><version>}"
-                               ~ ", {+(%manifest<dists> // ()).list} distributions"
-                               ~ " for {%manifest<platform>}" });
-    }
+		@checks.push({ name => 'manifest', ok => True,
+					   detail => "{%manifest<app><name>} {%manifest<app><version>}"
+							   ~ ", {+(%manifest<dists> // ()).list} distributions"
+							   ~ " for {%manifest<platform>}" });
+	}
 
-    if $root.defined && %manifest {
-        @checks.append: self!layout-checks($root, %manifest);
-        @checks.append: self!audit-check($root, %manifest);
-        @checks.append: self!notcurses-load-check($root, %manifest, $verbose);
-        @checks.append: self!command-checks($root, %manifest, $verbose);
-    }
+	if $root.defined && %manifest {
+		@checks.append: self!layout-checks($root, %manifest);
+		@checks.append: self!audit-check($root, %manifest);
+		@checks.append: self!notcurses-load-check($root, %manifest, $verbose);
+		@checks.append: self!command-checks($root, %manifest, $verbose);
+	}
 
-    $ok = !@checks.first({ !.<ok> });
+	$ok = !@checks.first({ !.<ok> });
 
-    # A failed smoke leaves the tree behind: the whole value of the
-    # check is the state it failed in, and deleting it means the next
-    # person has to reproduce a build to see anything.
-    if $ok && !$keep {
-        rm-rf($dir);
-    }
-    elsif $verbose {
-        note "ariza: bundle left unpacked at $dir";
-    }
+	# A failed smoke leaves the tree behind: the whole value of the
+	# check is the state it failed in, and deleting it means the next
+	# person has to reproduce a build to see anything.
+	if $ok && !$keep {
+		rm-rf($dir);
+	}
+	elsif $verbose {
+		note "ariza: bundle left unpacked at $dir";
+	}
 
-    {
-        passed   => $ok,
-        checks   => @checks.List,
-        dir      => $dir,
-        root     => $root,
-        manifest => %manifest,
-        kept     => (!$ok || $keep),
-    }
+	{
+		passed   => $ok,
+		checks   => @checks.List,
+		dir      => $dir,
+		root     => $root,
+		manifest => %manifest,
+		kept     => (!$ok || $keep),
+	}
 }
 
 method !layout-checks(IO::Path $root, %manifest --> List) {
-    my @checks;
-    my $exec = %manifest<app><exec> // '';
-    my $win  = (%manifest<platform> // '').starts-with('windows');
+	my @checks;
+	my $exec = %manifest<app><exec> // '';
+	my $win  = (%manifest<platform> // '').starts-with('windows');
 
-    my $launcher = $root.add('bin').add($exec ~ ($win ?? '.cmd' !! ''));
+	my $launcher = $root.add('bin').add($exec ~ ($win ?? '.cmd' !! ''));
 
-    # Whether the executable bit is a question worth asking. It takes
-    # both a POSIX bundle to have one and a POSIX host to answer, and
-    # the two are separate facts: `ariza smoke` reads the platform from
-    # the manifest rather than from the machine, precisely so an archive
-    # can be checked anywhere, which means a Windows box inspecting a
-    # Linux bundle is an ordinary thing to be doing.
-    #
-    # A POSIX bundle unpacked on Windows has no executable bit to find —
-    # NTFS has no such bit and tar cannot set one — so asserting on it
-    # there would fail every time for a bundle that is perfectly sound.
-    # And `.x` on Windows does not return False, it THROWS: MoarVM's
-    # `file-stat` syscall never populates the stat object's filename,
-    # and its Windows `stat-is-executable` reads that filename to find
-    # the extension to compare against PATHEXT, so the call comes back
-    # as `rindex search target requires a concrete string, but got
-    # null`. Either reason alone is enough not to ask.
-    # `.x` is asked only of a file that is already known to be there:
-    # on a missing path it throws ("Failed to find … while trying to do
-    # '.x'") rather than answering False.
-    my $present        = $launcher.f;
-    my $bit-answerable = !$win && !$*DISTRO.is-win;
-    my $executable     = !$bit-answerable || ($present && $launcher.x);
-    @checks.push({
-        name => 'launcher',
-        ok => ($present && $executable),
-        detail => do {
-            if    !$present    { "missing bin/{$launcher.basename}" }
-            elsif !$executable { "bin/{$launcher.basename} is not executable" }
-            else               { "bin/{$launcher.basename}" }
-        },
-    });
+	# Whether the executable bit is a question worth asking. It takes
+	# both a POSIX bundle to have one and a POSIX host to answer, and
+	# the two are separate facts: `ariza smoke` reads the platform from
+	# the manifest rather than from the machine, precisely so an archive
+	# can be checked anywhere, which means a Windows box inspecting a
+	# Linux bundle is an ordinary thing to be doing.
+	#
+	# A POSIX bundle unpacked on Windows has no executable bit to find —
+	# NTFS has no such bit and tar cannot set one — so asserting on it
+	# there would fail every time for a bundle that is perfectly sound.
+	# And `.x` on Windows does not return False, it THROWS: MoarVM's
+	# `file-stat` syscall never populates the stat object's filename,
+	# and its Windows `stat-is-executable` reads that filename to find
+	# the extension to compare against PATHEXT, so the call comes back
+	# as `rindex search target requires a concrete string, but got
+	# null`. Either reason alone is enough not to ask.
+	# `.x` is asked only of a file that is already known to be there:
+	# on a missing path it throws ("Failed to find … while trying to do
+	# '.x'") rather than answering False.
+	my $present        = $launcher.f;
+	my $bit-answerable = !$win && !IS-WINDOWS;
+	my $executable     = !$bit-answerable || ($present && $launcher.x);
+	@checks.push({
+		name => 'launcher',
+		ok => ($present && $executable),
+		detail => do {
+			if    !$present    { "missing bin/{$launcher.basename}" }
+			elsif !$executable { "bin/{$launcher.basename} is not executable" }
+			else               { "bin/{$launcher.basename}" }
+		},
+	});
 
-    # The compiled Windows launcher, when the bundle carries one. Its
-    # absence is not a failure — a bundle built before the first runner
-    # release was pinned ships the scripts alone, and that is a
-    # deliberate state rather than a broken one — but a runner without
-    # its sidecar is a bundle that cannot start, so the two are checked
-    # together and reported as one.
-    if $win {
-        my $runner  = $root.add('bin').add("$exec.exe");
-        my $sidecar = $root.add('bin').add("$exec.ariza");
-        my $required = so (%manifest<updates> // {})<enabled>;
-        my $tag = %manifest<components><runner><tag> // Str;
-        my $capable = !$required
-            || App::Ariza::Runner.update-handoff-capable($tag);
-        @checks.push({
-            name => 'runner',
-            ok => $capable
-                && (($runner.f && $sidecar.f) || (!$required && !$runner.f)),
-            detail => $runner.f
-                ?? (!$capable
-                    ?? "update-enabled bundle requires runner-v2+ (manifest has {$tag // '(none)'})"
-                    !! $sidecar.f
-                    ?? "bin/$exec.exe with bin/$exec.ariza beside it"
-                    !! "bin/$exec.exe has no bin/$exec.ariza to read")
-                !! ($required
-                    ?? "update-enabled bundle is missing required bin/$exec.exe"
-                    !! "no bin/$exec.exe — this bundle launches from bin/$exec.cmd"),
-        });
-    }
+	# The compiled Windows launcher, when the bundle carries one. Its
+	# absence is not a failure — a bundle built before the first runner
+	# release was pinned ships the scripts alone, and that is a
+	# deliberate state rather than a broken one — but a runner without
+	# its sidecar is a bundle that cannot start, so the two are checked
+	# together and reported as one.
+	if $win {
+		my $runner  = $root.add('bin').add("$exec.exe");
+		my $sidecar = $root.add('bin').add("$exec.ariza");
+		my $required = so (%manifest<updates> // {})<enabled>;
+		my $tag = %manifest<components><runner><tag> // Str;
+		my $capable = !$required
+			|| App::Ariza::Runner.update-handoff-capable($tag);
+		@checks.push({
+			name => 'runner',
+			ok => $capable
+				&& (($runner.f && $sidecar.f) || (!$required && !$runner.f)),
+			detail => $runner.f
+				?? (!$capable
+					?? "update-enabled bundle requires runner-v2+ (manifest has {$tag // '(none)'})"
+					!! $sidecar.f
+					?? "bin/$exec.exe with bin/$exec.ariza beside it"
+					!! "bin/$exec.exe has no bin/$exec.ariza to read")
+				!! ($required
+					?? "update-enabled bundle is missing required bin/$exec.exe"
+					!! "no bin/$exec.exe — this bundle launches from bin/$exec.cmd"),
+		});
+	}
 
-    my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
-    @checks.push({
-        name => 'runtime',
-        ok => $raku.f,
-        detail => $raku.f ?? "rakudo {%manifest<components><rakudo><tag> // '?'}"
-                          !! "missing {$raku.relative($root)}",
-    });
+	my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
+	@checks.push({
+		name => 'runtime',
+		ok => $raku.f,
+		detail => $raku.f ?? "rakudo {%manifest<components><rakudo><tag> // '?'}"
+						  !! "missing {$raku.relative($root)}",
+	});
 
-    my $target = $root.add(%manifest<launcher><target> // 'site');
-    @checks.push({
-        name => 'target',
-        ok => $target.f,
-        detail => $target.f ?? ~(%manifest<launcher><target>)
-                            !! "missing {%manifest<launcher><target> // '(none recorded)'}",
-    });
+	my $target = $root.add(%manifest<launcher><target> // 'site');
+	@checks.push({
+		name => 'target',
+		ok => $target.f,
+		detail => $target.f ?? ~(%manifest<launcher><target>)
+							!! "missing {%manifest<launcher><target> // '(none recorded)'}",
+	});
 
-    with %manifest<updates> -> $updates {
-        my @problems;
-        if $updates !~~ Associative {
-            @problems.push('updates is not an object');
-        }
-        else {
-            @problems.push('updates.enabled is not true')
-                unless $updates<enabled> === True;
-            @problems.push('updates.protocol is not 1')
-                unless ($updates<protocol> // 0) == 1;
-            my $repo = $updates<repository> // '';
-            @problems.push('updates.repository is not owner/name')
-                unless $repo ~~ /^ <[A..Za..z0..9_.-]>+ '/'
-                                <[A..Za..z0..9_.-]>+ $/;
+	with %manifest<updates> -> $updates {
+		my @problems;
+		if $updates !~~ Associative {
+			@problems.push('updates is not an object');
+		}
+		else {
+			@problems.push('updates.enabled is not true')
+				unless $updates<enabled> === True;
+			@problems.push('updates.protocol is not 1')
+				unless ($updates<protocol> // 0) == 1;
+			my $repo = $updates<repository> // '';
+			@problems.push('updates.repository is not owner/name')
+				unless $repo ~~ /^ <[A..Za..z0..9_.-]>+ '/'
+								<[A..Za..z0..9_.-]>+ $/;
 
-            for <coordinator installer application-target> -> $key {
-                my $rel = $updates{$key};
-                unless self!safe-bundle-rel($rel) {
-                    @problems.push("updates.$key is not a safe bundle-relative path");
-                    next;
-                }
-                @problems.push("updates.$key is missing ($rel)")
-                    unless $root.add($rel).f;
-            }
-            @problems.push('launcher.target is not the update coordinator')
-                unless ($updates<coordinator> // '')
-                    eq (%manifest<launcher><target> // '');
-        }
-        @checks.push({
-            name => 'updates',
-            ok => !@problems,
-            detail => @problems
-                ?? @problems.join('; ')
-                !! "protocol 1 resources and application target are present",
-        });
-    }
+			for <coordinator installer application-target> -> $key {
+				my $rel = $updates{$key};
+				unless self!safe-bundle-rel($rel) {
+					@problems.push("updates.$key is not a safe bundle-relative path");
+					next;
+				}
+				@problems.push("updates.$key is missing ($rel)")
+					unless $root.add($rel).f;
+			}
+			@problems.push('launcher.target is not the update coordinator')
+				unless ($updates<coordinator> // '')
+					eq (%manifest<launcher><target> // '');
+		}
+		@checks.push({
+			name => 'updates',
+			ok => !@problems,
+			detail => @problems
+				?? @problems.join('; ')
+				!! "protocol 1 resources and application target are present",
+		});
+	}
 
-    my $site    = self.site-dir($root, %manifest);
-    my $precomp = $site.add('precomp');
-    my $files = $precomp.d ?? self!count-files($precomp) !! 0;
-    @checks.push({
-        name => 'precomp',
-        ok => $files > 0,
-        detail => $files > 0
-            ?? "$files precompiled artefacts ship with the bundle"
-            !! 'the precompilation store is empty — first launch will compile everything',
-    });
+	my $site    = self.site-dir($root, %manifest);
+	my $precomp = $site.add('precomp');
+	my $files = $precomp.d ?? self!count-files($precomp) !! 0;
+	@checks.push({
+		name => 'precomp',
+		ok => $files > 0,
+		detail => $files > 0
+			?? "$files precompiled artefacts ship with the bundle"
+			!! 'the precompilation store is empty — first launch will compile everything',
+	});
 
-    # Whether that store is worth anything anywhere but here. A unit
-    # whose dependencies are recorded as absolute paths is one Rakudo
-    # will throw away and recompile on the first machine that is not
-    # this one — and every other check in this file would still pass,
-    # including the commands below, because on the machine that built
-    # the bundle those paths are still there.
-    if $files {
-        my %deps = App::Ariza::Site.precomp-deps($site);
-        my @strays = %deps<strays>.list;
-        @checks.push({
-            name => 'precomp-relocatable',
-            ok => %deps<records> > 0 && !@strays,
-            detail => %deps<records> == 0
-                ?? "read no dependency records from $files artefacts"
-                !! @strays
-                    ?? "{+@strays} dependencies name a build-machine path,"
-                       ~ " starting with {@strays.head<src>}"
-                    !! "{%deps<records>} dependency records, all repository-relative",
-        });
-    }
+	# Whether that store is worth anything anywhere but here. A unit
+	# whose dependencies are recorded as absolute paths is one Rakudo
+	# will throw away and recompile on the first machine that is not
+	# this one — and every other check in this file would still pass,
+	# including the commands below, because on the machine that built
+	# the bundle those paths are still there.
+	if $files {
+		my %deps = App::Ariza::Site.precomp-deps($site);
+		my @strays = %deps<strays>.list;
+		@checks.push({
+			name => 'precomp-relocatable',
+			ok => %deps<records> > 0 && !@strays,
+			detail => %deps<records> == 0
+				?? "read no dependency records from $files artefacts"
+				!! @strays
+					?? "{+@strays} dependencies name a build-machine path,"
+					   ~ " starting with {@strays.head<src>}"
+					!! "{%deps<records>} dependency records, all repository-relative",
+		});
+	}
 
-    @checks.List
+	@checks.List
 }
 
 method !safe-bundle-rel(Mu $value --> Bool:D) {
-    return False unless $value ~~ Str && $value.chars;
-    return False if $value.starts-with('/') || $value.contains('\\');
-    my @parts = $value.split('/');
-    !@parts.first({ $_ eq '' || $_ eq '.' || $_ eq '..' })
+	return False unless $value ~~ Str && $value.chars;
+	return False if $value.starts-with('/') || $value.contains('\\');
+	my @parts = $value.split('/');
+	!@parts.first({ $_ eq '' || $_ eq '.' || $_ eq '..' })
 }
 
 method !audit-check(IO::Path $root, %manifest --> List) {
-    my @extra;
-    with %manifest<components><sqlcipher><path> -> $rel {
-        my $lib = $root.add($rel);
-        if $lib.f {
-            @extra.push($lib);
-            # A macOS SQLCipher drags its OpenSSL in beside it, in
-            # rakudo/lib. Everything in there that is not libmoar is
-            # something ariza put there, and is ariza's to answer for;
-            # the runtime's own files came out of the upstream archive
-            # untouched and are not this audit's business.
-            @extra.append: $lib.parent.dir.grep({
-                .f && !.l && !.basename.starts-with('libmoar')
-            });
-        }
-    }
+	my @extra;
+	with %manifest<components><sqlcipher><path> -> $rel {
+		my $lib = $root.add($rel);
+		if $lib.f {
+			@extra.push($lib);
+			# A macOS SQLCipher drags its OpenSSL in beside it, in
+			# rakudo/lib. Everything in there that is not libmoar is
+			# something ariza put there, and is ariza's to answer for;
+			# the runtime's own files came out of the upstream archive
+			# untouched and are not this audit's business.
+			@extra.append: $lib.parent.dir.grep({
+				.f && !.l && !.basename.starts-with('libmoar')
+			});
+		}
+	}
 
-    my %result;
-    my $ok = True;
-    my $detail;
-    {
-        CATCH {
-            default {
-                $ok = False;
-                $detail = .message;
-            }
-        }
-        %result = App::Ariza::Native.audit(
-            :bundle-dir($root), :slug(%manifest<platform> // ''), :extra(@extra));
-        $detail = "{%result<checked>} native binaries have bundled dependency closure";
-    }
-    ({ name => 'native-audit', ok => $ok, detail => $detail },)
+	my %result;
+	my $ok = True;
+	my $detail;
+	{
+		CATCH {
+			default {
+				$ok = False;
+				$detail = .message;
+			}
+		}
+		%result = App::Ariza::Native.audit(
+			:bundle-dir($root), :slug(%manifest<platform> // ''), :extra(@extra));
+		$detail = "{%result<checked>} native binaries have bundled dependency closure";
+	}
+	({ name => 'native-audit', ok => $ok, detail => $detail },)
 }
 
 method !notcurses-load-check(IO::Path $root, %manifest, Bool $verbose --> List) {
-    return () without %manifest<components><notcurses>;
+	return () without %manifest<components><notcurses>;
 
-    my $win = (%manifest<platform> // '').starts-with('windows');
-    my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
-    my %env = self.base-env, self.runtime-env($root, %manifest);
-    my @argv = $raku.absolute, '-e', self.notcurses-probe-program;
-    (self!run-check('notcurses-load', ('{raku}', '<notcurses-loader-probe>'),
-                    @argv, %env, $verbose),)
+	my $win = (%manifest<platform> // '').starts-with('windows');
+	my $raku = $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku');
+	my %env = self.base-env, self.runtime-env($root, %manifest);
+	my @argv = $raku.absolute, '-e', self.notcurses-probe-program;
+	(self!run-check('notcurses-load', ('{raku}', '<notcurses-loader-probe>'),
+					@argv, %env, $verbose),)
 }
 
 method !command-checks(IO::Path $root, %manifest, Bool $verbose --> List) {
-    my @argvs = (%manifest<smoke> // ()).list.map(*.list.map(~*).List);
-    return ({ name => 'smoke-commands', ok => True,
-              detail => 'the app declares none' },) unless @argvs;
+	my @argvs = (%manifest<smoke> // ()).list.map(*.list.map(~*).List);
+	return ({ name => 'smoke-commands', ok => True,
+			  detail => 'the app declares none' },) unless @argvs;
 
-    my $exec = %manifest<app><exec> // '';
-    my $win  = (%manifest<platform> // '').starts-with('windows');
-    my $tmp  = ensure-dir($root.parent.add('scratch'));
+	my $exec = %manifest<app><exec> // '';
+	my $win  = (%manifest<platform> // '').starts-with('windows');
+	my $tmp  = ensure-dir($root.parent.add('scratch'));
 
-    # The compiled launcher, where the bundle has one. Every {exec}
-    # command is run a second time through it — in addition to the .cmd,
-    # never instead of it — because the two are separate implementations
-    # of one contract and a bundle ships both.
-    my $runner = $win ?? $root.add('bin').add("$exec.exe") !! IO::Path;
+	# The compiled launcher, where the bundle has one. Every {exec}
+	# command is run a second time through it — in addition to the .cmd,
+	# never instead of it — because the two are separate implementations
+	# of one contract and a bundle ships both.
+	my $runner = $win ?? $root.add('bin').add("$exec.exe") !! IO::Path;
 
-    my %vars =
-        exec   => $root.add('bin').add($exec ~ ($win ?? '.cmd' !! '')).absolute,
-        raku   => $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku').absolute,
-        site   => self.site-dir($root, %manifest).absolute,
-        native => $root.add('native').absolute,
-        bundle => $root.absolute,
-        tmp    => $tmp.absolute,
-    ;
+	my %vars =
+		exec   => $root.add('bin').add($exec ~ ($win ?? '.cmd' !! '')).absolute,
+		raku   => $root.add('rakudo').add('bin').add($win ?? 'raku.exe' !! 'raku').absolute,
+		site   => self.site-dir($root, %manifest).absolute,
+		native => $root.add('native').absolute,
+		bundle => $root.absolute,
+		tmp    => $tmp.absolute,
+	;
 
-    my %base    = self.base-env;
-    my %runtime = %base, self.runtime-env($root, %manifest);
+	my %base    = self.base-env;
+	my %runtime = %base, self.runtime-env($root, %manifest);
 
-    my @checks;
-    for @argvs.kv -> $i, @raw {
-        my @argv = @raw.map(-> $word {
-            my $out = $word;
-            $out = $out.subst("\{$_\}", ~%vars{$_}, :g) for %vars.keys;
-            $out
-        });
+	my @checks;
+	for @argvs.kv -> $i, @raw {
+		my @argv = @raw.map(-> $word {
+			my $out = $word;
+			$out = $out.subst("\{$_\}", ~%vars{$_}, :g) for %vars.keys;
+			$out
+		});
 
-        if @argv.grep(/ '{' <[a..z-]>+ '}' /) {
-            @checks.push({
-                name => "smoke[$i]", ok => False,
-                detail => "unresolved placeholder in: {@raw.join(' ')}",
-            });
-            next;
-        }
+		if @argv.grep(/ '{' <[a..z-]>+ '}' /) {
+			@checks.push({
+				name => "smoke[$i]", ok => False,
+				detail => "unresolved placeholder in: {@raw.join(' ')}",
+			});
+			next;
+		}
 
-        # Going through the launcher is a test *of* the launcher, so it
-        # gets nothing but HOME/TERM/PATH. A command that drives the
-        # bundled interpreter directly is standing in for code running
-        # inside the app, so it gets what the launcher would have
-        # exported — otherwise it would be testing the absence of a
-        # launcher rather than the bundle.
-        my %env = @raw.head eq '{raku}' ?? %runtime !! %base;
+		# Going through the launcher is a test *of* the launcher, so it
+		# gets nothing but HOME/TERM/PATH. A command that drives the
+		# bundled interpreter directly is standing in for code running
+		# inside the app, so it gets what the launcher would have
+		# exported — otherwise it would be testing the absence of a
+		# launcher rather than the bundle.
+		my %env = @raw.head eq '{raku}' ?? %runtime !! %base;
 
-        @checks.push(self!run-check("smoke[$i]", @raw, @argv, %env, $verbose));
+		@checks.push(self!run-check("smoke[$i]", @raw, @argv, %env, $verbose));
 
-        # The same command again through bin/<exec>.exe. The scripts and
-        # the executable set the same environment by two entirely
-        # different routes — batch `set` against SetEnvironmentVariableW,
-        # `%*` against a verbatim command-line tail — so proving one says
-        # nothing about the other, and the executable is the one a user
-        # will actually run.
-        next unless $runner.defined && $runner.f && @raw.head eq '{exec}';
-        my @exe-argv = @argv;
-        @exe-argv[0] = $runner.absolute;
-        @checks.push(self!run-check("smoke[$i].exe", @raw, @exe-argv,
-                                    %env, $verbose));
-    }
-    @checks.List
+		# The same command again through bin/<exec>.exe. The scripts and
+		# the executable set the same environment by two entirely
+		# different routes — batch `set` against SetEnvironmentVariableW,
+		# `%*` against a verbatim command-line tail — so proving one says
+		# nothing about the other, and the executable is the one a user
+		# will actually run.
+		next unless $runner.defined && $runner.f && @raw.head eq '{exec}';
+		my @exe-argv = @argv;
+		@exe-argv[0] = $runner.absolute;
+		@checks.push(self!run-check("smoke[$i].exe", @raw, @exe-argv,
+									%env, $verbose));
+	}
+	@checks.List
 }
 
 #| Run one resolved smoke command and report it. C<@raw> is the
 #| unexpanded argv, which is what a reader recognises; C<@argv> is what
 #| is actually run.
 method !run-check(Str $name, @raw, @argv, %env, Bool $verbose --> Hash) {
-    note "ariza: running $name ({@raw.head}) …" if $verbose;
-    my ($code, $out, $err) = try-run(@argv, :%env);
-    my $summary = ($out.trim || $err.trim).lines.grep(*.trim).head // '';
-    %(
-        name   => $name,
-        ok     => $code == 0,
-        detail => $code == 0
-            ?? "{@raw.head} → exit 0" ~ ($summary ?? ": $summary" !! '')
-            !! "{@raw.join(' ').substr(0, 60)} → exit $code\n"
-             ~ ($err.trim || $out.trim).lines.head(8).map({ "        $_" }).join("\n"),
-        output => $out,
-    )
+	note "ariza: running $name ({@raw.head}) …" if $verbose;
+	my ($code, $out, $err) = try-run(@argv, :%env);
+	my $summary = ($out.trim || $err.trim).lines.grep(*.trim).head // '';
+	%(
+		name   => $name,
+		ok     => $code == 0,
+		detail => $code == 0
+			?? "{@raw.head} → exit 0" ~ ($summary ?? ": $summary" !! '')
+			!! "{@raw.join(' ').substr(0, 60)} → exit $code\n"
+			 ~ ($err.trim || $out.trim).lines.head(8).map({ "        $_" }).join("\n"),
+		output => $out,
+	)
 }
 
 method !count-files(IO::Path $dir --> Int) {
-    my $n = 0;
-    my @queue = $dir;
-    while @queue {
-        my $d = @queue.shift;
-        for $d.dir -> $e {
-            next if $e.l;
-            $e.d ?? @queue.push($e) !! $n++;
-        }
-    }
-    $n
+	my $n = 0;
+	my @queue = $dir;
+	while @queue {
+		my $d = @queue.shift;
+		for $d.dir -> $e {
+			next if $e.l;
+			$e.d ?? @queue.push($e) !! $n++;
+		}
+	}
+	$n
 }
 
 =begin pod

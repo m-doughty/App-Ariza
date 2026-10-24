@@ -65,7 +65,7 @@ ariza runs on the machine that **builds** a release, and drives programs that ar
 
   * **macOS**: `otool`, `install_name_tool` and `codesign`, from the Xcode command line tools.
 
-  * **Linux**: `ldd` and `patchelf`. A missing `patchelf` is reported before the build starts, not half way through it.
+  * **Linux**: `ldd` and `patchelf`, to build a bundle that carries SQLCipher. A missing `patchelf` is reported before the build starts, not half way through it. Checking a bundle — the audit, and `ariza smoke` — needs neither `patchelf` nor `readelf`: ELF files are read in Raku, on any host.
 
   * **Windows**: nothing extra. PE import tables are read in Raku, because `dumpbin` ships only with Visual Studio and `objdump` with neither.
 
@@ -435,9 +435,12 @@ sqlcipher = "4.14.0"
 [rakudo]
 version  = "2026.07"
 revision = "01"
+test-versions = ["2026.07", "2026.09"]
 ```
 
 `[rakudo]` is the runtime a bundle embeds; `revision` disambiguates rebuilds of the same upstream release — a repackaged runtime, a patched MoarVM — without pretending upstream cut a new version. `rakudo-tag` joins the two as `2026.07-01`, and `ariza scaffold-ci` quotes it into the generated workflows.
+
+`test-versions` is unrelated to the other two: it is every Rakudo release an app's own test suite has to pass on, oldest supported first, and `ariza scaffold-ci` renders it as the `raku-version` axis of the generated `test.yml`'s matrix, crossed with the three runners. It is the one strictly-validated pin — a non-empty array of quoted release names (`YYYY.MM`, or `YYYY.MM.N` for a point release), none repeated, oldest first — because every entry becomes a CI job on every runner, and an unquoted `2026.10` is the TOML number `2026.1`. Anything else dies naming `rakudo.test-versions`.
 
 `sqlcipher` is **advisory**. The build machine's package manager decides what is actually installed, so ariza reads the version out of the staged library's own bytes and warns if it disagrees:
 
@@ -722,7 +725,21 @@ What is regenerated, and what is yours
 
 `release.yml` is **derived** from `bundle.platforms`: add a platform, re-run `scaffold-ci`, and the file gains a lane and a `needs:` entry. It is rewritten in place every time, so a hand edit to it is an edit you will make twice.
 
-`test.yml` is written **only when it is absent**. A test workflow acquires system dependencies, extra jobs and skip conditions that no generator can infer from a manifest — the scaffolded one is a starting point in the house shape (three runners, `zef install --deps-only`, `prove6 -I. t`), and the moment it is committed it is the repository's. `--force` overwrites it anyway. Each generated file's header says which of the two it is, so nobody has to remember.
+`test.yml` is written **only when it is absent**. A test workflow acquires system dependencies, extra jobs and skip conditions that no generator can infer from a manifest — the scaffolded one is a starting point in the house shape (three runners crossed with every release in `rakudo.test-versions`, `zef install --deps-only`, `prove6 -I. t`), and the moment it is committed it is the repository's. `--force` overwrites it anyway. Each generated file's header says which of the two it is, so nobody has to remember.
+
+Unlike a build lane, whose Rakudo only has to be able to run ariza, its matrix pins the releases it runs on, because there the Rakudo **is** what is being tested:
+
+```yaml
+    name: ${{ matrix.os }} / ${{ matrix.raku-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # From ariza's rakudo.test-versions pin, oldest supported first.
+        raku-version: ['2026.07', '2026.09']
+```
+
+Since `test.yml` is only written once, a change to `rakudo.test-versions` reaches an app's committed copy by hand (or with `--force`).
 
 ENVIRONMENT
 ===========
@@ -783,6 +800,8 @@ MODULES
   * `App::Ariza::Site` — installing the app's closure, and warming it.
 
   * `App::Ariza::Native` — staging SQLCipher, and the self-containment audit.
+
+  * `App::Ariza::ELF` — reading an ELF file's `DT_NEEDED`, `DT_RPATH` and `DT_RUNPATH` without `readelf` or `patchelf`.
 
   * `App::Ariza::Launcher` — the one script a user runs.
 

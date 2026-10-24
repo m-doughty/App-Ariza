@@ -14,16 +14,16 @@ unit module App::Ariza::Platform;
 # than `Any`, which keeps `detect-slug`'s `--> Str` return constraint
 # satisfiable and lets callers write `without $slug { ... }`.
 my Str %PLATFORM-SLUGS =
-    'darwin-arm64'          => 'macos-arm64',
-    'darwin-x86_64'         => 'macos-x86_64',
-    'linux-x86_64-glibc'    => 'linux-x86_64-glibc',
-    'linux-x86_64-musl'     => 'linux-x86_64-musl',
-    'linux-aarch64-glibc'   => 'linux-aarch64-glibc',
-    'linux-aarch64-musl'    => 'linux-aarch64-musl',
-    'win32-x86_64'          => 'windows-x86_64',
-    'win32-aarch64'         => 'windows-arm64',
-    'mswin32-x86_64'        => 'windows-x86_64',
-    'mswin32-aarch64'       => 'windows-arm64',
+	'darwin-arm64'          => 'macos-arm64',
+	'darwin-x86_64'         => 'macos-x86_64',
+	'linux-x86_64-glibc'    => 'linux-x86_64-glibc',
+	'linux-x86_64-musl'     => 'linux-x86_64-musl',
+	'linux-aarch64-glibc'   => 'linux-aarch64-glibc',
+	'linux-aarch64-musl'    => 'linux-aarch64-musl',
+	'win32-x86_64'          => 'windows-x86_64',
+	'win32-aarch64'         => 'windows-arm64',
+	'mswin32-x86_64'        => 'windows-x86_64',
+	'mswin32-aarch64'       => 'windows-arm64',
 ;
 
 #| The name of the environment variable that overrides platform
@@ -35,34 +35,34 @@ our constant PLATFORM-ENV = 'ARIZA_PLATFORM';
 #| Two keys map to `windows-x86_64` and two to `windows-arm64`, so this is
 #| shorter than the key map.
 our sub known-slugs(--> List) is export {
-    %PLATFORM-SLUGS.values.unique.sort.List
+	%PLATFORM-SLUGS.values.unique.sort.List
 }
 
 #| Every C<os-hardware[-libc]> key the slug map recognises, sorted. Useful
 #| in diagnostics: it says which probe results ariza can name, which is a
 #| different question from which slugs exist.
 our sub known-platform-keys(--> List) is export {
-    %PLATFORM-SLUGS.keys.sort.List
+	%PLATFORM-SLUGS.keys.sort.List
 }
 
 #| True if C<$slug> is one of C<known-slugs>.
 our sub known-slug(Str $slug --> Bool) is export {
-    $slug.defined && so %PLATFORM-SLUGS.values.first($slug)
+	$slug.defined && so %PLATFORM-SLUGS.values.first($slug)
 }
 
 #| The system glibc version from `ldd --version`, or an undefined
 #| `Version` when `ldd` is absent, exits non-zero (musl's `ldd` does), or
 #| prints something unparseable. Only meaningful on Linux.
 our sub detect-glibc-version(--> Version) is export {
-    my $proc = try { run 'ldd', '--version', :out, :err };
-    return Version without $proc;
-    my $out = $proc.out.slurp(:close);
-    $proc.err.slurp(:close);
-    return Version unless $proc.exitcode == 0;
-    my $first = $out.lines.head // '';
-    $first ~~ /(\d+ '.' \d+ [ '.' \d+ ]?) \s* $/
-        ?? Version.new(~$0)
-        !! Version
+	my $proc = try { run 'ldd', '--version', :out, :err };
+	return Version without $proc;
+	my $out = $proc.out.slurp(:close);
+	$proc.err.slurp(:close);
+	return Version unless $proc.exitcode == 0;
+	my $first = $out.lines.head // '';
+	$first ~~ /(\d+ '.' \d+ [ '.' \d+ ]?) \s* $/
+		?? Version.new(~$0)
+		!! Version
 }
 
 #| Detect the system C library. Probe order:
@@ -82,20 +82,20 @@ our sub detect-glibc-version(--> Version) is export {
 #| musl loader, the second replaces the `ldd` call with any callable
 #| returning a `Version` or an undefined value.
 our sub detect-libc(
-    Str :$os = $*KERNEL.name.lc,
-    :@lib-dirs = </lib /usr/lib>,
-    :&glibc-probe = &detect-glibc-version,
-    --> Str
+	Str :$os = $*KERNEL.name.lc,
+	:@lib-dirs = </lib /usr/lib>,
+	:&glibc-probe = &detect-glibc-version,
+	--> Str
 ) is export {
-    return Str unless $os eq 'linux';
-    for @lib-dirs -> $d {
-        next unless $d.IO.d;
-        return 'musl' if try {
-            $d.IO.dir.first(*.basename.starts-with('ld-musl-'))
-        };
-    }
-    return 'glibc' if glibc-probe().defined;
-    Str
+	return Str unless $os eq 'linux';
+	for @lib-dirs -> $d {
+		next unless $d.IO.d;
+		return 'musl' if try {
+			$d.IO.dir.first(*.basename.starts-with('ld-musl-'))
+		};
+	}
+	return 'glibc' if glibc-probe().defined;
+	Str
 }
 
 #| The C<os-hardware[-libc]> key that detection looks up. Linux keys carry
@@ -103,12 +103,12 @@ our sub detect-libc(
 #| other OS has no libc axis to disambiguate, so its key is just
 #| C<os-hardware>.
 our sub platform-key(
-    Str :$os       = $*KERNEL.name.lc,
-    Str :$hardware = $*KERNEL.hardware.lc,
-    Str :$libc     = detect-libc(:$os),
-    --> Str
+	Str :$os       = $*KERNEL.name.lc,
+	Str :$hardware = $*KERNEL.hardware.lc,
+	Str :$libc     = detect-libc(:$os),
+	--> Str
 ) is export {
-    $libc ?? "$os-$hardware-$libc" !! "$os-$hardware"
+	$libc ?? "$os-$hardware-$libc" !! "$os-$hardware"
 }
 
 #| The platform slug for this machine, or the `Str` type object when the
@@ -120,22 +120,22 @@ our sub platform-key(
 #| override is the one input that is definitely a human mistake if it is
 #| wrong, so a bad one dies even here.
 our sub detect-slug(
-    Str :$os       = $*KERNEL.name.lc,
-    Str :$hardware = $*KERNEL.hardware.lc,
-    Str :$libc     = detect-libc(:$os),
-    Str :$override = %*ENV{PLATFORM-ENV} // Str,
-    --> Str
+	Str :$os       = $*KERNEL.name.lc,
+	Str :$hardware = $*KERNEL.hardware.lc,
+	Str :$libc     = detect-libc(:$os),
+	Str :$override = %*ENV{PLATFORM-ENV} // Str,
+	--> Str
 ) is export {
-    with $override {
-        my $trimmed = .trim;
-        if $trimmed {
-            die "ariza: {PLATFORM-ENV}='$trimmed' is not a platform ariza knows"
-              ~ " (expected one of: {known-slugs.join(', ')})"
-                unless known-slug($trimmed);
-            return $trimmed;
-        }
-    }
-    %PLATFORM-SLUGS{platform-key(:$os, :$hardware, :$libc)} // Str
+	with $override {
+		my $trimmed = .trim;
+		if $trimmed {
+			die "ariza: {PLATFORM-ENV}='$trimmed' is not a platform ariza knows"
+			  ~ " (expected one of: {known-slugs.join(', ')})"
+				unless known-slug($trimmed);
+			return $trimmed;
+		}
+	}
+	%PLATFORM-SLUGS{platform-key(:$os, :$hardware, :$libc)} // Str
 }
 
 #| The platform slug for this machine, dying with a diagnostic naming the
@@ -143,18 +143,18 @@ our sub detect-slug(
 #| commands should use: a bundler that cannot name its own platform has
 #| nothing useful left to do.
 our sub current-slug(
-    Str :$os       = $*KERNEL.name.lc,
-    Str :$hardware = $*KERNEL.hardware.lc,
-    Str :$libc     = detect-libc(:$os),
-    Str :$override = %*ENV{PLATFORM-ENV} // Str,
-    --> Str
+	Str :$os       = $*KERNEL.name.lc,
+	Str :$hardware = $*KERNEL.hardware.lc,
+	Str :$libc     = detect-libc(:$os),
+	Str :$override = %*ENV{PLATFORM-ENV} // Str,
+	--> Str
 ) is export {
-    my $slug = detect-slug(:$os, :$hardware, :$libc, :$override);
-    return $slug if $slug.defined;
-    my $key = platform-key(:$os, :$hardware, :$libc);
-    die "ariza: unsupported platform '$key'"
-      ~ " (ariza knows: {known-platform-keys.join(', ')});"
-      ~ " set {PLATFORM-ENV} to force one of: {known-slugs.join(', ')}";
+	my $slug = detect-slug(:$os, :$hardware, :$libc, :$override);
+	return $slug if $slug.defined;
+	my $key = platform-key(:$os, :$hardware, :$libc);
+	die "ariza: unsupported platform '$key'"
+	  ~ " (ariza knows: {known-platform-keys.join(', ')});"
+	  ~ " set {PLATFORM-ENV} to force one of: {known-slugs.join(', ')}";
 }
 
 =begin pod

@@ -3,54 +3,60 @@ use Test;
 
 use App::Ariza::Versions;
 
-plan 7;
+plan 8;
 
 sub tmp-dir(--> IO::Path) {
-    my $dir = $*TMPDIR.add("ariza-versions-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("ariza-versions-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 sub rm-rf(IO::Path $d) {
-    return unless $d.d;
-    .&rm-rf for $d.dir.grep(*.d);
-    .unlink for $d.dir.grep(*.f);
-    $d.rmdir;
+	return unless $d.d;
+	.&rm-rf for $d.dir.grep(*.d);
+	.unlink for $d.dir.grep(*.f);
+	$d.rmdir;
 }
 
 sub write-toml(IO::Path $dir, Str $content --> IO::Path) {
-    my $path = $dir.add('versions.toml');
-    $path.spurt($content);
-    $path;
+	my $path = $dir.add('versions.toml');
+	$path.spurt($content);
+	$path;
 }
 
 subtest 'the shipped pin file', {
-    plan 5;
+	plan 6;
 
-    my $v = App::Ariza::Versions.load;
+	my $v = App::Ariza::Versions.load;
 
-    is $v.sqlcipher, '4.14.0', 'the SQLCipher version a bundle expects';
+	is $v.sqlcipher, '4.14.0', 'the SQLCipher version a bundle expects';
 
-    is $v.rakudo-version, '2026.07', 'the bundled runtime version';
-    is $v.rakudo-revision, '01', 'the bundled runtime revision';
-    is $v.rakudo-tag, '2026.07-01', 'rakudo-tag joins the two';
+	is $v.rakudo-version, '2026.07', 'the bundled runtime version';
+	is $v.rakudo-revision, '01', 'the bundled runtime revision';
+	is $v.rakudo-tag, '2026.07-01', 'rakudo-tag joins the two';
+	is $v.rakudo-test-versions, ('2026.07', '2026.09'),
+		'the releases a scaffolded test.yml runs against, oldest first';
 
-    is-deeply $v.warnings.List, (), 'the shipped file parses without warnings';
+	is-deeply $v.warnings.List, (), 'the shipped file parses without warnings';
 };
 
 subtest 'load reports where it read from', {
-    plan 2;
-    my $v = App::Ariza::Versions.load;
-    ok $v.path.defined, 'path is populated';
-    is $v.path.basename, 'versions.toml', 'and names the file';
+	plan 2;
+	my $v = App::Ariza::Versions.load;
+	ok $v.path.defined, 'path is populated';
+	# Compared by content, not by basename: installed or staged (which is
+	# how `zef install` runs this suite), a resource lives under a
+	# content-hashed name, so only a checkout's copy is `versions.toml`.
+	is $v.path.slurp, $*PROGRAM.parent(2).add('resources/versions.toml').slurp,
+		'and names the shipped pin file';
 };
 
 subtest 'unknown keys warn, they never die', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 5;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $path = write-toml($dir, q:to/TOML/);
+	my $path = write-toml($dir, q:to/TOML/);
     sqlcipher  = "4.14.0"
     future-pin = "whatever"
 
@@ -60,20 +66,20 @@ subtest 'unknown keys warn, they never die', {
     codename  = "nautilus"
     TOML
 
-    my $v = App::Ariza::Versions.load($path);
-    is $v.sqlcipher, '4.14.0', 'the recognised keys still load';
-    is $v.rakudo-tag, '2026.07-01', 'including the nested table';
-    is +$v.warnings, 2, 'both unknown keys warned';
-    ok $v.warnings.first(/"'future-pin'"/), 'the top-level key is named';
-    ok $v.warnings.first(/"'rakudo.codename'"/), 'the nested key is dotted';
+	my $v = App::Ariza::Versions.load($path);
+	is $v.sqlcipher, '4.14.0', 'the recognised keys still load';
+	is $v.rakudo-tag, '2026.07-01', 'including the nested table';
+	is +$v.warnings, 2, 'both unknown keys warned';
+	ok $v.warnings.first(/"'future-pin'"/), 'the top-level key is named';
+	ok $v.warnings.first(/"'rakudo.codename'"/), 'the nested key is dotted';
 };
 
 subtest '//-prefixed keys are ignored silently', {
-    plan 2;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 2;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $path = write-toml($dir, q:to/TOML/);
+	my $path = write-toml($dir, q:to/TOML/);
     "// note" = "why this pin is stuck"
     sqlcipher = "4.14.0"
 
@@ -83,64 +89,141 @@ subtest '//-prefixed keys are ignored silently', {
     revision = "01"
     TOML
 
-    my $v = App::Ariza::Versions.load($path);
-    is-deeply $v.warnings.List, (), 'no warnings for comment keys';
-    is $v.sqlcipher, '4.14.0', 'and the real keys are unaffected';
+	my $v = App::Ariza::Versions.load($path);
+	is-deeply $v.warnings.List, (), 'no warnings for comment keys';
+	is $v.sqlcipher, '4.14.0', 'and the real keys are unaffected';
 };
 
 subtest 'wrong types die naming the key', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    throws-like { App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = 2026')) },
-        Exception, message => /'sqlcipher must be a string'/,
-        'a bare number where a string belongs';
+	throws-like { App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = 2026')) },
+		Exception, message => /'sqlcipher must be a string'/,
+		'a bare number where a string belongs';
 
-    throws-like {
-        App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nversion = 2026\n"))
-    }, Exception, message => /'rakudo.version must be a string'/,
-        'the dotted path names the nested key';
+	throws-like {
+		App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nversion = 2026\n"))
+	}, Exception, message => /'rakudo.version must be a string'/,
+		'the dotted path names the nested key';
 
-    throws-like { App::Ariza::Versions.load(write-toml($dir, 'rakudo = "flat"')) },
-        Exception, message => /'rakudo must be a table'/,
-        'a scalar where a table belongs';
+	throws-like { App::Ariza::Versions.load(write-toml($dir, 'rakudo = "flat"')) },
+		Exception, message => /'rakudo must be a table'/,
+		'a scalar where a table belongs';
+};
+
+subtest 'rakudo.test-versions is strict', {
+	plan 25;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
+
+	sub load-list(Str $list) {
+		App::Ariza::Versions.load(write-toml($dir,
+			"[rakudo]\nversion = \"2026.07\"\nrevision = \"01\"\n"
+		  ~ "test-versions = $list\n"))
+	}
+
+	my $v = load-list('["2025.12.1", "2026.07", "2026.09"]');
+	is $v.rakudo-test-versions, ('2025.12.1', '2026.07', '2026.09'),
+		'release names load in file order, point release included';
+	isa-ok $v.rakudo-test-versions, List, 'as a List';
+	is-deeply $v.warnings.List, (), 'and the key is a known one';
+	is load-list('["2026.09"]').rakudo-test-versions, ('2026.09',),
+		'a single release is a valid list';
+
+	throws-like { load-list('"2026.07"') }, Exception,
+		message => /'rakudo.test-versions must be an array of strings'/,
+		'a bare string where an array belongs';
+	throws-like { load-list('{ oldest = "2026.07" }') }, Exception,
+		message => /'rakudo.test-versions must be an array of strings'/,
+		'a table where an array belongs';
+
+	throws-like { load-list('[]') }, Exception,
+		message => /'rakudo.test-versions must not be empty'/,
+		'an empty array, which would be a matrix that runs nothing';
+
+	# The mistake a hand edit is most likely to make, and the reason it
+	# is refused rather than stringified: 2026.10 reads as 2026.1.
+	throws-like { load-list('[2026.07, 2026.10]') }, Exception,
+		message => /'rakudo.test-versions must be an array of strings'
+					.* 'got 2026.07' .* 'quote every release'/,
+		'unquoted releases are numbers, and the message says to quote them';
+	throws-like { load-list('[true]') }, Exception,
+		message => /'rakudo.test-versions must be an array of strings'/,
+		'a boolean element';
+	throws-like { load-list('[["2026.07"]]') }, Exception,
+		message => /'rakudo.test-versions must be an array of strings'/,
+		'a nested array element';
+
+	for '2026.7', '26.07', '2026.13', '2026.00', '2026.07.0', '2026.07.',
+		'latest', ' 2026.07', '2026.07-01', 'v2026.07' -> $bad {
+		throws-like { load-list("[\"$bad\"]") }, Exception,
+			message => /"rakudo.test-versions entry '$bad' is not a Rakudo release"
+						.* 'YYYY.MM or YYYY.MM.N'/,
+			"'$bad' is not a release name";
+	}
+
+	throws-like { load-list('["2026.07", "2026.07"]') }, Exception,
+		message => /"rakudo.test-versions names '2026.07' more than once"/,
+		'a release named twice';
+	throws-like { load-list('["2026.07", "2026.09", "2026.07"]') }, Exception,
+		message => /"names '2026.07' more than once"/,
+		'even when the two are not adjacent';
+
+	throws-like { load-list('["2026.09", "2026.07"]') }, Exception,
+		message => /'rakudo.test-versions must list the oldest release first'
+					.* "'2026.09' comes before '2026.07'"/,
+		'a list that is not oldest first';
+
+	# Oldest first is by release, not by string: a point release sorts
+	# after its base and before the next month.
+	is load-list('["2026.07", "2026.07.1", "2026.09"]').rakudo-test-versions,
+		('2026.07', '2026.07.1', '2026.09'),
+		'a point release sits between its base release and the next';
+	throws-like { load-list('["2026.07.1", "2026.07"]') }, Exception,
+		message => /"'2026.07.1' comes before '2026.07'"/,
+		'and ahead of its own base release is out of order';
 };
 
 subtest 'missing pins are undefined, not empty', {
-    plan 5;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 6;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    my $v = App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nrevision = \"01\"\n"));
-    is $v.sqlcipher, Str, 'an absent flat pin';
-    is $v.rakudo-version, Str, 'an absent nested pin';
-    is $v.rakudo-tag, Str, 'rakudo-tag needs both halves';
+	my $v = App::Ariza::Versions.load(write-toml($dir, "[rakudo]\nrevision = \"01\"\n"));
+	is $v.sqlcipher, Str, 'an absent flat pin';
+	is $v.rakudo-version, Str, 'an absent nested pin';
+	is $v.rakudo-tag, Str, 'rakudo-tag needs both halves';
+	# Absent is allowed here and refused by App::Ariza::CI, the consumer
+	# that needs it -- the same split as every other pin in this file.
+	is $v.rakudo-test-versions, List,
+		'an absent list pin is the undefined List, not an empty one';
 
-    my $half = App::Ariza::Versions.load(
-        write-toml($dir, "[rakudo]\nversion = \"2026.07\"\n"));
-    is $half.rakudo-tag, Str, 'half an identity names nothing';
+	my $half = App::Ariza::Versions.load(
+		write-toml($dir, "[rakudo]\nversion = \"2026.07\"\n"));
+	is $half.rakudo-tag, Str, 'half an identity names nothing';
 
-    # The other side of the same distinction: a pin that is present but
-    # deliberately blank is the empty string, and stays distinguishable
-    # from one that was never written.
-    my $blank = App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = ""'));
-    is $blank.sqlcipher, '', 'an empty pin is the empty string, not undefined';
+	# The other side of the same distinction: a pin that is present but
+	# deliberately blank is the empty string, and stays distinguishable
+	# from one that was never written.
+	my $blank = App::Ariza::Versions.load(write-toml($dir, 'sqlcipher = ""'));
+	is $blank.sqlcipher, '', 'an empty pin is the empty string, not undefined';
 };
 
 subtest 'broken files fail distinguishably', {
-    plan 3;
-    my $dir = tmp-dir;
-    LEAVE { rm-rf($dir) }
+	plan 3;
+	my $dir = tmp-dir;
+	LEAVE { rm-rf($dir) }
 
-    throws-like { App::Ariza::Versions.load($dir.add('nope.toml')) },
-        Exception, message => /'no versions file at'/,
-        'a missing file';
+	throws-like { App::Ariza::Versions.load($dir.add('nope.toml')) },
+		Exception, message => /'no versions file at'/,
+		'a missing file';
 
-    throws-like { App::Ariza::Versions.load(write-toml($dir, "= = =\n")) },
-        Exception, message => /'malformed TOML in'/,
-        'a file that is not TOML';
+	throws-like { App::Ariza::Versions.load(write-toml($dir, "= = =\n")) },
+		Exception, message => /'malformed TOML in'/,
+		'a file that is not TOML';
 
-    my $empty = App::Ariza::Versions.load(write-toml($dir, ''));
-    is $empty.sqlcipher, Str, 'an empty file is a valid, empty pin set';
+	my $empty = App::Ariza::Versions.load(write-toml($dir, ''));
+	is $empty.sqlcipher, Str, 'an empty file is a valid, empty pin set';
 };

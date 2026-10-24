@@ -1,6 +1,6 @@
 # Pinned versions of the shared components every ariza artefact is built
 # against. Bump these in lockstep, then re-run `ariza bundle` (and
-# `ariza scaffold-ci`, which quotes the Rakudo pin into the workflows).
+# `ariza scaffold-ci`, which quotes the Rakudo pins into the workflows).
 
 # The SQLCipher version a bundle is EXPECTED to carry. Advisory, not
 # enforced: `ariza bundle` takes SQLCipher from the build machine's package
@@ -15,3 +15,11 @@ sqlcipher = "4.14.0"
 [rakudo]
 version  = "2026.07"
 revision = "01"
+
+# The Rakudo releases a scaffolded test.yml runs an app's suite against,
+# one matrix entry each, oldest supported first. Independent of
+# `version`/`revision`, which name the runtime a bundle embeds. Quoted,
+# because a bare 2026.10 is the TOML number 2026.1. `scaffold-ci` never
+# rewrites a test.yml that exists, so a bump reaches committed ones by
+# hand (or with `--force`).
+test-versions = ["2026.07", "2026.09"]

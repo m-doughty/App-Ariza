@@ -13,14 +13,14 @@ my constant TEMPLATE-PREFIX = 'templates';
 # an app that ships no Windows bundle has no business shipping an
 # install.ps1 that can only ever say "nothing for your machine".
 my constant @SCRIPTS =
-    { template => 'install-posix.sh.j2',      output => 'install.sh',
-      family => 'posix',   mode => 0o755, crlf => False },
-    { template => 'install-windows.ps1.j2',   output => 'install.ps1',
-      family => 'windows', mode => 0o644, crlf => True  },
-    { template => 'uninstall-posix.sh.j2',    output => 'uninstall.sh',
-      family => 'posix',   mode => 0o755, crlf => False },
-    { template => 'uninstall-windows.ps1.j2', output => 'uninstall.ps1',
-      family => 'windows', mode => 0o644, crlf => True  },
+	{ template => 'install-posix.sh.j2',      output => 'install.sh',
+	  family => 'posix',   mode => 0o755, crlf => False },
+	{ template => 'install-windows.ps1.j2',   output => 'install.ps1',
+	  family => 'windows', mode => 0o644, crlf => True  },
+	{ template => 'uninstall-posix.sh.j2',    output => 'uninstall.sh',
+	  family => 'posix',   mode => 0o755, crlf => False },
+	{ template => 'uninstall-windows.ps1.j2', output => 'uninstall.ps1',
+	  family => 'windows', mode => 0o644, crlf => True  },
 ;
 
 #| The platform family a slug belongs to for installer purposes:
@@ -29,25 +29,25 @@ my constant @SCRIPTS =
 #| installer — the difference between them is a runtime C<uname> away,
 #| and a user should not have to know which file to download.
 method family-of(Str:D $slug --> Str) {
-    $slug.starts-with('windows') ?? 'windows' !! 'posix'
+	$slug.starts-with('windows') ?? 'windows' !! 'posix'
 }
 
 #| The declared platform slugs in one family, in manifest order.
 method slugs-for(App::Ariza::Config:D $config, Str:D $family --> List) {
-    $config.bundle-platforms.list.grep({ self.family-of($_) eq $family }).List
+	$config.bundle-platforms.list.grep({ self.family-of($_) eq $family }).List
 }
 
 #| The scripts this app gets: the C<{ template, output, family, mode,
 #| crlf }> entries whose family it declares at least one platform for.
 method scripts-for(App::Ariza::Config:D $config --> List) {
-    @SCRIPTS.grep({ self.slugs-for($config, .<family>).elems }).List
+	@SCRIPTS.grep({ self.slugs-for($config, .<family>).elems }).List
 }
 
 #| The environment variable that overrides where a generated installer
 #| fetches from: the executable name, uppercased, with anything that is
 #| not a word character replaced by C<_>, plus C<_BUNDLE_URL>.
 method env-url(App::Ariza::Config:D $config --> Str) {
-    $config.app-exec.uc.subst(/<-[A..Z0..9]>/, '_', :g) ~ '_BUNDLE_URL'
+	$config.app-exec.uc.subst(/<-[A..Z0..9]>/, '_', :g) ~ '_BUNDLE_URL'
 }
 
 #| One word, quoted for a POSIX shell: single quotes, with any single
@@ -60,13 +60,13 @@ method env-url(App::Ariza::Config:D $config --> Str) {
 #| argument containing a space, a C<$> or a quote is an argument rather
 #| than an injection.
 method sh-quote(Str:D $word --> Str) {
-    "'" ~ $word.subst("'", "'\\''", :g) ~ "'"
+	"'" ~ $word.subst("'", "'\\''", :g) ~ "'"
 }
 
 #| The same for PowerShell, where a single quote is escaped by doubling
 #| it and nothing inside single quotes is expanded.
 method ps-quote(Str:D $word --> Str) {
-    "'" ~ $word.subst("'", "''", :g) ~ "'"
+	"'" ~ $word.subst("'", "''", :g) ~ "'"
 }
 
 #| The Jinja2 context an installer template renders against.
@@ -80,50 +80,50 @@ method ps-quote(Str:D $word --> Str) {
 #| the printed uninstall hint carries the same URL, so a wrong ref here
 #| is a broken instruction in the user's terminal, not a cosmetic slip.
 method context(
-    App::Ariza::Config:D :$config!,
-    Str :$branch = 'HEAD',
-    --> Hash
+	App::Ariza::Config:D :$config!,
+	Str :$branch = 'HEAD',
+	--> Hash
 ) {
-    my $repo = $config.installer-repo
-        // die "ariza: {$config.app-name} has no installer.repo in its"
-             ~ " ariza.toml, and an installer with no repository to"
-             ~ " download from is not worth generating";
+	my $repo = $config.installer-repo
+		// die "ariza: {$config.app-name} has no installer.repo in its"
+			 ~ " ariza.toml, and an installer with no repository to"
+			 ~ " download from is not worth generating";
 
-    my @posix   = self.slugs-for($config, 'posix');
-    my @windows = self.slugs-for($config, 'windows');
-    my $env-url = self.env-url($config);
-    my @warm    = $config.warm-argv;
+	my @posix   = self.slugs-for($config, 'posix');
+	my @windows = self.slugs-for($config, 'windows');
+	my $env-url = self.env-url($config);
+	my @warm    = $config.warm-argv;
 
-    (
-        # The warm-up: whether there is one, the argument list in each
-        # shell's own quoting, and the same thing as one flat string for
-        # the message that names what was run. `warm_display` is quoted
-        # too — it is interpolated into a shell word, and an argument
-        # with a quote in it would otherwise end the string early.
-        warm         => ?@warm,
-        warm_args    => @warm.map({ self.sh-quote($_) }).join(' '),
-        warm_args_ps => @warm.map({ self.ps-quote($_) }).join(', '),
-        warm_display    => self.sh-quote(@warm.join(' ')),
-        warm_display_ps => self.ps-quote(@warm.join(' ')),
-        app_exec    => $config.app-exec,
-        app_display => $config.app-display,
-        app_name    => $config.app-name,
-        repo        => $repo,
-        raw_base    => "https://raw.githubusercontent.com/$repo/$branch",
-        slugs       => @posix.join(' '),
-        # `@('a', 'b')` element list, already quoted: PowerShell has no
-        # word-splitting, so the array has to be written out.
-        slugs_ps    => @windows.map({ "'$_'" }).join(', '),
-        env_url     => $env-url,
-        # The whole expansion, not just the name: `${` immediately
-        # followed by a Jinja2 `{{` is ambiguous to the template parser,
-        # and the shell has no way to spell "expand the variable this
-        # other variable names" without `eval`.
-        env_url_expr => "\"\$\{$env-url:-\}\"",
-        env_url_unset_expr => "\"\$\{$env-url-\}\"",
-        lib_posix   => resource("{TEMPLATE-PREFIX}/installer-common-posix.sh").slurp,
-        lib_windows => resource("{TEMPLATE-PREFIX}/installer-common-windows.ps1").slurp,
-    ).Hash
+	(
+		# The warm-up: whether there is one, the argument list in each
+		# shell's own quoting, and the same thing as one flat string for
+		# the message that names what was run. `warm_display` is quoted
+		# too — it is interpolated into a shell word, and an argument
+		# with a quote in it would otherwise end the string early.
+		warm         => ?@warm,
+		warm_args    => @warm.map({ self.sh-quote($_) }).join(' '),
+		warm_args_ps => @warm.map({ self.ps-quote($_) }).join(', '),
+		warm_display    => self.sh-quote(@warm.join(' ')),
+		warm_display_ps => self.ps-quote(@warm.join(' ')),
+		app_exec    => $config.app-exec,
+		app_display => $config.app-display,
+		app_name    => $config.app-name,
+		repo        => $repo,
+		raw_base    => "https://raw.githubusercontent.com/$repo/$branch",
+		slugs       => @posix.join(' '),
+		# `@('a', 'b')` element list, already quoted: PowerShell has no
+		# word-splitting, so the array has to be written out.
+		slugs_ps    => @windows.map({ "'$_'" }).join(', '),
+		env_url     => $env-url,
+		# The whole expansion, not just the name: `${` immediately
+		# followed by a Jinja2 `{{` is ambiguous to the template parser,
+		# and the shell has no way to spell "expand the variable this
+		# other variable names" without `eval`.
+		env_url_expr => "\"\$\{$env-url:-\}\"",
+		env_url_unset_expr => "\"\$\{$env-url-\}\"",
+		lib_posix   => resource("{TEMPLATE-PREFIX}/installer-common-posix.sh").slurp,
+		lib_windows => resource("{TEMPLATE-PREFIX}/installer-common-windows.ps1").slurp,
+	).Hash
 }
 
 #| Render one installer template to a string. Line endings are normalised
@@ -131,13 +131,13 @@ method context(
 #| which is what every other file in a Windows repository looks like and
 #| what a here-string in a `.ps1` expects.
 method render(Str:D :$template!, *%ctx --> Str) {
-    my $out = Template::Jinja2.new
-        .from-string(resource("{TEMPLATE-PREFIX}/$template").slurp)
-        .render(|%ctx);
-    $out ~= "\n" unless $out.ends-with("\n");
-    $template.contains('windows')
-        ?? $out.subst("\r\n", "\n", :g).subst("\n", "\r\n", :g)
-        !! $out
+	my $out = Template::Jinja2.new
+		.from-string(resource("{TEMPLATE-PREFIX}/$template").slurp)
+		.render(|%ctx);
+	$out ~= "\n" unless $out.ends-with("\n");
+	$template.contains('windows')
+		?? $out.subst("\r\n", "\n", :g).subst("\n", "\r\n", :g)
+		!! $out
 }
 
 #| Render the trusted installer snapshot staged inside an update-enabled
@@ -146,41 +146,41 @@ method render(Str:D :$template!, *%ctx --> Str) {
 #| same template, rather than two security-sensitive implementations that can
 #| drift.
 method snapshot(App::Ariza::Config:D :$config!, Str:D :$family! --> Str) {
-    my $template = do given $family {
-        when 'posix'   { 'install-posix.sh.j2' }
-        when 'windows' { 'install-windows.ps1.j2' }
-        default { die "ariza: no installer snapshot family '$family'" }
-    };
-    self.render(:$template, |self.context(:$config))
+	my $template = do given $family {
+		when 'posix'   { 'install-posix.sh.j2' }
+		when 'windows' { 'install-windows.ps1.j2' }
+		default { die "ariza: no installer snapshot family '$family'" }
+	};
+	self.render(:$template, |self.context(:$config))
 }
 
 #| Render every installer this app gets into C<:$out-dir>, and return the
 #| paths written.
 method write(
-    IO() :$out-dir!,
-    App::Ariza::Config:D :$config!,
-    Str :$branch = 'HEAD',
-    --> List
+	IO() :$out-dir!,
+	App::Ariza::Config:D :$config!,
+	Str :$branch = 'HEAD',
+	--> List
 ) {
-    die "ariza: {$config.app-name} declares no bundle.platforms, so there"
-      ~ " is nothing for an installer to detect or download"
-        unless $config.bundle-platforms.list;
+	die "ariza: {$config.app-name} declares no bundle.platforms, so there"
+	  ~ " is nothing for an installer to detect or download"
+		unless $config.bundle-platforms.list;
 
-    # Deliberately not created for you: the default target is the app's
-    # own repository, and silently creating one would turn a typo into a
-    # successful render nobody can find.
-    die "ariza: output directory does not exist: $out-dir" unless $out-dir.d;
+	# Deliberately not created for you: the default target is the app's
+	# own repository, and silently creating one would turn a typo into a
+	# successful render nobody can find.
+	die "ariza: output directory does not exist: $out-dir" unless $out-dir.d;
 
-    my %ctx = self.context(:$config, :$branch);
+	my %ctx = self.context(:$config, :$branch);
 
-    my @written;
-    for self.scripts-for($config) -> %s {
-        my $path = $out-dir.add(%s<output>);
-        $path.spurt(self.render(:template(%s<template>), |%ctx));
-        $path.chmod(%s<mode>);
-        @written.push($path);
-    }
-    @written.List
+	my @written;
+	for self.scripts-for($config) -> %s {
+		my $path = $out-dir.add(%s<output>);
+		$path.spurt(self.render(:template(%s<template>), |%ctx));
+		$path.chmod(%s<mode>);
+		@written.push($path);
+	}
+	@written.List
 }
 
 =begin pod

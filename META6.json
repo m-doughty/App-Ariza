@@ -7,7 +7,7 @@
   ],
   "depends": [
     "Config::TOML:ver<0.1.3+>:auth<zef:raku-community-modules>",
-    "JSON::Fast:ver<0.19+>:auth<cpan:TIMOTIMO>",
+    "JSON::Fast:ver<0.21.0+>:auth<zef:timo>",
     "Template::Jinja2:ver<0.3.0+>:auth<zef:apogee>"
   ],
   "description": "bundler and distribution tool for Raku terminal apps",
@@ -19,6 +19,7 @@
     "App::Ariza::Bundle": "lib/App/Ariza/Bundle.rakumod",
     "App::Ariza::CI": "lib/App/Ariza/CI.rakumod",
     "App::Ariza::Config": "lib/App/Ariza/Config.rakumod",
+    "App::Ariza::ELF": "lib/App/Ariza/ELF.rakumod",
     "App::Ariza::Installer": "lib/App/Ariza/Installer.rakumod",
     "App::Ariza::Launcher": "lib/App/Ariza/Launcher.rakumod",
     "App::Ariza::Licensing": "lib/App/Ariza/Licensing.rakumod",
@@ -84,5 +85,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.2.4"
+  "version": "0.3.0"
 }
