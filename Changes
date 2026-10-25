@@ -2,6 +2,19 @@ Revision history for App::Ariza
 
 {{$NEXT}}
 
+0.3.1  2026-10-25T11:21:45Z
+    - Fix stderr capture in t/09 and t/11 under Rakudo 2026.09 RakuAST.
+      Restoring temp $*ERR before LEAVE closed the caller's stderr and left
+      the capture open; on Windows its unlink then aborted t/11 after only
+      12 of 35 subtests. Cleanup now closes the explicitly owned handle.
+      Add coverage for successful and exceptional capture cleanup.
+    - Settle garbage collection and finalizers before t/22 handle counts.
+      Windows process handles awaiting finalization produced a drift of 41
+      across 20 stagings under RakuAST. Settled probes drifted by only 1-2;
+      the existing allowance of 10 remains unchanged.
+    - Isolate the two SQLCipher-absent fixtures from installed MSYS2 libraries
+      by supplying an explicit search path inside the test directory.
+
 0.3.0  2026-10-24T22:16:15+01:00
 
     - Requires JSON::Fast 0.21.0 or later (zef:timo). 0.19 (cpan:TIMOTIMO)
