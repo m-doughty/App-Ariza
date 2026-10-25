@@ -17,8 +17,11 @@ use App::Ariza::Versions;
 #
 # The counts come from the kernel: the descriptor listing on Linux and macOS,
 # GetProcessHandleCount on Windows. Every comparison is between two readings
-# taken around the same work, after that work has already run once. SLACK is
-# the most the count may drift by.
+# taken around the same work, after that work has already run once and after
+# garbage collection/finalizers have released unreferenced process handles.
+# Staging invokes digest tools: on Windows/RakuAST, 20 stagings increased an
+# immediate reading by 41, while settled readings moved by only 1-2. SLACK
+# remains the most the settled count may drift by, not a per-call allowance.
 
 plan 3;
 
@@ -56,12 +59,22 @@ sub open-handle-count(--> Int:D) {
 	die 'open-handle-count: this host publishes no list of the descriptors a process holds';
 }
 
-#| How far the handle count moved across &work, which has already run once.
+#| Let unreferenced process objects release their OS handles before counting.
+#| A second collection covers objects released by the first one's finalizers.
+sub settled-handle-count(--> Int:D) {
+	for ^2 {
+		$*VM.request-garbage-collection;
+		sleep 0.05;
+	}
+	open-handle-count();
+}
+
+#| How far the settled handle count moved across &work, after a warm-up batch.
 sub drift(&work --> Int:D) {
 	work();
-	my Int:D $before = open-handle-count();
+	my Int:D $before = settled-handle-count();
 	work();
-	open-handle-count() - $before;
+	settled-handle-count() - $before;
 }
 
 subtest 'looking for a tool holds no handle open' => {

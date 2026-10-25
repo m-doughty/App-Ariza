@@ -137,8 +137,9 @@ subtest 'the cache records a digest on the way in and verifies it on the way out
 	# The re-download is announced on STDERR; that is the right place for
 	# it in a build, and the wrong place for it in a test transcript.
 	my %third = do {
-		temp $*ERR = open $*SPEC.devnull, :w;
-		LEAVE $*ERR.close;
+		my $sink = open $*SPEC.devnull, :w;
+		LEAVE $sink.close;
+		my $*ERR = $sink;
 		App::Ariza::Rakudo.fetch-archive(%entry, :cache-dir($cache), :&download);
 	};
 	is $downloads, 2, 'a cached archive that fails its digest is re-fetched';

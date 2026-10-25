@@ -7,7 +7,7 @@ use App::Ariza::Platform;
 use App::Ariza::Tools;
 use App::Ariza::Versions;
 
-plan 35;
+plan 36;
 
 # Real ELF files, built by t/fixtures/elf/build.sh. The audit reads every
 # ELF it meets, so a test that audits one has to hand it the real thing.
@@ -135,14 +135,30 @@ sub fake-pe(IO::Path $path, @imports, |c --> IO::Path) {
 #| test transcript nobody reads.
 sub notes-from(&block --> Str) {
 	my $file = $*TMPDIR.add("ariza-native-err-{$*PID}-{(^1_000_000).pick}");
+	LEAVE $file.unlink if $file.e;
 	{
-		temp $*ERR = open $file, :w;
-		LEAVE $*ERR.close;
+		my $capture = $file.open(:w);
+		LEAVE $capture.close;
+		# Own the handle explicitly. RakuAST restores a temp binding before
+		# LEAVE runs, so LEAVE $*ERR.close would close the original stderr
+		# and leave the capture open (which also prevents unlink on Windows).
+		my $*ERR = $capture;
 		block();
 	}
-	LEAVE $file.unlink;
 	$file.slurp
 }
+
+subtest 'warning capture closes its own handle and preserves stderr', {
+	plan 5;
+	my $original = $*ERR;
+	is notes-from({ note 'captured warning' }), "captured warning\n",
+		'the warning is flushed and read back';
+	ok $*ERR === $original, 'the caller keeps its original stderr';
+	ok $original.opened, 'and that stream remains open';
+	throws-like { notes-from({ note 'before failure'; die 'capture failure' }) },
+		X::AdHoc, message => 'capture failure', 'exceptions still propagate through capture cleanup';
+	ok $original.opened, 'stderr remains open after exceptional cleanup too';
+};
 
 #| A `try-run` stand-in: maps a command line, joined with spaces, to the
 #| `(exitcode, stdout, stderr)` it should answer with. An unlisted
@@ -599,12 +615,12 @@ subtest 'Windows looks in MSYS2 and vcpkg, and names every remedy otherwise', {
 
 	throws-like {
 		App::Ariza::Native.sqlcipher-source(:slug<windows-arm64>,
-			:host-slug<windows-arm64>, :env(%()))
+			:host-slug<windows-arm64>, :env(%()), :search([$dir.add('absent').absolute]))
 	}, Exception, message => /'SQLCIPHER_LIB_DIR' .* '--sqlcipher-archive'/,
 		'and with neither installed, every way of supplying one is named';
 	throws-like {
 		App::Ariza::Native.sqlcipher-source(:slug<windows-arm64>,
-			:host-slug<windows-arm64>, :env(%()))
+			:host-slug<windows-arm64>, :env(%()), :search([$dir.add('absent').absolute]))
 	}, Exception, message => /'pacman -S mingw-w64-ucrt-x86_64-sqlcipher'/,
 		'the prebuilt UCRT package first, since it is the one that does not'
 	  ~ ' drag in the Visual C++ redistributable';
