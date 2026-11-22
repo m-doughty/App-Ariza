@@ -1152,8 +1152,8 @@ my %l = App::Ariza::Licensing.write(
     :app-version<0.2.0>,
     :app-display<Moneymoor>,
     :platform<macos-arm64>,
-    :placeholders(%( 'rakudo-version' => '2026.07',
-                     'rakudo-tag'     => '2026.07-01' )),
+    :placeholders(%( 'rakudo-version' => '2026.09',
+                     'rakudo-tag'     => '2026.09-01' )),
     :conditions(<sqlcipher>),
 );
 

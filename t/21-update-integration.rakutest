@@ -227,7 +227,7 @@ SH
 subtest 'only opted-in CI gets the exact bare tag preflight', {
 	plan 4;
 	my $pin = ensure-dir($scratch.add('pins')).add('versions.toml');
-	$pin.spurt("sqlcipher = \"4.14.0\"\n[rakudo]\nversion = \"2026.07\"\nrevision = \"01\"\n"
+	$pin.spurt("sqlcipher = \"4.14.0\"\n[rakudo]\nversion = \"2026.09\"\nrevision = \"01\"\n"
 			 ~ "test-versions = [\"2026.07\", \"2026.09\"]\n");
 	my $versions = App::Ariza::Versions.load($pin);
 	my $off = App::Ariza::CI.render(:template<release.yml.j2>,
@@ -249,7 +249,7 @@ subtest 'only opted-in CI gets the exact bare tag preflight', {
 subtest 'licensing inventory accounts for generated updater files', {
 	plan 4;
 	my %p =
-		'rakudo-version' => '2026.07', 'rakudo-tag' => '2026.07-01',
+		'rakudo-version' => '2026.09', 'rakudo-tag' => '2026.09-01',
 		'rakudo-url' => 'https://example.invalid/rakudo',
 		'sqlcipher-version' => '', 'sqlcipher-source' => '',
 		'runner-tag' => '', 'runner-url' => '',

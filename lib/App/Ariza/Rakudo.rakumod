@@ -277,14 +277,14 @@ my %rt = App::Ariza::Rakudo.provision(
 say %rt<root>;      # …/moneymoor-0.2.0-macos-arm64/rakudo
 say %rt<raku>;      # …/rakudo/bin/raku
 say %rt<zef>;       # …/rakudo/share/perl6/site/bin/zef
-say %rt<tag>;       # 2026.07-01
+say %rt<tag>;       # 2026.09-01
 say %rt<sha256>;    # 9f3c…
 say %rt<cached>;    # True on the second build
 
 # The pieces, separately:
 my @entries = App::Ariza::Rakudo.fetch-index;
 my %entry   = App::Ariza::Rakudo.select-entry(@entries,
-                  :slug<linux-x86_64-glibc>, :version<2026.07>, :revision<01>);
+                  :slug<linux-x86_64-glibc>, :version<2026.09>, :revision<01>);
 say %entry<url>;
 
 =end code
@@ -309,8 +309,8 @@ matter are C<platform> (C<macos>, C<linux>, C<win>, C<src>), C<arch>,
 C<ver>, C<build_rev>, C<type> (only C<archive> is a runtime; the rest
 are signatures and checksum files) and C<url>.
 
-Matching is exact on all five. A pin of C<2026.07> / C<01> selects
-C<build_rev> C<1> and nothing else — never "the newest 2026.07", never
+Matching is exact on all five. A pin of C<2026.09> / C<01> selects
+C<build_rev> C<1> and nothing else — never "the newest 2026.09", never
 "whatever is C<latest>" — because the whole point of the pin is that two
 builds a month apart embed the same bytes.
 

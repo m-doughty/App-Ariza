@@ -574,7 +574,7 @@ for %r<checks> -> %c {
 # ok   unpack: extracted to moneymoor-0.2.0-macos-arm64
 # ok   manifest: App::Moneymoor 0.2.0 for macos-arm64
 # ok   launcher: bin/moneymoor
-# ok   runtime: rakudo 2026.07-01
+# ok   runtime: rakudo 2026.09-01
 # ok   target: rakudo/share/perl6/vendor/bin/moneymoor.raku
 # ok   precomp: 395 precompiled artefacts ship with the bundle
 # ok   precomp-relocatable: 2938 dependency records, all repository-relative

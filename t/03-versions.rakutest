@@ -31,9 +31,9 @@ subtest 'the shipped pin file', {
 
 	is $v.sqlcipher, '4.14.0', 'the SQLCipher version a bundle expects';
 
-	is $v.rakudo-version, '2026.07', 'the bundled runtime version';
+	is $v.rakudo-version, '2026.09', 'the bundled runtime version';
 	is $v.rakudo-revision, '01', 'the bundled runtime revision';
-	is $v.rakudo-tag, '2026.07-01', 'rakudo-tag joins the two';
+	is $v.rakudo-tag, '2026.09-01', 'rakudo-tag joins the two';
 	is $v.rakudo-test-versions, ('2026.07', '2026.09'),
 		'the releases a scaffolded test.yml runs against, oldest first';
 
@@ -61,14 +61,14 @@ subtest 'unknown keys warn, they never die', {
     future-pin = "whatever"
 
     [rakudo]
-    version   = "2026.07"
+    version   = "2026.09"
     revision  = "01"
     codename  = "nautilus"
     TOML
 
 	my $v = App::Ariza::Versions.load($path);
 	is $v.sqlcipher, '4.14.0', 'the recognised keys still load';
-	is $v.rakudo-tag, '2026.07-01', 'including the nested table';
+	is $v.rakudo-tag, '2026.09-01', 'including the nested table';
 	is +$v.warnings, 2, 'both unknown keys warned';
 	ok $v.warnings.first(/"'future-pin'"/), 'the top-level key is named';
 	ok $v.warnings.first(/"'rakudo.codename'"/), 'the nested key is dotted';
@@ -85,7 +85,7 @@ subtest '//-prefixed keys are ignored silently', {
 
     [rakudo]
     "// why" = "waiting on a MoarVM fix"
-    version  = "2026.07"
+    version  = "2026.09"
     revision = "01"
     TOML
 
@@ -120,7 +120,7 @@ subtest 'rakudo.test-versions is strict', {
 
 	sub load-list(Str $list) {
 		App::Ariza::Versions.load(write-toml($dir,
-			"[rakudo]\nversion = \"2026.07\"\nrevision = \"01\"\n"
+			"[rakudo]\nversion = \"2026.09\"\nrevision = \"01\"\n"
 		  ~ "test-versions = $list\n"))
 	}
 
@@ -201,7 +201,7 @@ subtest 'missing pins are undefined, not empty', {
 		'an absent list pin is the undefined List, not an empty one';
 
 	my $half = App::Ariza::Versions.load(
-		write-toml($dir, "[rakudo]\nversion = \"2026.07\"\n"));
+		write-toml($dir, "[rakudo]\nversion = \"2026.09\"\n"));
 	is $half.rakudo-tag, Str, 'half an identity names nothing';
 
 	# The other side of the same distinction: a pin that is present but

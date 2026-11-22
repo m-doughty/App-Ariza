@@ -54,7 +54,7 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       # This Raku runs ariza. It is NOT the runtime that ends up in the
-      # bundle -- ariza downloads the pinned one (2026.07-01) from
+      # bundle -- ariza downloads the pinned one (2026.09-01) from
       # rakudo.org itself, so this lane's Rakudo version has no bearing
       # on what a user gets.
       - uses: Raku/setup-raku@v1
@@ -126,12 +126,12 @@ jobs:
       # runner's tool cache, which is outside this filesystem -- so the
       # official rakudo.org archive is fetched by hand. It is resolved out
       # of the same JSON release index App::Ariza::Rakudo reads, at the
-      # same pin (2026.07-01), because there is no URL pattern to
+      # same pin (2026.09-01), because there is no URL pattern to
       # construct: upstream filenames carry a toolchain suffix.
       #
       # This Raku runs ariza. The runtime that ends up in the bundle is a
       # second copy ariza downloads for itself.
-      - name: Install Rakudo 2026.07-01
+      - name: Install Rakudo 2026.09-01
         run: |
           set -euo pipefail
           # rakudo.org rejects urllib's default user agent, so: curl.
@@ -143,11 +143,11 @@ jobs:
           want = [x for x in index
                   if x.get("platform") == "linux" and x.get("arch") == "x86_64"
                   and x.get("type") == "archive" and x.get("backend") == "moar"
-                  and x.get("ver") == "2026.07"
+                  and x.get("ver") == "2026.09"
                   and int(x.get("build_rev", -1)) == 1]
           if len(want) != 1:
               raise SystemExit(
-                  "expected exactly one Rakudo 2026.07-01 linux/x86_64 "
+                  "expected exactly one Rakudo 2026.09-01 linux/x86_64 "
                   "archive in the release index, found %d" % len(want))
           print(want[0]["url"])
           PY
@@ -248,7 +248,7 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       # This Raku runs ariza. It is NOT the runtime that ends up in the
-      # bundle -- ariza downloads the pinned one (2026.07-01) from
+      # bundle -- ariza downloads the pinned one (2026.09-01) from
       # rakudo.org itself.
       - uses: Raku/setup-raku@v1
         with:
@@ -391,7 +391,7 @@ jobs:
             checksums.txt
           body: |
             Each archive below is a **self-contained bundle**:
-            Example App, a Rakudo runtime (2026.07-01), every Raku
+            Example App, a Rakudo runtime (2026.09-01), every Raku
             dependency with its bytecode already compiled, and every native
             library the application loads. There is nothing to install
             first -- no Raku, no compiler, no package manager. Unpack it

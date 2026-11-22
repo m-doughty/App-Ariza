@@ -18,23 +18,23 @@ sub tmp-dir(--> IO::Path) {
 # A miniature of the real index: archives, signatures and checksum files
 # for two revisions on two platforms, in rakudo.org's exact field shapes.
 my @INDEX =
-	{ name => 'rakudo', platform => 'src', ver => '2026.07', type => 'archive',
-	  format => 'tar.gz', url => 'https://rakudo.org/dl/rakudo/rakudo-2026.07.tar.gz' },
-	{ name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+	{ name => 'rakudo', platform => 'src', ver => '2026.09', type => 'archive',
+	  format => 'tar.gz', url => 'https://rakudo.org/dl/rakudo/rakudo-2026.09.tar.gz' },
+	{ name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.09',
 	  build_rev => 1, type => 'archive', format => 'tar.gz',
-	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-clang.tar.gz' },
-	{ name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.09-01-macos-arm64-clang.tar.gz' },
+	{ name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.09',
 	  build_rev => 1, type => 'sig', format => 'asc',
-	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-clang.tar.gz.asc' },
+	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.09-01-macos-arm64-clang.tar.gz.asc' },
 	{ name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.06',
 	  build_rev => 2, type => 'archive', format => 'tar.gz',
 	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.06-02-macos-arm64-clang.tar.gz' },
-	{ name => 'rakudo', platform => 'linux', arch => 'x86_64', ver => '2026.07',
+	{ name => 'rakudo', platform => 'linux', arch => 'x86_64', ver => '2026.09',
 	  build_rev => 1, type => 'archive', format => 'tar.gz',
-	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-linux-x86_64-gcc.tar.gz' },
-	{ name => 'rakudo', platform => 'win', arch => 'x86_64', ver => '2026.07',
+	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.09-01-linux-x86_64-gcc.tar.gz' },
+	{ name => 'rakudo', platform => 'win', arch => 'x86_64', ver => '2026.09',
 	  build_rev => 1, type => 'archive', format => 'zip',
-	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-win-x86_64-msvc.zip' },
+	  url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.09-01-win-x86_64-msvc.zip' },
 ;
 
 sub fake-fetch($ --> Str) { to-json(@INDEX) }
@@ -63,7 +63,7 @@ subtest 'fetch-index parses, and says so plainly when it cannot', {
 	plan 4;
 	my @entries = App::Ariza::Rakudo.fetch-index(:fetch(&fake-fetch));
 	is +@entries, +@INDEX, 'every entry survives';
-	is @entries[1]<ver>, '2026.07', 'with its fields intact';
+	is @entries[1]<ver>, '2026.09', 'with its fields intact';
 
 	throws-like {
 		App::Ariza::Rakudo.fetch-index(:fetch(-> $ { die 'curl: (6) could not resolve host' }))
@@ -78,30 +78,30 @@ subtest 'fetch-index parses, and says so plainly when it cannot', {
 subtest 'select-entry matches the pin exactly', {
 	plan 5;
 	my %e = App::Ariza::Rakudo.select-entry(@INDEX,
-		:slug<macos-arm64>, :version<2026.07>, :revision<01>);
+		:slug<macos-arm64>, :version<2026.09>, :revision<01>);
 	ok %e<url>.ends-with('macos-arm64-clang.tar.gz'), 'the archive, not the signature';
 
 	# "01" in the pin file is 1 in the JSON.
 	is %e<build_rev>, 1, 'the revision is compared numerically';
 
 	my %w = App::Ariza::Rakudo.select-entry(@INDEX,
-		:slug<windows-x86_64>, :version<2026.07>, :revision<01>);
+		:slug<windows-x86_64>, :version<2026.09>, :revision<01>);
 	ok %w<url>.ends-with('.zip'), 'Windows resolves to the zip';
 
 	throws-like {
 		App::Ariza::Rakudo.select-entry(@INDEX,
 			:slug<macos-arm64>, :version<2019.03>, :revision<01>)
-	}, Exception, message => /'no Rakudo 2019.03-01 build' .* '2026.07-01'/,
+	}, Exception, message => /'no Rakudo 2019.03-01 build' .* '2026.09-01'/,
 		'a stale pin dies listing what that platform does have';
 
 	my @dupes = |@INDEX, {
-		name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.07',
+		name => 'rakudo', platform => 'macos', arch => 'arm64', ver => '2026.09',
 		build_rev => 1, type => 'archive', format => 'tar.gz',
-		url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.07-01-macos-arm64-gcc.tar.gz',
+		url => 'https://rakudo.org/dl/rakudo/rakudo-moar-2026.09-01-macos-arm64-gcc.tar.gz',
 	};
 	throws-like {
 		App::Ariza::Rakudo.select-entry(@dupes,
-			:slug<macos-arm64>, :version<2026.07>, :revision<01>)
+			:slug<macos-arm64>, :version<2026.09>, :revision<01>)
 	}, Exception, message => /'has 2 archives'/,
 		'two archives for one pin is a pin-file decision, not a tiebreak here';
 };
@@ -171,11 +171,11 @@ subtest 'unpack strips the wrapper directory and replaces what was there', {
 	my $dir = tmp-dir;
 	LEAVE { rm-rf($dir) }
 
-	my $src = ensure-dir($dir.add('rakudo-moar-2026.07-01-macos-arm64-clang/bin'));
+	my $src = ensure-dir($dir.add('rakudo-moar-2026.09-01-macos-arm64-clang/bin'));
 	$src.add('raku').spurt("#!/bin/sh\n");
 	my $archive = $dir.add('runtime.tar.gz');
 	run 'tar', '-c', '-z', '-f', $archive.absolute, '-C', $dir.absolute,
-		'rakudo-moar-2026.07-01-macos-arm64-clang';
+		'rakudo-moar-2026.09-01-macos-arm64-clang';
 
 	my $bundle = ensure-dir($dir.add('bundle'));
 	ensure-dir($bundle.add('rakudo'));

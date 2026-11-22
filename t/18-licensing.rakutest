@@ -63,8 +63,8 @@ sub write-licensing(IO::Path $bundle, IO::Path $app, *%extra --> Hash) {
 		:app-dir($app), :app-version<9.9.9>, :app-display('Example App'),
 		:platform<macos-arm64>,
 		:placeholders(%(
-			'rakudo-version'    => '2026.07',
-			'rakudo-tag'        => '2026.07-01',
+			'rakudo-version'    => '2026.09',
+			'rakudo-tag'        => '2026.09-01',
 			'rakudo-url'        => 'https://rakudo.org/dl/rakudo/x.tar.gz',
 			'sqlcipher-version' => '4.14.0',
 			'sqlcipher-source'  => 'homebrew keg: /opt/x/lib/libsqlcipher.0.dylib',
@@ -166,7 +166,7 @@ subtest 'the runtime data file is complete, and every text it cites ships', {
 
 subtest 'runtime rows are substituted, conditional, and can name what they cover', {
 	plan 6;
-	my %p = 'rakudo-version' => '2026.07', 'rakudo-tag' => '2026.07-01',
+	my %p = 'rakudo-version' => '2026.09', 'rakudo-tag' => '2026.09-01',
 			'rakudo-url' => 'https://example.invalid/r.tar.gz',
 			'sqlcipher-version' => '4.14.0', 'sqlcipher-source' => 'a keg',
 			'runner-tag' => 'runner-v1', 'runner-url' => 'https://example.invalid/x.exe',
@@ -174,7 +174,7 @@ subtest 'runtime rows are substituted, conditional, and can name what they cover
 
 	my @plain = App::Ariza::Licensing.runtime-rows(:placeholders(%p));
 	my %by = @plain.map({ .<id> => $_ }).Hash;
-	is %by<rakudo><version>, '2026.07',
+	is %by<rakudo><version>, '2026.09',
 		'the pinned runtime version is substituted in';
 	nok %by<sqlcipher>.defined,
 		'a bundle without SQLCipher does not claim to carry it';

@@ -177,13 +177,19 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    # Tag-triggered runs only. A dispatch builds and tests both lanes
-    # and stops there, which is the same contract Notcurses-Native's
+    # A pushed runner-v* tag, and nothing else, publishes. A dispatch
+    # builds and tests both lanes and stops there, even when it is
+    # dispatched on a tag ref, which `github.ref` alone would not tell
+    # apart from a push. That is the same contract Notcurses-Native's
     # binary releases use and for the same reason: the assets published
     # here are what every ariza bundle checksum-verifies against, and
     # replacing them under a tag that is already live breaks builds that
-    # were reproducible a minute earlier.
-    if: startsWith(github.ref, 'refs/tags/runner-v')
+    # were reproducible a minute earlier. The pushed tag is then checked
+    # against resources/RUNNER_VERSION in the prep step below.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/runner-v')
+    # Collect, checksum, release: observed at 11-16 seconds. Twenty
+    # minutes is the house floor and still fails a hung upload promptly.
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:

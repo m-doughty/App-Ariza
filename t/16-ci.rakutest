@@ -32,7 +32,7 @@ sub versions(--> App::Ariza::Versions) {
     sqlcipher = "4.14.0"
 
     [rakudo]
-    version  = "2026.07"
+    version  = "2026.09"
     revision = "01"
     test-versions = ["2026.07", "2026.09"]
     TOML
@@ -150,7 +150,7 @@ subtest 'the context carries the app and the pins, not the machine', {
 	is %CTX<app_name>, 'App::ExampleApp', 'the dist name';
 	is %CTX<app_exec>, 'exampleapp', 'the launcher name';
 	is %CTX<repo>, 'example-org/App-ExampleApp', 'where releases are published';
-	is %CTX<rakudo_tag>, '2026.07-01', 'the runtime pin a bundle embeds';
+	is %CTX<rakudo_tag>, '2026.09-01', 'the runtime pin a bundle embeds';
 	is %CTX<rakudo_revision_int>, 1,
 		'as a number, because the release index records it as one';
 	is %CTX<sqlcipher_version>, '4.14.0', 'and the SQLCipher pin';
@@ -337,7 +337,7 @@ subtest 'each lane installs what ariza needs on that platform', {
 		'with the packages a SQLCipher source build needs';
 	ok $RELEASE.contains('https://rakudo.org/dl/rakudo'),
 		'and installs Rakudo from the release index by hand,';
-	ok $RELEASE.contains('"ver") == "2026.07"')
+	ok $RELEASE.contains('"ver") == "2026.09"')
 		&& $RELEASE.contains('"build_rev", -1)) == 1'),
 		'at exactly the version and revision ariza pins';
 	ok $RELEASE.contains('/v4.14.0.tar.gz'),
@@ -478,7 +478,7 @@ subtest "test.yml's Rakudo matrix is rakudo.test-versions", {
     sqlcipher = "4.14.0"
 
     [rakudo]
-    version  = "2026.07"
+    version  = "2026.09"
     revision = "01"
     test-versions = ["2025.12.1", "2026.03", "2026.09"]
     TOML
@@ -497,7 +497,7 @@ subtest "test.yml's Rakudo matrix is rakudo.test-versions", {
 	# survive unnoticed.
 	my $one = versions-from(q:to/TOML/);
     [rakudo]
-    version  = "2026.07"
+    version  = "2026.09"
     revision = "01"
     test-versions = ["2026.09"]
     TOML
@@ -522,7 +522,7 @@ subtest "test.yml's Rakudo matrix is rakudo.test-versions", {
     sqlcipher = "4.14.0"
 
     [rakudo]
-    version  = "2026.07"
+    version  = "2026.09"
     revision = "01"
     TOML
 	is $missing.rakudo-test-versions, List, 'Versions loads a pin set without the key';
@@ -543,7 +543,7 @@ subtest "test.yml's Rakudo matrix is rakudo.test-versions", {
 	# A malformed list never reaches a template: Versions refuses it at
 	# load, so a workflow can only ever quote validated release names.
 	throws-like {
-		versions-from("[rakudo]\nversion = \"2026.07\"\nrevision = \"01\"\n"
+		versions-from("[rakudo]\nversion = \"2026.09\"\nrevision = \"01\"\n"
 					~ "test-versions = [\"2026.9\"]\n")
 	}, Exception, message => /'rakudo.test-versions entry'/,
 		'and a malformed list dies at load, before any render';

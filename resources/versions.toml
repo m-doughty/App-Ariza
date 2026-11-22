@@ -13,7 +13,7 @@ sqlcipher = "4.14.0"
 # disambiguates rebuilds of the same upstream release (a repackaged
 # runtime, a patched MoarVM) without pretending upstream cut a new version.
 [rakudo]
-version  = "2026.07"
+version  = "2026.09"
 revision = "01"
 
 # The Rakudo releases a scaffolded test.yml runs an app's suite against,

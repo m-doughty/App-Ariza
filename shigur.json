@@ -1,0 +1,99 @@
+{
+  "name": "App::Ariza",
+  "badges": [
+    "github-actions/test.yml"
+  ],
+  "readme-from-pod": {
+    "filename": "docs/Readme.rakudoc"
+  },
+  "ci": {
+    "required-workflows": [
+      {
+        "workflow": "test.yml",
+        "jobs": []
+      }
+    ]
+  },
+  "pipeline": {
+    "prepare": [
+      {
+        "id": "runner-configure",
+        "type": "command",
+        "argv": [
+          "cmake",
+          "-S",
+          "runner",
+          "-B",
+          "runner/build-shigur",
+          "-DARIZA_RUNNER_WERROR=ON"
+        ]
+      },
+      {
+        "id": "runner-build",
+        "type": "command",
+        "argv": [
+          "cmake",
+          "--build",
+          "runner/build-shigur"
+        ]
+      },
+      {
+        "id": "runner-tests",
+        "type": "command",
+        "argv": [
+          "ctest",
+          "--test-dir",
+          "runner/build-shigur",
+          "--output-on-failure"
+        ]
+      },
+      {
+        "id": "runner-tag",
+        "type": "tag",
+        "file": "resources/RUNNER_VERSION",
+        "inputs": [
+          "runner",
+          ".github/workflows/runner-release.yml"
+        ]
+      },
+      {
+        "id": "runner-build-ci",
+        "type": "workflow",
+        "workflow": "runner-release.yml",
+        "ref-file": "resources/RUNNER_VERSION",
+        "event": "push",
+        "jobs": [
+          "publish"
+        ],
+        "// timeout": "critical path build (45) then publish (20) = 65 min; x3 attempts (retries share the budget) + 1h queueing",
+        "timeout": 15300,
+        "poll": 30
+      },
+      {
+        "id": "runner-checksums",
+        "type": "assets",
+        "ref-file": "resources/RUNNER_VERSION",
+        "manifest": "checksums.txt",
+        "files": [
+          "ariza-runner-windows-aarch64.exe",
+          "ariza-runner-windows-x86_64.exe"
+        ],
+        "destination": "resources/runner-checksums.txt",
+        "mode": "replace"
+      }
+    ],
+    "verify": [
+      {
+        "id": "published-runner-bytes",
+        "type": "command",
+        "argv": [
+          "prove6",
+          "-j1",
+          "-Ilib",
+          "xt/06-runner-release.rakutest"
+        ]
+      }
+    ],
+    "after-tag": []
+  }
+}

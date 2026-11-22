@@ -38,7 +38,7 @@ my constant MANIFEST = {
 	app => { name => 'App::ExampleApp', exec => 'exampleapp',
 			 display => 'Example App', version => '9.9.9' },
 	components => {
-		rakudo => { tag => '2026.07-01', version => '2026.07', revision => '01' },
+		rakudo => { tag => '2026.09-01', version => '2026.09', revision => '01' },
 		sqlcipher => { version => '4.14.0', path => 'rakudo/lib/libsqlcipher.0.dylib' },
 		notcurses => { tag => 'binaries-notcurses-3.0.17-r11',
 					   path => 'native/Notcurses-Native/binaries-notcurses-3.0.17-r11/lib' },
@@ -159,7 +159,7 @@ subtest 'VERSION is one screen a human can quote in a bug report', {
 	is @lines[0], 'Example App 9.9.9 (macos-arm64)',
 		'the headline names the product, the version and the platform';
 	ok @lines.first(/^ 'app' \s+ 'App::ExampleApp 9.9.9'/), 'the distribution';
-	ok @lines.first(/^ 'rakudo' \s+ '2026.07-01'/), 'the embedded runtime';
+	ok @lines.first(/^ 'rakudo' \s+ '2026.09-01'/), 'the embedded runtime';
 	ok @lines.first(/^ 'sqlcipher' \s+ '4.14.0'/), 'SQLCipher';
 	ok @lines.first(/^ 'notcurses' \s+ 'binaries-notcurses-3.0.17-r11'/),
 		'the notcurses build, by the tag it was actually staged under';

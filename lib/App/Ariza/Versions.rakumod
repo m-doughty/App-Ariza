@@ -136,7 +136,7 @@ method load(App::Ariza::Versions:U: IO() $path = resource('versions.toml') --> A
 }
 
 #| The embedded Rakudo runtime's full identity, `version-revision` — e.g.
-#| `2026.07-01`. Undefined `Str` if either half is missing, since half an
+#| `2026.09-01`. Undefined `Str` if either half is missing, since half an
 #| identity names nothing.
 method rakudo-tag(--> Str) {
 	return Str unless $!rakudo-version.defined && $!rakudo-revision.defined;
@@ -157,9 +157,9 @@ use App::Ariza::Versions;
 
 my $v = App::Ariza::Versions.load;          # ariza's shipped resources/versions.toml
 
-say $v.rakudo-version;                       # 2026.07   (bundled runtime)
+say $v.rakudo-version;                       # 2026.09   (bundled runtime)
 say $v.rakudo-revision;                      # 01
-say $v.rakudo-tag;                           # 2026.07-01
+say $v.rakudo-tag;                           # 2026.09-01
 say $v.rakudo-test-versions;                 # (2026.07 2026.09)   (test.yml's matrix)
 say $v.sqlcipher;                            # 4.14.0    (advisory — see below)
 
@@ -188,7 +188,7 @@ consumers ask it for a string and put the string where it belongs.
 sqlcipher = "4.14.0"
 
 [rakudo]
-version  = "2026.07"
+version  = "2026.09"
 revision = "01"
 test-versions = ["2026.07", "2026.09"]
 

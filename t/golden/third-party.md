@@ -23,21 +23,21 @@ row here was written by hand into a tool.
 | Component | Version | Licence (SPDX) | Provenance |
 |---|---|---|---|
 | App::ExampleApp | 9.9.9 | `Artistic-2.0` | app META6 |
-| cmp (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| DynASM (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| dyncall (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `ISC` | ariza runtime data (runtime-third-party.json) |
-| libatomic_ops (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| LibTomMath (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `Unlicense` | ariza runtime data (runtime-third-party.json) |
-| libuv (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT AND BSD-2-Clause AND ISC` | ariza runtime data (runtime-third-party.json) |
-| memmem (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| mimalloc (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| MoarVM | as shipped in Rakudo 2026.07 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
-| msinttypes (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `BSD-3-Clause` | ariza runtime data (runtime-third-party.json) |
-| NQP | as shipped in Rakudo 2026.07 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
-| Rakudo | 2026.07 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
-| rapidhash (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
-| SHA-1 (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `LicenseRef-public-domain` | ariza runtime data (runtime-third-party.json) |
-| zmij (vendored by MoarVM) | as vendored in Rakudo 2026.07 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| cmp (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| DynASM (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| dyncall (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `ISC` | ariza runtime data (runtime-third-party.json) |
+| libatomic_ops (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| LibTomMath (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `Unlicense` | ariza runtime data (runtime-third-party.json) |
+| libuv (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT AND BSD-2-Clause AND ISC` | ariza runtime data (runtime-third-party.json) |
+| memmem (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| mimalloc (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| MoarVM | as shipped in Rakudo 2026.09 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
+| msinttypes (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `BSD-3-Clause` | ariza runtime data (runtime-third-party.json) |
+| NQP | as shipped in Rakudo 2026.09 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
+| Rakudo | 2026.09 | `Artistic-2.0` | ariza runtime data (runtime-third-party.json) |
+| rapidhash (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
+| SHA-1 (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `LicenseRef-public-domain` | ariza runtime data (runtime-third-party.json) |
+| zmij (vendored by MoarVM) | as vendored in Rakudo 2026.09 | `MIT` | ariza runtime data (runtime-third-party.json) |
 | SQLCipher | 4.14.0 | `BSD-3-Clause` | ariza runtime data (runtime-third-party.json) |
 | zef | 1.1.3 | `Artistic-2.0` | site META (rakudo/share/perl6/site/dist) |
 
@@ -53,7 +53,7 @@ row here was written by hand into a tool.
 * Source: this bundle is a build of it
 * Provenance: app META6
 
-### cmp (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### cmp (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -65,7 +65,7 @@ row here was written by hand into a tool.
 
 A MessagePack implementation, used by MoarVM's heap snapshot and profiler output.
 
-### DynASM (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### DynASM (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -77,7 +77,7 @@ A MessagePack implementation, used by MoarVM's heap snapshot and profiler output
 
 LuaJIT's dynamic assembler. Its generator is a build-time Lua program, but the `dasm_*.h` encoding runtime it emits is compiled into MoarVM's JIT, so it is redistributed here rather than merely used to build.
 
-### dyncall (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### dyncall (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `ISC`
@@ -89,7 +89,7 @@ LuaJIT's dynamic assembler. Its generator is a build-time Lua program, but the `
 
 The foreign-function call machinery every `is native` subroutine in a Raku program goes through, which for a bundled TUI application is most of what talks to the terminal.
 
-### libatomic_ops (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### libatomic_ops (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -101,7 +101,7 @@ The foreign-function call machinery every `is native` subroutine in a Raku progr
 
 Portable atomic operations. The package also contains GPL-2.0 files, and none of them are here: upstream confines them to `libatomic_ops_gpl` plus the configure, build and test tooling, and MoarVM's own 3rdparty/README states they are not included in any built binary. A few sysdeps files are inherited from the Boehm-Demers-Weiser collector under a permissive notice of the same shape as the MIT text that travels with this row.
 
-### LibTomMath (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### LibTomMath (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `Unlicense`
@@ -113,7 +113,7 @@ Portable atomic operations. The package also contains GPL-2.0 files, and none of
 
 Arbitrary-precision integers -- Raku's `Int` past 64 bits. The commit MoarVM pins carries the LibTom public-domain dedication, which is the Unlicense text under another heading.
 
-### libuv (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### libuv (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT AND BSD-2-Clause AND ISC`
@@ -125,7 +125,7 @@ Arbitrary-precision integers -- Raku's `Int` past 64 bits. The commit MoarVM pin
 
 Event loop, filesystem, process and socket layer. libuv's LICENSE is MIT; its LICENSE-extra names the two externally maintained pieces it carries -- `tree.h` from FreeBSD under the two-clause BSD licence, and the `inet_pton`/`inet_ntop` implementations under the ISC licence -- which is why three texts travel with it.
 
-### memmem (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### memmem (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -137,7 +137,7 @@ Event loop, filesystem, process and socket layer. libuv's LICENSE is MIT; its LI
 
 A substring search compiled in only where the platform C library has no `memmem` -- Windows, macOS and Solaris. The directory is called `freebsd`; the file in it is musl's implementation and carries musl's MIT notice.
 
-### mimalloc (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### mimalloc (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -149,19 +149,19 @@ A substring search compiled in only where the platform C library has no `memmem`
 
 General-purpose allocator. A recent arrival in MoarVM's 3rdparty/ -- see the MoarVM caveat at the top of this file.
 
-### MoarVM — as shipped in Rakudo 2026.07
+### MoarVM — as shipped in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `Artistic-2.0`
 * Licence text: `LICENSES/Artistic-2.0.txt`
 * Copyright 2012-2015 Jonathan Worthington and others
 * Upstream: <https://moarvm.org/>
-* Source: built into the Rakudo binary release 2026.07-01
+* Source: built into the Rakudo binary release 2026.09-01
 * Provenance: ariza runtime data (runtime-third-party.json)
 
 The virtual machine Rakudo runs on. Its own LICENSE says the Artistic License 2.0 applies to the project but that some portions are redistributed under other licences: those portions are the libraries MoarVM vendors under 3rdparty/, and each of them has its own row below.
 
-### msinttypes (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### msinttypes (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `BSD-3-Clause`
@@ -173,31 +173,31 @@ The virtual machine Rakudo runs on. Its own LICENSE says the Artistic License 2.
 
 `stdint.h` and `inttypes.h` for Visual C++ compilers old enough not to ship them. Headers only, and only on Windows builds; listed because a header that ends up compiled into a shipped binary is redistributed like anything else.
 
-### NQP — as shipped in Rakudo 2026.07
+### NQP — as shipped in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `Artistic-2.0`
 * Licence text: `LICENSES/Artistic-2.0.txt`
 * Copyright the NQP contributors
 * Upstream: <https://github.com/Raku/nqp>
-* Source: built into the Rakudo binary release 2026.07-01
+* Source: built into the Rakudo binary release 2026.09-01
 * Provenance: ariza runtime data (runtime-third-party.json)
 
 Not Quite Perl: the bootstrap language Rakudo's compiler is written in. It has no separate archive -- it is inside the one Rakudo release ariza downloads.
 
-### Rakudo — 2026.07
+### Rakudo — 2026.09
 
 * Kind: runtime
 * Licence: `Artistic-2.0`
 * Licence text: `LICENSES/Artistic-2.0.txt`
 * Copyright the Rakudo contributors
 * Upstream: <https://rakudo.org/>
-* Source: official binary release 2026.07-01, downloaded unmodified from https://rakudo.org/dl/rakudo/x.tar.gz
+* Source: official binary release 2026.09-01, downloaded unmodified from https://rakudo.org/dl/rakudo/x.tar.gz
 * Provenance: ariza runtime data (runtime-third-party.json)
 
 The compiler. Its own LICENSE file travels in the bundle at `rakudo/LICENSE` as well, unchanged from the archive it came in.
 
-### rapidhash (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### rapidhash (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`
@@ -209,7 +209,7 @@ The compiler. Its own LICENSE file travels in the bundle at `rakudo/LICENSE` as 
 
 The string hash behind every Raku hash lookup. Also a recent arrival.
 
-### SHA-1 (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### SHA-1 (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `LicenseRef-public-domain`
@@ -221,7 +221,7 @@ The string hash behind every Raku hash lookup. Also a recent arrival.
 
 Steve Reid's public-domain SHA-1, used for MoarVM's serialization identities. Its own header says `this file is in the public domain`, which is a licensing situation SPDX has no identifier for.
 
-### zmij (vendored by MoarVM) — as vendored in Rakudo 2026.07
+### zmij (vendored by MoarVM) — as vendored in Rakudo 2026.09
 
 * Kind: runtime
 * Licence: `MIT`

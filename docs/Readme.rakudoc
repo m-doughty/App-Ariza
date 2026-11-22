@@ -37,7 +37,7 @@ App::Ariza.cmd-installers(:app<../App-Moneymoor>);
 App::Ariza.cmd-scaffold-ci(:app<../App-Moneymoor>);
 
 say current-slug;                                  # macos-arm64
-say App::Ariza::Versions.load.rakudo-tag;          # 2026.07-01
+say App::Ariza::Versions.load.rakudo-tag;          # 2026.09-01
 say App::Ariza::Config.load($app-repo).bundle-platforms;
 
 =end code
@@ -213,7 +213,7 @@ $ ariza smoke --archive=dist/moneymoor-0.2.0-macos-arm64.tar.gz
 ok   unpack         extracted to moneymoor-0.2.0-macos-arm64
 ok   manifest       App::Moneymoor 0.2.0, 8 distributions for macos-arm64
 ok   launcher       bin/moneymoor
-ok   runtime        rakudo 2026.07-01
+ok   runtime        rakudo 2026.09-01
 ok   target         rakudo/share/perl6/vendor/bin/moneymoor.raku
 ok   precomp        417 precompiled artefacts ship with the bundle
 ok   precomp-relocatable 2938 dependency records, all repository-relative
@@ -676,7 +676,7 @@ a bump re-renders everything in lockstep and nothing drifts:
 sqlcipher = "4.14.0"
 
 [rakudo]
-version  = "2026.07"
+version  = "2026.09"
 revision = "01"
 test-versions = ["2026.07", "2026.09"]
 
@@ -685,7 +685,7 @@ test-versions = ["2026.07", "2026.09"]
 C<[rakudo]> is the runtime a bundle embeds; C<revision> disambiguates
 rebuilds of the same upstream release — a repackaged runtime, a patched
 MoarVM — without pretending upstream cut a new version. C<rakudo-tag>
-joins the two as C<2026.07-01>, and C<ariza scaffold-ci> quotes it into
+joins the two as C<2026.09-01>, and C<ariza scaffold-ci> quotes it into
 the generated workflows.
 
 C<test-versions> is unrelated to the other two: it is every Rakudo

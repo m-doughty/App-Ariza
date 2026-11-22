@@ -124,7 +124,7 @@ sub fake-bundle(IO::Path $where, :@smoke, :$exec-status = 0, :$dists,
 			|($legacy-manifest ?? () !! (site => $site-rel,)),
 		},
 		components => {
-			rakudo => { tag => '2026.07-01' },
+			rakudo => { tag => '2026.09-01' },
 			|($notcurses
 				?? (notcurses => {
 					tag => 'binaries-notcurses-3.0.17-r11',

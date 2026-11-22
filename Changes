@@ -1,6 +1,27 @@
 Revision history for App::Ariza
 
 {{$NEXT}}
+    - Bundles embed Rakudo 2026.09 (revision 01) instead of 2026.07.
+      rakudo.org publishes a 2026.09-01 archive for each of the four
+      platforms ariza can bundle for: macOS arm64 and x86_64, Linux
+      x86_64 and Windows x86_64. 2026.09 compiles with RakuAST by
+      default, so a bundled app now runs on the compiler frontend the
+      2026.09 leg of its test matrix already covers. The archives are
+      laid out as 2026.07's were: the POSIX zef shell wrapper and the
+      Windows zip's zef.raku are byte-identical, and the macOS runtime
+      keeps its @executable_path/../lib rpath. The zef inside is 1.1.4
+      (was 1.1.3).
+    - `rakudo.test-versions` stays at 2026.07 and 2026.09, so the
+      embedded runtime is still one of the releases a scaffolded test.yml
+      runs an app's suite on.
+    - Re-run `ariza scaffold-ci` to carry the new pin into an app's
+      release.yml. Until then its Linux lane runs ariza itself on the
+      2026.07 it installs by hand, which does not change the runtime the
+      bundle embeds.
+    - runtime-third-party.json was re-checked against the MoarVM 2026.09
+      this Rakudo is built on, as the file asks whenever the pin moves,
+      and needs no change: that MoarVM vendors exactly the libraries the
+      file lists.
 
 0.3.1  2026-10-25T11:21:45Z
     - Fix stderr capture in t/09 and t/11 under Rakudo 2026.09 RakuAST.
